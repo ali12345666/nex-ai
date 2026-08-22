@@ -72,8 +72,18 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // ── AI Chat ──
   aiChat: (config: any, messages: any[]) =>
     ipcRenderer.invoke('ai-chat', config, messages),
+  aiAbort: () => ipcRenderer.invoke('ai-abort'),
   aiDefaultConfig: (provider: string) =>
     ipcRenderer.invoke('ai-default-config', provider),
+
+  // ── Local Model Management (Phase 3-4) ──
+  modelList: () => ipcRenderer.invoke('model-list'),
+  modelAdd: (filePath: string, opts?: any) =>
+    ipcRenderer.invoke('model-add', filePath, opts),
+  modelRemove: (id: string) => ipcRenderer.invoke('model-remove', id),
+  modelUpdate: (id: string, patch: any) => ipcRenderer.invoke('model-update', id, patch),
+  modelGet: (id: string) => ipcRenderer.invoke('model-get', id),
+  modelPickFile: () => ipcRenderer.invoke('model-pick-file'),
 
   // ── File Watcher ──
   fsWatch: (dirPath: string) => ipcRenderer.invoke('fs-watch', dirPath),

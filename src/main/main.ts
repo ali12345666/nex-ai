@@ -29,6 +29,8 @@ import {
   isPortable as persistenceIsPortable,
   type PersistedSettings,
 } from './persistence';
+import { addModel, removeModel, listModels, updateModel, getModel } from './ai/model-registry';
+import { localChatComplete, localAbort } from './ai/local-engine';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -608,16 +610,23 @@ function setupIPC(): void {
     await shell.openExternal(url);
   });
 
-  // ── AI Chat (now with origin validation) ──
-  ipcMain.handle('ai-chat', async (_event, config: AIConfig, messages: AIMessage[]) => {
-    // Validate endpoint origin
+  // ── AI Chat ──
+  // Routes to Local engine if provider === 'local', else to OpenAI/Claude.
+  // Local mode requires NO external API and works fully offline.
+  ipcMain.handle('ai-chat', async (_event, config: any, messages: AIMessage[]) => {
+    // ── Local AI path (no network) ──
+    if (config.provider === 'local') {
+      const result = await localChatComplete(config as any, messages as any);
+      return result;
+    }
+
+    // ── Online AI path (validated origin) ──
     if (!isAllowedAIOrigin(config.endpoint)) {
       return {
         success: false,
         error: `Blocked: AI endpoint "${config.endpoint}" is not in the allowed origins list. Only OpenAI and Anthropic are permitted.`,
       };
     }
-    // Filter system messages (don't allow renderer to inject custom system prompts)
     const userMessages = messages.filter((m) => m.role !== 'system');
     const fullMessages: AIMessage[] = [
       { role: 'system', content: getSystemPrompt() },
@@ -626,8 +635,51 @@ function setupIPC(): void {
     return chatCompletion(config, fullMessages);
   });
 
+  ipcMain.handle('ai-abort', async () => {
+    localAbort();
+    return { success: true };
+  });
+
   ipcMain.handle('ai-default-config', (_event, provider: string) => {
     return getDefaultConfig(provider);
+  });
+
+  // ── Local Model Management (Phase 3-4) ──
+  ipcMain.handle('model-list', async () => {
+    return listModels();
+  });
+
+  ipcMain.handle('model-add', async (_event, filePath: string, opts?: any) => {
+    try {
+      const model = addModel(filePath, opts || {});
+      return { success: true, model };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('model-remove', async (_event, id: string) => {
+    const ok = removeModel(id);
+    return { success: ok };
+  });
+
+  ipcMain.handle('model-update', async (_event, id: string, patch: any) => {
+    const model = updateModel(id, patch);
+    return { success: !!model, model };
+  });
+
+  ipcMain.handle('model-get', async (_event, id: string) => {
+    return getModel(id);
+  });
+
+  ipcMain.handle('model-pick-file', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Select a GGUF model file',
+      properties: ['openFile'],
+      filters: [{ name: 'GGUF Models', extensions: ['gguf'] }],
+    });
+    if (result.canceled) return { canceled: true };
+    return { path: result.filePaths[0] };
   });
 
   // ── File Watcher ──

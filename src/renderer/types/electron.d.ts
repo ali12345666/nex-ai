@@ -71,8 +71,23 @@ export interface NexAPI {
   persistenceInfo: () => Promise<{ userDataPath: string; portable: boolean; secretsAvailable: boolean }>;
 
   // AI Chat
-  aiChat: (config: any, messages: any[]) => Promise<{ success: boolean; content?: string; error?: string; tokens?: number }>;
+  aiChat: (config: any, messages: any[]) => Promise<{ success: boolean; content?: string; error?: string; tokens?: number; durationMs?: number; modelId?: string; modelName?: string }>;
+  aiAbort: () => Promise<{ success: boolean }>;
   aiDefaultConfig: (provider: string) => Promise<any>;
+
+  // Local Model Management (Phase 3-4)
+  modelList: () => Promise<Array<{
+    id: string; name: string; path: string; sizeBytes: number;
+    contextSize: number; gpuLayers: number;
+    category: 'general' | 'coding' | 'reasoning' | 'fast';
+    addedAt: number; lastUsedAt?: number; fileExists: boolean;
+  }>>;
+  modelAdd: (filePath: string, opts?: { name?: string; contextSize?: number; gpuLayers?: number; category?: string }) =>
+    Promise<{ success: boolean; model?: any; error?: string }>;
+  modelRemove: (id: string) => Promise<{ success: boolean }>;
+  modelUpdate: (id: string, patch: any) => Promise<{ success: boolean; model?: any }>;
+  modelGet: (id: string) => Promise<any>;
+  modelPickFile: () => Promise<{ canceled?: boolean; path?: string }>;
 
   // File Watcher
   fsWatch: (dirPath: string) => Promise<{ success: boolean; error?: string }>;

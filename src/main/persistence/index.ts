@@ -60,6 +60,7 @@ export interface PersistedState {
     gpuLayers: number;
     category: 'general' | 'coding' | 'reasoning' | 'fast';
     addedAt: number;
+    lastUsedAt?: number;
   }>;
 }
 
