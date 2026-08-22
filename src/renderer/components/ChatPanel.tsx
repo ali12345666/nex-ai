@@ -18,7 +18,56 @@ import {
   Cpu,
   Cloud,
   Zap,
+  ChevronDown,
 } from 'lucide-react';
+
+/**
+ * AI Mode Selector — compact dropdown for switching Local / Online / Auto.
+ * Sits in the ChatPanel header so the user can switch mode without going to Settings.
+ */
+function AIModeSelector() {
+  const { aiMode, setAIMode } = useStore();
+  const [open, setOpen] = useState(false);
+  const modeIcon = aiMode === 'local' ? <Cpu size={12} /> : aiMode === 'online' ? <Cloud size={12} /> : <Zap size={12} />;
+  const modeColor = aiMode === 'local' ? 'bg-green-500/20 text-green-400' : aiMode === 'online' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${modeColor} hover:opacity-80 transition-opacity`}
+      >
+        {modeIcon}
+        {aiMode.toUpperCase()}
+        <ChevronDown size={9} />
+      </button>
+      {open && (
+        <div className="absolute top-full right-0 mt-1 w-44 bg-nex-card border border-nex-border rounded-lg shadow-xl z-50 py-1">
+          {[
+            { id: 'local' as const, icon: <Cpu size={12} />, label: 'Local', desc: 'Offline · No API key' },
+            { id: 'online' as const, icon: <Cloud size={12} />, label: 'Online', desc: 'OpenAI / Claude' },
+            { id: 'auto' as const, icon: <Zap size={12} />, label: 'Auto', desc: 'Local first, fallback online' },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              onMouseDown={() => { setAIMode(opt.id); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 hover:bg-nex-surface flex items-start gap-2 transition-colors ${
+                aiMode === opt.id ? 'bg-nex-accent/10' : ''
+              }`}
+            >
+              <div className="mt-0.5">{opt.icon}</div>
+              <div>
+                <div className="text-xs font-medium text-nex-text">{opt.label}</div>
+                <div className="text-[10px] text-nex-text-muted">{opt.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MessageBubble({ message }: { message: any }) {
   const [copied, setCopied] = useState(false);
@@ -178,9 +227,6 @@ export default function ChatPanel() {
     setIsListening(true);
   };
 
-  const modeIcon = aiMode === 'local' ? <Cpu size={12} /> : aiMode === 'online' ? <Cloud size={12} /> : <Zap size={12} />;
-  const modeColor = aiMode === 'local' ? 'bg-green-500/20 text-green-400' : aiMode === 'online' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
-
   return (
     <div className="h-full flex flex-col bg-nex-bg">
       {/* Header */}
@@ -188,10 +234,7 @@ export default function ChatPanel() {
         <div className="flex items-center gap-2">
           <Sparkles size={14} className="text-nex-accent" />
           <span className="text-sm font-medium text-nex-text">AI Assistant</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium flex items-center gap-1 ${modeColor}`}>
-            {modeIcon}
-            {aiMode.toUpperCase()}
-          </span>
+          <AIModeSelector />
         </div>
         <div className="flex items-center gap-1">
           {activeFile && (
