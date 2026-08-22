@@ -51,10 +51,20 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // ── System ──
   systemInfo: () => ipcRenderer.invoke('system-info'),
 
-  // ── Config ──
+  // ── Config (legacy, kept for backwards-compat) ──
   configGet: (key: string) => ipcRenderer.invoke('config-get', key),
   configSet: (key: string, value: any) => ipcRenderer.invoke('config-set', key, value),
   configGetAll: () => ipcRenderer.invoke('config-get-all'),
+
+  // ── Settings (Phase 2 — proper persistence with encrypted API keys) ──
+  settingsLoad: () => ipcRenderer.invoke('settings-load'),
+  settingsSave: (settings: any, apiKey?: string) =>
+    ipcRenderer.invoke('settings-save', settings, apiKey),
+  settingsSetApiKey: (apiKey: string) =>
+    ipcRenderer.invoke('settings-set-api-key', apiKey),
+  settingsGetApiKey: () => ipcRenderer.invoke('settings-get-api-key'),
+  settingsDeleteApiKey: () => ipcRenderer.invoke('settings-delete-api-key'),
+  persistenceInfo: () => ipcRenderer.invoke('persistence-info'),
 
   // ── External (validated http/https only) ──
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

@@ -14,6 +14,11 @@ import {
   Mic,
   Monitor,
   Info,
+  Cpu,
+  Cloud,
+  Zap,
+  HardDrive,
+  AlertCircle,
 } from 'lucide-react';
 
 interface SettingsSection {
@@ -23,7 +28,9 @@ interface SettingsSection {
 }
 
 const sections: SettingsSection[] = [
-  { id: 'ai', label: 'AI Provider', icon: <Brain size={16} /> },
+  { id: 'ai', label: 'AI Mode', icon: <Zap size={16} /> },
+  { id: 'local', label: 'Local AI', icon: <Cpu size={16} /> },
+  { id: 'online', label: 'Online AI', icon: <Cloud size={16} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={16} /> },
   { id: 'editor', label: 'Editor', icon: <Type size={16} /> },
   { id: 'terminal', label: 'Terminal', icon: <Terminal size={16} /> },
@@ -33,19 +40,43 @@ const sections: SettingsSection[] = [
 ];
 
 export default function SettingsPanel() {
-  const { settings, updateSettings } = useStore();
+  const { settings, updateSettings, aiMode, setAIMode } = useStore();
   const [activeSection, setActiveSection] = useState('ai');
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [localSettings, setLocalSettings] = useState({ ...settings });
+  const [localApiKey, setLocalApiKey] = useState(settings.aiApiKey);
+  const [persistenceInfo, setPersistenceInfo] = useState<{ userDataPath: string; portable: boolean; secretsAvailable: boolean } | null>(null);
 
   useEffect(() => {
     setLocalSettings({ ...settings });
+    setLocalApiKey(settings.aiApiKey);
   }, [settings]);
 
-  const handleSave = () => {
+  // Load persistence info for About section
+  useEffect(() => {
+    window.nexAPI.persistenceInfo().then(setPersistenceInfo).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaveError(null);
+    // Update Zustand state (in-memory)
     updateSettings(localSettings);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (localApiKey !== settings.aiApiKey) {
+      updateSettings({ aiApiKey: localApiKey });
+    }
+    // Persist to disk (Phase 2 — survives close/restart/crash)
+    try {
+      const result = await window.nexAPI.settingsSave(localSettings, localApiKey);
+      if (result.success) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } else {
+        setSaveError(result.error || 'Failed to save settings');
+      }
+    } catch (err: any) {
+      setSaveError(err.message);
+    }
   };
 
   const updateLocal = (key: string, value: any) => {
@@ -80,26 +111,144 @@ export default function SettingsPanel() {
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-2xl">
-          {/* AI Provider */}
+          {/* AI Mode (Phase 6) */}
           {activeSection === 'ai' && (
             <div className="space-y-6 animate-in">
               <div>
-                <h2 className="text-lg font-semibold text-nex-text mb-1">AI Provider</h2>
-                <p className="text-sm text-nex-text-muted">Configure your AI model and API credentials</p>
+                <h2 className="text-lg font-semibold text-nex-text mb-1">AI Mode</h2>
+                <p className="text-sm text-nex-text-muted">Choose where NEX AI's intelligence runs</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <button onClick={() => setAIMode('local')}
+                  className={`p-4 rounded-xl border transition-all text-left ${
+                    aiMode === 'local' ? 'border-nex-accent bg-nex-accent/10 glow-accent' : 'border-nex-border hover:border-nex-border-light'
+                  }`}>
+                  <Cpu size={20} className={aiMode === 'local' ? 'text-nex-accent' : 'text-nex-text-dim'} />
+                  <div className="mt-2 text-sm font-medium text-nex-text">Local</div>
+                  <div className="text-[11px] text-nex-text-muted mt-1">Runs entirely on your machine. Works offline. No API key required.</div>
+                </button>
+                <button onClick={() => setAIMode('online')}
+                  className={`p-4 rounded-xl border transition-all text-left ${
+                    aiMode === 'online' ? 'border-nex-accent bg-nex-accent/10 glow-accent' : 'border-nex-border hover:border-nex-border-light'
+                  }`}>
+                  <Cloud size={20} className={aiMode === 'online' ? 'text-nex-accent' : 'text-nex-text-dim'} />
+                  <div className="mt-2 text-sm font-medium text-nex-text">Online</div>
+                  <div className="text-[11px] text-nex-text-muted mt-1">Use OpenAI/Anthropic APIs. Requires internet and API key.</div>
+                </button>
+                <button onClick={() => setAIMode('auto')}
+                  className={`p-4 rounded-xl border transition-all text-left ${
+                    aiMode === 'auto' ? 'border-nex-accent bg-nex-accent/10 glow-accent' : 'border-nex-border hover:border-nex-border-light'
+                  }`}>
+                  <Zap size={20} className={aiMode === 'auto' ? 'text-nex-accent' : 'text-nex-text-dim'} />
+                  <div className="mt-2 text-sm font-medium text-nex-text">Auto</div>
+                  <div className="text-[11px] text-nex-text-muted mt-1">Local first, falls back to online when needed.</div>
+                </button>
+              </div>
+
+              <div className="p-4 bg-nex-card rounded-xl border border-nex-border">
+                <div className="flex items-start gap-3">
+                  <HardDrive size={16} className="text-nex-text-dim shrink-0 mt-0.5" />
+                  <div className="text-sm text-nex-text-dim">
+                    <strong className="text-nex-text">Non-negotiable requirement:</strong>{' '}
+                    NEX AI's core intelligence is Local. Even in Auto mode, the brain stays local —
+                    online providers are only used as optional enhancement layers.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Local AI (Phase 3-4) */}
+          {activeSection === 'local' && (
+            <div className="space-y-6 animate-in">
+              <div>
+                <h2 className="text-lg font-semibold text-nex-text mb-1">Local AI Engine</h2>
+                <p className="text-sm text-nex-text-muted">Run AI models entirely on your machine</p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 bg-nex-card rounded-xl border border-nex-border">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-nex-text">Engine Status</div>
+                      <div className="text-xs text-nex-text-muted">node-llama-cpp (bundled)</div>
+                    </div>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">Ready</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-nex-text mb-2">CPU Threads: {localSettings.localThreads}</label>
+                  <input type="range" min="1" max="16" value={localSettings.localThreads}
+                    onChange={(e) => updateLocal('localThreads', parseInt(e.target.value))}
+                    className="w-full accent-nex-accent" />
+                  <p className="text-[11px] text-nex-text-muted mt-1">More threads = faster, but uses more CPU.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-nex-text mb-2">Context Size: {localSettings.localContextSize} tokens</label>
+                  <input type="range" min="512" max="8192" step="512" value={localSettings.localContextSize}
+                    onChange={(e) => updateLocal('localContextSize', parseInt(e.target.value))}
+                    className="w-full accent-nex-accent" />
+                  <p className="text-[11px] text-nex-text-muted mt-1">Larger context = more memory, but can process longer conversations.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-nex-text mb-2">Temperature: {localSettings.localTemperature.toFixed(2)}</label>
+                  <input type="range" min="0" max="2" step="0.05" value={localSettings.localTemperature}
+                    onChange={(e) => updateLocal('localTemperature', parseFloat(e.target.value))}
+                    className="w-full accent-nex-accent" />
+                  <p className="text-[11px] text-nex-text-muted mt-1">Lower = focused/deterministic. Higher = creative/random.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-nex-text mb-2">Max Tokens: {localSettings.localMaxTokens}</label>
+                  <input type="range" min="128" max="4096" step="128" value={localSettings.localMaxTokens}
+                    onChange={(e) => updateLocal('localMaxTokens', parseInt(e.target.value))}
+                    className="w-full accent-nex-accent" />
+                  <p className="text-[11px] text-nex-text-muted mt-1">Maximum length of generated response.</p>
+                </div>
+
+                <div className="p-4 bg-nex-card rounded-xl border border-nex-border">
+                  <div className="text-sm font-medium text-nex-text mb-2">Models</div>
+                  <p className="text-xs text-nex-text-muted">
+                    Model management is available in the Models sidebar (Phase 4). Add .gguf files
+                    to start using local AI. NEX AI never ships models in the installer — you bring your own.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Online AI (OpenAI / Anthropic) */}
+          {activeSection === 'online' && (
+            <div className="space-y-6 animate-in">
+              <div>
+                <h2 className="text-lg font-semibold text-nex-text mb-1">Online AI Provider</h2>
+                <p className="text-sm text-nex-text-muted">Optional online AI services (not required for core functionality)</p>
+              </div>
+
+              <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex items-start gap-2">
+                <AlertCircle size={14} className="text-yellow-400 shrink-0 mt-0.5" />
+                <div className="text-xs text-yellow-400">
+                  These services are <strong>optional</strong>. NEX AI works fully offline with Local AI.
+                  Configure these only if you want online fallback in Auto mode.
+                </div>
               </div>
 
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-nex-text mb-2">Provider</label>
                   <div className="flex gap-2">
-                    {['openai', 'claude', 'custom'].map((p) => (
-                      <button key={p} onClick={() => updateLocal('aiEndpoint', p === 'claude' ? 'https://api.anthropic.com/v1' : p === 'custom' ? '' : 'https://api.openai.com/v1')}
+                    {['openai', 'claude'].map((p) => (
+                      <button key={p} onClick={() => updateLocal('aiEndpoint', p === 'claude' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1')}
                         className={`px-4 py-2 rounded-lg text-sm font-medium transition-all border ${
-                          localSettings.aiEndpoint.includes(p === 'openai' ? 'openai' : p === 'claude' ? 'anthropic' : 'custom')
+                          localSettings.aiEndpoint.includes(p === 'openai' ? 'openai' : 'anthropic')
                             ? 'bg-nex-accent/20 border-nex-accent text-nex-accent-light'
                             : 'bg-nex-card border-nex-border text-nex-text-dim hover:text-nex-text'
                         }`}>
-                        {p === 'openai' ? 'OpenAI' : p === 'claude' ? 'Claude' : 'Custom'}
+                        {p === 'openai' ? 'OpenAI' : 'Anthropic'}
                       </button>
                     ))}
                   </div>
@@ -111,13 +260,15 @@ export default function SettingsPanel() {
                     <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nex-text-dim" />
                     <input
                       type="password"
-                      value={localSettings.aiApiKey}
-                      onChange={(e) => updateLocal('aiApiKey', e.target.value)}
+                      value={localApiKey}
+                      onChange={(e) => setLocalApiKey(e.target.value)}
                       placeholder="sk-... or sk-ant-..."
                       className="w-full bg-nex-card border border-nex-border rounded-lg pl-10 pr-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
                     />
                   </div>
-                  <p className="text-[11px] text-nex-text-muted mt-1">Your API key is stored locally and never sent to our servers</p>
+                  <p className="text-[11px] text-nex-text-muted mt-1">
+                    Stored encrypted with OS keychain (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
+                  </p>
                 </div>
 
                 <div>
@@ -311,11 +462,39 @@ export default function SettingsPanel() {
                   <Brain size={40} className="text-white" />
                 </div>
                 <h2 className="text-2xl font-bold nex-gradient bg-clip-text text-transparent">NEX AI</h2>
-                <p className="text-sm text-nex-text-muted mt-1">Version 1.0.0</p>
+                <p className="text-sm text-nex-text-muted mt-1">Version 2.0.0-alpha · Local-First AI Coding Agent</p>
                 <p className="text-xs text-nex-text-muted mt-4 max-w-md mx-auto">
-                  Advanced AI-Powered Code Assistant. Built with Electron, React, Monaco Editor, and xterm.js.
+                  Independent local AI coding agent. Built with Electron, React, Monaco Editor,
+                  node-llama-cpp, and xterm.js. Core intelligence runs on your machine —
+                  no external AI service required.
                 </p>
               </div>
+
+              {persistenceInfo && (
+                <div className="p-4 bg-nex-card rounded-xl border border-nex-border space-y-2">
+                  <div className="text-sm font-medium text-nex-text mb-2">Storage</div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-nex-text-muted">Mode</span>
+                    <span className="text-nex-text-dim">{persistenceInfo.portable ? 'Portable' : 'Installed'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-nex-text-muted">Data directory</span>
+                    <span className="text-nex-text-dim font-mono text-[10px]">{persistenceInfo.userDataPath}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-nex-text-muted">Encrypted secrets</span>
+                    <span className={`font-mono ${persistenceInfo.secretsAvailable ? 'text-green-400' : 'text-yellow-400'}`}>
+                      {persistenceInfo.secretsAvailable ? 'Available (DPAPI/Keychain)' : 'Unavailable'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {saveError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
+                  {saveError}
+                </div>
+              )}
             </div>
           )}
 

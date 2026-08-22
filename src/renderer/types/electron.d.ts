@@ -57,10 +57,18 @@ export interface NexAPI {
   // System
   systemInfo: () => Promise<NexSystemInfo>;
 
-  // Config
+  // Config (legacy)
   configGet: (key: string) => Promise<any>;
   configSet: (key: string, value: any) => Promise<{ success: boolean; error?: string }>;
   configGetAll: () => Promise<Record<string, any>>;
+
+  // Settings (Phase 2)
+  settingsLoad: () => Promise<{ settings: any; apiKey: string }>;
+  settingsSave: (settings: any, apiKey?: string) => Promise<{ success: boolean; error?: string }>;
+  settingsSetApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+  settingsGetApiKey: () => Promise<string>;
+  settingsDeleteApiKey: () => Promise<{ success: boolean }>;
+  persistenceInfo: () => Promise<{ userDataPath: string; portable: boolean; secretsAvailable: boolean }>;
 
   // AI Chat
   aiChat: (config: any, messages: any[]) => Promise<{ success: boolean; content?: string; error?: string; tokens?: number }>;

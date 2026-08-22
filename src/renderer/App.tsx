@@ -42,6 +42,7 @@ export default function App() {
   const {
     activePanel, openFiles, activeFile, terminalVisible,
     commandPaletteOpen, toggleCommandPalette, toggleTerminal, projectPath,
+    updateSettings, setAIMode, setActiveLocalModel, setLocalModels,
   } = useStore();
 
   // ── Keyboard Shortcuts ──
@@ -55,7 +56,6 @@ export default function App() {
       const projectPath = useStore.getState().projectPath;
       if (projectPath) {
         useStore.getState().setActivePanel('editor');
-        // Trigger new file dialog via custom event
         window.dispatchEvent(new CustomEvent('nex-new-file', { detail: { path: projectPath } }));
       }
     }
@@ -83,23 +83,37 @@ export default function App() {
     }
   }, [projectPath]);
 
-  // ── Window state persistence ──
+  // ── Phase 2: Load persisted settings on startup ──
+  // Survives close, restart, crash — settings live in userData/config.json
+  // and API keys live in encrypted secrets.json.
   useEffect(() => {
-    const cleanup = window.nexAPI.onFsChange?.(() => {});
-    // Restore window state
     (async () => {
-      const state = await window.nexAPI.configGet('windowState');
-      if (state) {
-        // Window state will be restored by main process
-      }
-      // Restore recent project
-      const lastProject = await window.nexAPI.configGet('lastProject');
-      if (lastProject && !projectPath) {
-        // Optionally auto-open last project
+      try {
+        const { settings: persisted, apiKey } = await window.nexAPI.settingsLoad();
+        updateSettings(persisted);
+        if (apiKey) {
+          updateSettings({ aiApiKey: apiKey });
+        }
+        if (persisted.aiMode) {
+          setAIMode(persisted.aiMode);
+        }
+        // Load local models registry (Phase 4 will populate this)
+        const all = await window.nexAPI.configGetAll();
+        if (all?.localModels) {
+          setLocalModels(all.localModels);
+          if (persisted.activeLocalModelId) {
+            setActiveLocalModel(persisted.activeLocalModelId);
+          }
+        }
+        // Restore recent projects
+        if (all?.recentProjects && !projectPath) {
+          // Don't auto-open — let user pick from WelcomeScreen
+        }
+      } catch (err) {
+        console.error('[NEX AI] Failed to load settings:', err);
       }
     })();
-    return () => cleanup?.();
-  }, []);
+  }, [updateSettings, setAIMode, setActiveLocalModel, setLocalModels]);
 
   const hasFiles = openFiles.length > 0;
 

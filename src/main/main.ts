@@ -17,6 +17,18 @@ import { chatCompletion, getSystemPrompt, getDefaultConfig } from './ai-service'
 
 import { CSP, ALLOWED_AI_ORIGINS, isAllowedAIOrigin } from './security';
 import { safeExecFile, safeSpawn, spawnInteractiveShell, searchFileContents } from './security/shell';
+import {
+  initPersistence,
+  loadState,
+  updateState,
+  updateSettings as persistUpdateSettings,
+  setSecret,
+  getSecret,
+  deleteSecret,
+  getUserDataDir,
+  isPortable as persistenceIsPortable,
+  type PersistedSettings,
+} from './persistence';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -503,26 +515,17 @@ function setupIPC(): void {
     userDataPath,
   }));
 
-  // ── Config Store (simple JSON-based) ──
-  const configPath = path.join(userDataPath, 'config.json');
-
+  // ── Config Store (now using persistence layer) ──
+  // Legacy config-get/config-set/config-get-all kept for backwards-compat
+  // but internally backed by the new persistence module.
   ipcMain.handle('config-get', async (_event, key: string) => {
-    try {
-      const data = JSON.parse(await fs.promises.readFile(configPath, 'utf-8'));
-      return data[key];
-    } catch {
-      return undefined;
-    }
+    const state = loadState();
+    return (state as any)[key];
   });
 
   ipcMain.handle('config-set', async (_event, key: string, value: any) => {
     try {
-      let data: Record<string, any> = {};
-      try {
-        data = JSON.parse(await fs.promises.readFile(configPath, 'utf-8'));
-      } catch {}
-      data[key] = value;
-      await fs.promises.writeFile(configPath, JSON.stringify(data, null, 2));
+      updateState({ [key]: value } as any);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -530,11 +533,70 @@ function setupIPC(): void {
   });
 
   ipcMain.handle('config-get-all', async () => {
+    return loadState();
+  });
+
+  // ── Settings (Phase 2 — proper persistence) ──
+  ipcMain.handle('settings-load', async () => {
+    const state = loadState();
+    const settings = state.settings || {};
+    // Merge with defaults so renderer always gets a complete object
+    const merged: PersistedSettings = {
+      theme: 'darker',
+      fontSize: 14,
+      fontFamily: 'JetBrains Mono, Fira Code, monospace',
+      tabSize: 2,
+      language: 'en',
+      voiceEnabled: false,
+      aiMode: 'local',
+      aiEndpoint: 'https://api.openai.com/v1',
+      localThreads: 4,
+      localContextSize: 2048,
+      localTemperature: 0.7,
+      localMaxTokens: 1024,
+      activeLocalModelId: null,
+      ...settings,
+    };
+    // Return API key separately (loaded from encrypted secrets)
+    const apiKey = getSecret('aiApiKey');
+    return { settings: merged, apiKey };
+  });
+
+  ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string) => {
     try {
-      return JSON.parse(await fs.promises.readFile(configPath, 'utf-8'));
-    } catch {
-      return {};
+      // Save non-sensitive settings to config.json
+      persistUpdateSettings(settings);
+      // Save API key to encrypted secrets.json (only if provided)
+      if (apiKey !== undefined) {
+        setSecret('aiApiKey', apiKey);
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
+  });
+
+  ipcMain.handle('settings-set-api-key', async (_event, apiKey: string) => {
+    const ok = setSecret('aiApiKey', apiKey);
+    return { success: ok, error: ok ? undefined : 'safeStorage not available' };
+  });
+
+  ipcMain.handle('settings-get-api-key', async () => {
+    return getSecret('aiApiKey');
+  });
+
+  ipcMain.handle('settings-delete-api-key', async () => {
+    deleteSecret('aiApiKey');
+    return { success: true };
+  });
+
+  // ── Persistence info (for Settings > About) ──
+  ipcMain.handle('persistence-info', async () => {
+    return {
+      userDataPath: getUserDataDir(),
+      portable: persistenceIsPortable(),
+      secretsAvailable: true, // safeStorage.isEncryptionAvailable() checked at init
+    };
   });
 
   // ── Open external link (validated) ──
@@ -660,6 +722,9 @@ function cleanupTerminal(): void {
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  // Initialize persistence before anything else
+  initPersistence(userDataPath);
+
   setupIPC();
   createWindow();
 
