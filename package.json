@@ -58,17 +58,7 @@
     },
     "files": [
       "dist/**/*",
-      "build/**/*",
-      "!node_modules/**/*",
-      "node_modules/chokidar/**/*",
-      "node_modules/glob/**/*",
-      "node_modules/graceful-fs/**/*",
-      "node_modules/readdirp/**/*",
-      "node_modules/binary-extensions/**/*",
-      "node_modules/is-path-inside/**/*",
-      "node_modules/run-parallel/**/*",
-      "node_modules/queue-microtask/**/*",
-      "node_modules/run-parallel/**/*"
+      "build/**/*"
     ],
     "extraResources": [
       {
