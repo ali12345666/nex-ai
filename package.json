@@ -1,0 +1,109 @@
+{
+  "name": "nex-ai",
+  "version": "1.0.0",
+  "description": "NEX AI - Advanced AI-Powered Code Assistant",
+  "main": "dist/main/main.js",
+  "author": "NEX AI Team",
+  "license": "MIT",
+  "homepage": "https://nexai.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nexai/nex-ai"
+  },
+  "scripts": {
+    "dev": "npm run build:main && concurrently --kill-others \"npm run dev:renderer\" \"node scripts/wait-for-vite.js\"",
+    "dev:renderer": "vite --config vite.config.ts",
+    "dev:main": "npm run build:main && electron .",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build --config vite.config.ts",
+    "build:main": "tsc -p tsconfig.main.json",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder --win --config",
+    "postinstall": "electron-builder install-app-deps",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "chokidar": "^3.6.0",
+    "glob": "^10.3.10",
+    "lucide-react": "^0.344.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-web-links": "^0.9.0",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "@types/react": "^18.2.58",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "concurrently": "^8.2.2",
+    "electron": "^28.2.3",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.4"
+  },
+  "build": {
+    "appId": "com.nexai.desktop",
+    "productName": "NEX AI",
+    "copyright": "Copyright © 2024 NEX AI Team",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "build/**/*",
+      "!node_modules/**/*",
+      "node_modules/chokidar/**/*",
+      "node_modules/glob/**/*",
+      "node_modules/graceful-fs/**/*",
+      "node_modules/readdirp/**/*",
+      "node_modules/binary-extensions/**/*",
+      "node_modules/is-path-inside/**/*",
+      "node_modules/run-parallel/**/*",
+      "node_modules/queue-microtask/**/*",
+      "node_modules/run-parallel/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build",
+        "to": "build",
+        "filter": ["icon.png", "icon.ico"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "NEX-AI-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NEX AI",
+      "uninstallDisplayName": "NEX AI",
+      "artifactName": "NEX-AI-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "NEX-AI-Portable-${version}.${ext}"
+    }
+  }
+}
