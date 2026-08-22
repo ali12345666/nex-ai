@@ -85,6 +85,29 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelGet: (id: string) => ipcRenderer.invoke('model-get', id),
   modelPickFile: () => ipcRenderer.invoke('model-pick-file'),
 
+  // ── Agent Core (Phase 7) ──
+  agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
+  agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
+  agentGetTask: (taskId: string) => ipcRenderer.invoke('agent-get-task', taskId),
+  agentListTasks: () => ipcRenderer.invoke('agent-list-tasks'),
+  agentDeleteTask: (taskId: string) => ipcRenderer.invoke('agent-delete-task', taskId),
+  agentListTools: () => ipcRenderer.invoke('agent-list-tools'),
+  agentGetToolSchemas: () => ipcRenderer.invoke('agent-get-tool-schemas'),
+  agentAcceptDiff: (taskId: string, changeId: string) => ipcRenderer.invoke('agent-accept-diff', taskId, changeId),
+  agentRejectDiff: (taskId: string, changeId: string, reason?: string) => ipcRenderer.invoke('agent-reject-diff', taskId, changeId, reason),
+  agentAcceptAllDiffs: (taskId: string) => ipcRenderer.invoke('agent-accept-all-diffs', taskId),
+  agentRejectAllDiffs: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-reject-all-diffs', taskId, reason),
+  agentListPendingDiffs: (taskId: string) => ipcRenderer.invoke('agent-list-pending-diffs', taskId),
+  permissionRespond: (response: any) => ipcRenderer.invoke('permission-respond', response),
+  onAgentEvent: (callback: (event: any) => void) => {
+    ipcRenderer.on('agent-event', (_event, ev) => callback(ev));
+    return () => ipcRenderer.removeAllListeners('agent-event');
+  },
+  onPermissionRequest: (callback: (request: any) => void) => {
+    ipcRenderer.on('permission-request', (_event, req) => callback(req));
+    return () => ipcRenderer.removeAllListeners('permission-request');
+  },
+
   // ── File Watcher ──
   fsWatch: (dirPath: string) => ipcRenderer.invoke('fs-watch', dirPath),
   fsUnwatch: () => ipcRenderer.invoke('fs-unwatch'),

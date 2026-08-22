@@ -89,6 +89,23 @@ export interface NexAPI {
   modelGet: (id: string) => Promise<any>;
   modelPickFile: () => Promise<{ canceled?: boolean; path?: string }>;
 
+  // Agent Core (Phase 7)
+  agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
+  agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
+  agentGetTask: (taskId: string) => Promise<any>;
+  agentListTasks: () => Promise<any[]>;
+  agentDeleteTask: (taskId: string) => Promise<{ success: boolean }>;
+  agentListTools: () => Promise<any[]>;
+  agentGetToolSchemas: () => Promise<any[]>;
+  agentAcceptDiff: (taskId: string, changeId: string) => Promise<{ success: boolean; error?: string }>;
+  agentRejectDiff: (taskId: string, changeId: string, reason?: string) => Promise<{ success: boolean }>;
+  agentAcceptAllDiffs: (taskId: string) => Promise<{ success: boolean; error?: string }>;
+  agentRejectAllDiffs: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
+  agentListPendingDiffs: (taskId: string) => Promise<any[]>;
+  permissionRespond: (response: any) => Promise<{ success: boolean }>;
+  onAgentEvent: (callback: (event: any) => void) => () => void;
+  onPermissionRequest: (callback: (request: any) => void) => () => void;
+
   // File Watcher
   fsWatch: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
   fsUnwatch: () => Promise<{ success: boolean }>;

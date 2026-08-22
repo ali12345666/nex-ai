@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useStore } from './store/useStore';
 import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
@@ -15,6 +15,8 @@ import CommandPalette from './components/CommandPalette';
 import StatusBar from './components/StatusBar';
 import WelcomeScreen from './components/WelcomeScreen';
 import SettingsPanel from './components/SettingsPanel';
+import PermissionPrompt from './components/agent/PermissionPrompt';
+import AgentDiffViewer from './components/agent/AgentDiffViewer';
 
 const SIDEBAR_WIDTH = 240;
 
@@ -46,6 +48,90 @@ export default function App() {
     commandPaletteOpen, toggleCommandPalette, toggleTerminal, projectPath,
     updateSettings, setAIMode, setActiveLocalModel, setLocalModels,
   } = useStore();
+
+  // ── Permission Prompt state ──
+  const [pendingPermission, setPendingPermission] = useState<any>(null);
+
+  // ── Agent Diff Viewer state ──
+  const [pendingDiffs, setPendingDiffs] = useState<any[]>([]);
+  const [showDiffViewer, setShowDiffViewer] = useState(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+
+  // ── Agent events for ChatPanel display ──
+  const [agentEvents, setAgentEvents] = useState<any[]>([]);
+
+  // Listen for permission requests
+  useEffect(() => {
+    const cleanup = window.nexAPI.onPermissionRequest((request) => {
+      setPendingPermission(request);
+    });
+    return cleanup;
+  }, []);
+
+  // Listen for agent events (especially diff_proposed)
+  useEffect(() => {
+    const cleanup = window.nexAPI.onAgentEvent((event) => {
+      // Keep last 50 events
+      setAgentEvents((prev) => [...prev.slice(-49), event]);
+
+      // Auto-show diff viewer when a diff is proposed
+      if (event.type === 'diff_proposed') {
+        setActiveTaskId(event.taskId);
+        setShowDiffViewer(true);
+        // Refresh diffs list
+        window.nexAPI.agentListPendingDiffs(event.taskId).then((diffs) => {
+          setPendingDiffs(diffs);
+        }).catch(() => {});
+      }
+      // Auto-hide diff viewer when all are accepted/rejected
+      if (event.type === 'diff_accepted' || event.type === 'diff_rejected') {
+        if (activeTaskId) {
+          window.nexAPI.agentListPendingDiffs(activeTaskId).then((diffs) => {
+            setPendingDiffs(diffs);
+            if (diffs.length === 0) {
+              setShowDiffViewer(false);
+            }
+          }).catch(() => {});
+        }
+      }
+    });
+    return cleanup;
+  }, [activeTaskId]);
+
+  const handlePermissionRespond = (response: any) => {
+    window.nexAPI.permissionRespond(response);
+    setPendingPermission(null);
+  };
+
+  const handleAcceptDiff = async (changeId: string) => {
+    if (!activeTaskId) return;
+    await window.nexAPI.agentAcceptDiff(activeTaskId, changeId);
+    const diffs = await window.nexAPI.agentListPendingDiffs(activeTaskId);
+    setPendingDiffs(diffs);
+    if (diffs.length === 0) setShowDiffViewer(false);
+  };
+
+  const handleRejectDiff = async (changeId: string, reason?: string) => {
+    if (!activeTaskId) return;
+    await window.nexAPI.agentRejectDiff(activeTaskId, changeId, reason);
+    const diffs = await window.nexAPI.agentListPendingDiffs(activeTaskId);
+    setPendingDiffs(diffs);
+    if (diffs.length === 0) setShowDiffViewer(false);
+  };
+
+  const handleAcceptAll = async () => {
+    if (!activeTaskId) return;
+    await window.nexAPI.agentAcceptAllDiffs(activeTaskId);
+    setPendingDiffs([]);
+    setShowDiffViewer(false);
+  };
+
+  const handleRejectAll = async () => {
+    if (!activeTaskId) return;
+    await window.nexAPI.agentRejectAllDiffs(activeTaskId, 'Rejected all (user)');
+    setPendingDiffs([]);
+    setShowDiffViewer(false);
+  };
 
   // ── Keyboard Shortcuts ──
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -141,6 +227,24 @@ export default function App() {
 
       <StatusBar />
       {commandPaletteOpen && <CommandPalette />}
+
+      {/* Agent: Permission Prompt Modal */}
+      <PermissionPrompt
+        request={pendingPermission}
+        onRespond={handlePermissionRespond}
+      />
+
+      {/* Agent: Diff Viewer Modal */}
+      {showDiffViewer && pendingDiffs.length > 0 && (
+        <AgentDiffViewer
+          diffs={pendingDiffs}
+          onAccept={handleAcceptDiff}
+          onReject={handleRejectDiff}
+          onAcceptAll={handleAcceptAll}
+          onRejectAll={handleRejectAll}
+          onClose={() => setShowDiffViewer(false)}
+        />
+      )}
     </div>
   );
 }

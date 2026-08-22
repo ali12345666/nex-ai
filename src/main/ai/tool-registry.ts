@@ -311,6 +311,7 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   const { NpmBuildTool, NpmTestTool } = await import('./tools/npm-tools');
   const { CalculationTool } = await import('./tools/calculation-tool');
   const { SystemInfoTool } = await import('./tools/system-info-tool');
+  const { LongRunningTestTool } = await import('./tools/long-running-test-tool');
 
   registerTool(new FS());
   registerTool(new SearchFilesTool());
@@ -323,4 +324,5 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   registerTool(new NpmTestTool());
   registerTool(new CalculationTool());
   registerTool(new SystemInfoTool());
+  registerTool(new LongRunningTestTool());
 }

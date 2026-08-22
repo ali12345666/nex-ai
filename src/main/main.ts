@@ -33,6 +33,14 @@ import { addModel, removeModel, listModels, updateModel, getModel } from './ai/m
 import { localChatComplete, localAbort } from './ai/local-engine';
 import { routeChat } from './ai/provider';
 import { shutdownLlama } from './ai/inference';
+import { ensureBuiltinToolsRegistered, listToolDefinitions, getToolSchemasForLLM } from './ai/tool-registry';
+import {
+  createTask, runTask, cancelTask, getTask, listTasks,
+  acceptDiff, rejectDiff, acceptAllDiffs, rejectAllDiffs, listPendingDiffs,
+  onAgentEvent, deleteTask,
+} from './agent/core';
+import { setPermissionRequestHandler, respondToPermissionRequest } from './permissions';
+import { onAgentEvent as onAgentEventLogger } from './agent/logger';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -670,6 +678,101 @@ function setupIPC(): void {
     });
     if (result.canceled) return { canceled: true };
     return { path: result.filePaths[0] };
+  });
+
+  // ── Agent Core (Phase 7) ──
+  // Register built-in tools and start the agent
+  ensureBuiltinToolsRegistered().catch((err) => {
+    console.error('[NEX AI] Failed to register built-in tools:', err);
+  });
+
+  // Set up permission request handler — forwards to renderer via IPC event
+  setPermissionRequestHandler((req) => {
+    mainWindow?.webContents.send('permission-request', req);
+  });
+
+  // Set up agent event listener — forwards to renderer
+  onAgentEvent((event) => {
+    mainWindow?.webContents.send('agent-event', event);
+  });
+
+  // Create and run an agent task
+  ipcMain.handle('agent-create-task', async (_event, request: any) => {
+    try {
+      const task = await createTask(request);
+      // Run asynchronously — UI subscribes to events
+      runTask(task.id).catch((err) => {
+        console.error(`[NEX AI Agent] Task ${task.id} failed:`, err);
+      });
+      return { success: true, taskId: task.id };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('agent-cancel-task', async (_event, taskId: string, reason?: string) => {
+    const ok = cancelTask(taskId, reason);
+    return { success: ok };
+  });
+
+  ipcMain.handle('agent-get-task', async (_event, taskId: string) => {
+    return getTask(taskId);
+  });
+
+  ipcMain.handle('agent-list-tasks', async () => {
+    return listTasks();
+  });
+
+  ipcMain.handle('agent-delete-task', async (_event, taskId: string) => {
+    deleteTask(taskId);
+    return { success: true };
+  });
+
+  ipcMain.handle('agent-list-tools', async () => {
+    return listToolDefinitions();
+  });
+
+  ipcMain.handle('agent-get-tool-schemas', async () => {
+    return getToolSchemasForLLM();
+  });
+
+  // Diff approval
+  ipcMain.handle('agent-accept-diff', async (_event, taskId: string, changeId: string) => {
+    try {
+      await acceptDiff(taskId, changeId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('agent-reject-diff', async (_event, taskId: string, changeId: string, reason?: string) => {
+    rejectDiff(taskId, changeId, reason);
+    return { success: true };
+  });
+
+  ipcMain.handle('agent-accept-all-diffs', async (_event, taskId: string) => {
+    try {
+      await acceptAllDiffs(taskId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('agent-reject-all-diffs', async (_event, taskId: string, reason?: string) => {
+    rejectAllDiffs(taskId, reason);
+    return { success: true };
+  });
+
+  ipcMain.handle('agent-list-pending-diffs', async (_event, taskId: string) => {
+    return listPendingDiffs(taskId);
+  });
+
+  // Permission response (from UI)
+  ipcMain.handle('permission-respond', async (_event, response: any) => {
+    respondToPermissionRequest(response);
+    return { success: true };
   });
 
   // ── File Watcher ──

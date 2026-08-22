@@ -1,0 +1,13 @@
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "description": "A test fixture project for NEX AI Agent testing — has an intentional bug in calculator.ts (add returns a-b instead of a+b)",
+  "scripts": {
+    "build": "tsc",
+    "pretest": "npm run build",
+    "test": "node tests/run-tests.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

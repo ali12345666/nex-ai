@@ -20,7 +20,20 @@
     "start": "electron .",
     "dist": "npm run build && electron-builder --win --config",
     "postinstall": "electron-builder install-app-deps",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "fixture:setup": "node tests/fixtures/setup-fixture.js",
+    "test:security": "npx tsx tests/security/test-phase1.ts && npx tsx tests/security/test-sanitize.ts",
+    "test:persistence": "npx tsx tests/persistence/test-phase2.ts",
+    "test:registry": "npx tsx tests/local-ai/test-registry.ts",
+    "test:inference": "node tests/local-ai/test-inference-electron.js",
+    "test:provider": "node tests/local-ai/test-provider.js",
+    "test:infra": "node tests/local-ai/test-infra.js",
+    "test:smoke": "node tests/local-ai/test-smoke.js",
+    "test:agent:cancellation": "node tests/agent/test-h-cancellation.js && node tests/agent/test-h-cancel-with-model.js",
+    "test:agent:e2e": "node tests/agent/test-g-e2e-coding.js",
+    "test:agent:offline": "node tests/agent/test-i-offline.js",
+    "test:agent:state": "node tests/agent/test-j-state-secrets.js",
+    "test:agent:all": "npm run build:main && npm run test:agent:cancellation && npm run test:agent:e2e && npm run test:agent:offline && npm run test:agent:state"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

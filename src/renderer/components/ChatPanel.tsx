@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore, getProviderConfig } from '../store/useStore';
 import { renderMarkdownToHtml } from '../lib/markdown';
+import AgentStateDisplay from './agent/AgentStateDisplay';
+import type { AgentEvent } from './agent/AgentStateDisplay';
 import {
   Send,
   Bot,
@@ -19,6 +21,7 @@ import {
   Cloud,
   Zap,
   ChevronDown,
+  Ban,
 } from 'lucide-react';
 
 /**
@@ -115,6 +118,43 @@ export default function ChatPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [agentRunning, setAgentRunning] = useState(false);
+
+  // Listen for agent events
+  useEffect(() => {
+    const cleanup = window.nexAPI.onAgentEvent((event: AgentEvent) => {
+      setAgentEvents((prev) => [...prev.slice(-49), event]);
+      // Track if agent is running
+      if (event.type === 'task_created' || event.type === 'planning_started' || event.type === 'step_started' || event.type === 'tool_call_started') {
+        setAgentRunning(true);
+      }
+      if (event.type === 'task_completed' || event.type === 'task_failed' || event.type === 'task_cancelled') {
+        setAgentRunning(false);
+        // Add the agent's final message to the chat
+        if (event.type === 'task_completed') {
+          addMessage({
+            role: 'assistant',
+            content: event.message,
+            provider: 'agent',
+          });
+        } else if (event.type === 'task_failed') {
+          addMessage({
+            role: 'assistant',
+            content: `⚠️ Agent task failed: ${event.message}`,
+            provider: 'agent',
+          });
+        } else if (event.type === 'task_cancelled') {
+          addMessage({
+            role: 'assistant',
+            content: `⛔ Task cancelled: ${event.message}`,
+            provider: 'agent',
+          });
+        }
+      }
+    });
+    return cleanup;
+  }, [addMessage]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -203,6 +243,15 @@ export default function ChatPanel() {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleStopAgent = () => {
+    // Find the most recent agent task and cancel it
+    const recentTaskEvent = [...agentEvents].reverse().find((e) => e.taskId);
+    if (recentTaskEvent?.taskId) {
+      window.nexAPI.agentCancelTask(recentTaskEvent.taskId, 'User pressed Stop in ChatPanel');
+    }
+    setAgentRunning(false);
   };
 
   const handleVoiceInput = () => {
@@ -319,6 +368,9 @@ export default function ChatPanel() {
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Agent State Display (shows real-time agent status from onAgentEvent) */}
+      <AgentStateDisplay events={agentEvents} isRunning={agentRunning} />
+
       {/* Input Area */}
       <div className="px-4 pb-4 pt-2 border-t border-nex-border/50 shrink-0">
         <div className="relative bg-nex-card border border-nex-border rounded-xl focus-within:border-nex-accent/50 focus-within:glow-accent transition-all">
@@ -342,8 +394,17 @@ export default function ChatPanel() {
               title="Voice input">
               {isListening ? <MicOff size={14} /> : <Mic size={14} />}
             </button>
-            <button onClick={handleSend} disabled={!input.trim() || isAILoading}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${input.trim() && !isAILoading ? 'bg-nex-accent text-white hover:bg-nex-accent-light' : 'text-nex-text-muted cursor-not-allowed'}`}
+            {agentRunning && (
+              <button
+                onClick={handleStopAgent}
+                className="px-3 h-8 rounded-lg flex items-center gap-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all text-xs font-medium"
+                title="Stop agent"
+              >
+                <Ban size={12} /> Stop
+              </button>
+            )}
+            <button onClick={handleSend} disabled={!input.trim() || isAILoading || agentRunning}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${input.trim() && !isAILoading && !agentRunning ? 'bg-nex-accent text-white hover:bg-nex-accent-light' : 'text-nex-text-muted cursor-not-allowed'}`}
               title="Send message">
               <Send size={14} />
             </button>
