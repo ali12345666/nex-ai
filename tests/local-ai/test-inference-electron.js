@@ -34,7 +34,7 @@ app.whenReady().then(async () => {
     // Use the dist/ built code
     const { initPersistence } = require('../../dist/main/persistence');
     const { addModel, listModels } = require('../../dist/main/ai/model-registry');
-    const { chatComplete, unloadModel } = require('../../dist/main/ai/inference');
+    const { chatComplete, unloadModel, shutdownLlama } = require('../../dist/main/ai/inference');
     const { localChatComplete } = require('../../dist/main/ai/local-engine');
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-infer-'));
@@ -79,7 +79,8 @@ app.whenReady().then(async () => {
     console.log('\n3. localChatComplete (provider abstraction):');
     console.log('   Prompt: "Write a 1-line Python function to add two numbers."');
     // Unload the previous model so this test loads fresh
-    await unloadModel();
+    const { shutdownLlama } = require('../../dist/main/ai/inference');
+    await shutdownLlama();
     const start2 = Date.now();
     try {
       const result = await localChatComplete({
@@ -118,11 +119,12 @@ app.whenReady().then(async () => {
     }, [{ role: 'user', content: 'test' }]);
     assert('returns clear error when no model is set', result4.success === false && !!result4.error);
 
-    await unloadModel();
+    await shutdownLlama();
     fs.rmSync(tmpDir, { recursive: true });
 
     console.log(`\n=== Summary: ${pass} passed, ${fail} failed ===\n`);
-    app.exit(fail > 0 ? 1 : 0);
+    // Give pending AsyncWorkers a tick to drain after shutdownLlama disposed the engine
+    setTimeout(() => app.exit(fail > 0 ? 1 : 0), 100);
   } catch (err) {
     console.error('Top-level error:', err);
     app.exit(1);

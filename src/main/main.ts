@@ -32,6 +32,7 @@ import {
 import { addModel, removeModel, listModels, updateModel, getModel } from './ai/model-registry';
 import { localChatComplete, localAbort } from './ai/local-engine';
 import { routeChat } from './ai/provider';
+import { shutdownLlama } from './ai/inference';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -783,8 +784,23 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
-  cleanupTerminal();
+// Graceful shutdown: dispose llama.cpp engine before quitting.
+// Without this, app.exit() / force-quit causes SIGABRT (exit 134)
+// because node-llama-cpp's native AsyncWorkers are still in-flight
+// when the JS env tears down.
+let _shuttingDown = false;
+app.on('before-quit', (event) => {
+  if (_shuttingDown) return; // avoid re-entry
+  _shuttingDown = true;
+  event.preventDefault();
+  console.log('[NEX AI] Graceful shutdown: disposing local AI engine...');
+  shutdownLlama()
+    .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
+    .finally(() => {
+      cleanupTerminal();
+      // Force-exit now — engine is disposed
+      app.exit(0);
+    });
 });
 
 // ─── Security: enforce single instance ─────────────────────────────────────

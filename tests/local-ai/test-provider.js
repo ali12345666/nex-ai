@@ -63,7 +63,8 @@ app.whenReady().then(async () => {
     assert('local provider result has provider=local', result1.provider === 'local');
     assert('local provider returns model name', result1.modelName === 'Qwen2.5-0.5B-Instruct');
 
-    await unloadModel();
+    const { shutdownLlama } = require('../../dist/main/ai/inference');
+    await shutdownLlama();
 
     // ── 2. OpenAI provider — missing API key ──
     console.log('\n2. OpenAI provider — missing API key:');
@@ -117,11 +118,12 @@ app.whenReady().then(async () => {
     assert('local without model returns clear error', result5.success === false);
     assert('error mentions local model', (result5.error || '').toLowerCase().includes('local model'));
 
-    await unloadModel();
+    const { shutdownLlama: sl2 } = require('../../dist/main/ai/inference');
+    await sl2();
     fs.rmSync(tmpDir, { recursive: true });
 
     console.log(`\n=== Summary: ${pass} passed, ${fail} failed ===\n`);
-    app.exit(fail > 0 ? 1 : 0);
+    setTimeout(() => app.exit(fail > 0 ? 1 : 0), 100);
   } catch (err) {
     console.error('Top-level error:', err);
     app.exit(1);

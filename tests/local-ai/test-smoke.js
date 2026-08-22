@@ -51,7 +51,7 @@ app.whenReady().then(async () => {
     // Instead we'll just call the IPC handler directly to simulate the renderer flow
     const { localChatComplete } = require('../../dist/main/ai/local-engine');
     const { routeChat } = require('../../dist/main/ai/provider');
-    const { unloadModel } = require('../../dist/main/ai/inference');
+    const { unloadModel, shutdownLlama } = require('../../dist/main/ai/inference');
 
     // Simulate what would happen if the renderer sent an ai-chat IPC call:
     console.log('\n2. Simulate renderer ai-chat IPC call:');
@@ -78,7 +78,8 @@ app.whenReady().then(async () => {
     assert('e2e chat result has model name', !!result.modelName);
     assert('e2e chat completed in reasonable time', ms > 0 && ms < 60000);
 
-    await unloadModel();
+    const { shutdownLlama: sl } = require('../../dist/main/ai/inference');
+    await sl();
 
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true });
@@ -86,7 +87,7 @@ app.whenReady().then(async () => {
     console.log(`\n=== Summary: ${pass} passed, ${fail} failed ===\n`);
     console.log('This proves: User can chat with NEX AI fully offline,');
     console.log('using a local GGUF model, with NO OpenAI/Claude API required.');
-    app.exit(fail > 0 ? 1 : 0);
+    setTimeout(() => app.exit(fail > 0 ? 1 : 0), 100);
   } catch (err) {
     console.error('Top-level error:', err);
     app.exit(1);

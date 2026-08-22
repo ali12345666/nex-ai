@@ -58,9 +58,20 @@ export interface PersistedState {
     sizeBytes: number;
     contextSize: number;
     gpuLayers: number;
-    category: 'general' | 'coding' | 'reasoning' | 'fast';
+    category: string;  // ModelCategory (kept loose for forward-compat)
     addedAt: number;
     lastUsedAt?: number;
+    // Optional metadata (Phase 7)
+    minRamBytes?: number;
+    minVramBytes?: number;
+    recommendedThreads?: number;
+    quantization?: string;
+    architecture?: string;
+    parameterCount?: string;
+    capabilities?: string[];  // ModelCapability[]
+    license?: string;
+    source?: string;
+    sourceUrl?: string;
   }>;
 }
 

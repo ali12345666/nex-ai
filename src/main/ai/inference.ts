@@ -128,6 +128,8 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
 
 /**
  * Unload the currently-loaded model and free memory.
+ * NOTE: This does NOT dispose the underlying llama.cpp engine (_llama).
+ * Use `shutdownLlama()` for full teardown (e.g. before app.exit()).
  */
 export async function unloadModel(): Promise<void> {
   if (_currentSession) {
@@ -144,6 +146,31 @@ export async function unloadModel(): Promise<void> {
   }
   _loadedModelId = null;
   console.log('[NEX AI Local] Model unloaded');
+}
+
+/**
+ * Full shutdown: unload model AND dispose the llama.cpp engine itself.
+ *
+ * CRITICAL: Call this before app.exit() / process.exit() — otherwise
+ * node-llama-cpp's native AsyncWorkers may still be in-flight when the
+ * JS env tears down, causing SIGABRT (exit 134).
+ *
+ * `app.quit()` works without this because Node emits `beforeExit` first,
+ * but `app.exit()` skips `beforeExit` entirely.
+ */
+export async function shutdownLlama(): Promise<void> {
+  await unloadModel();
+  if (_llama) {
+    try {
+      console.log('[NEX AI Local] Disposing llama.cpp engine...');
+      await _llama.dispose?.();
+      console.log('[NEX AI Local] Engine disposed');
+    } catch (err) {
+      console.warn('[NEX AI Local] Engine dispose error:', (err as any)?.message || err);
+    }
+    _llama = null;
+    _LlamaChatSession = null;
+  }
 }
 
 /**

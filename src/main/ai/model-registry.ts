@@ -16,7 +16,33 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { loadState, updateState } from '../persistence';
 
-export type ModelCategory = 'general' | 'coding' | 'reasoning' | 'fast';
+export type ModelCategory =
+  | 'general'      // general-purpose chat
+  | 'coding'       // code-focused
+  | 'reasoning'    // larger reasoning models
+  | 'fast'         // small/fast models
+  | 'vision'       // image understanding
+  | 'embedding'    // text embeddings for RAG
+  | 'reranker'     // reranking models for RAG
+  | 'speech'       // STT/TTS models
+  | 'image';       // image generation
+
+/**
+ * Capabilities a model supports. Used by the runtime registry to pick
+ * the right model for a given task (chat, vision, embedding, etc.).
+ */
+export type ModelCapability =
+  | 'chat'         // conversational chat
+  | 'completion'   // text completion
+  | 'coding'       // code-focused
+  | 'reasoning'    // chain-of-thought
+  | 'vision'       // image input
+  | 'embedding'    // vector embeddings
+  | 'reranker'     // reranking
+  | 'speech-to-text'
+  | 'text-to-speech'
+  | 'image-generation'
+  | 'image-editing';
 
 export interface LocalModelInfo {
   id: string;            // internal uuid
@@ -29,6 +55,21 @@ export interface LocalModelInfo {
   addedAt: number;
   lastUsedAt?: number;
   fileExists: boolean;    // verified at load time
+  // Hardware requirements (estimated, user-editable)
+  minRamBytes?: number;       // minimum RAM to load
+  minVramBytes?: number;      // minimum VRAM (0 if CPU-only)
+  recommendedThreads?: number;
+  // Metadata
+  quantization?: string;      // e.g. 'Q4_K_M', 'Q8_0', 'F16'
+  architecture?: string;      // e.g. 'qwen2', 'llama', 'gemma'
+  parameterCount?: string;    // e.g. '0.5B', '7B', '14B'
+  // Capabilities (inferred from category, but user-overridable)
+  capabilities?: ModelCapability[];
+  // License
+  license?: string;
+  // Source
+  source?: 'huggingface' | 'local' | 'custom';
+  sourceUrl?: string;
 }
 
 export interface AddModelOptions {
@@ -36,6 +77,33 @@ export interface AddModelOptions {
   contextSize?: number;
   gpuLayers?: number;
   category?: ModelCategory;
+  // Phase 7 additions
+  quantization?: string;
+  architecture?: string;
+  parameterCount?: string;
+  capabilities?: ModelCapability[];
+  license?: string;
+  source?: 'huggingface' | 'local' | 'custom';
+  sourceUrl?: string;
+}
+
+/**
+ * Map a model category to its default capabilities.
+ * Used when adding a model without explicitly setting capabilities.
+ */
+export function defaultCapabilitiesForCategory(category: ModelCategory): ModelCapability[] {
+  switch (category) {
+    case 'coding':    return ['chat', 'completion', 'coding'];
+    case 'reasoning': return ['chat', 'completion', 'reasoning'];
+    case 'fast':      return ['chat', 'completion'];
+    case 'vision':   return ['chat', 'vision'];
+    case 'embedding': return ['embedding'];
+    case 'reranker':  return ['reranker'];
+    case 'speech':    return ['speech-to-text', 'text-to-speech'];
+    case 'image':     return ['image-generation'];
+    case 'general':
+    default:         return ['chat', 'completion'];
+  }
 }
 
 /**
@@ -44,8 +112,11 @@ export interface AddModelOptions {
 export function listModels(): LocalModelInfo[] {
   const state = loadState();
   const models = state.localModels || [];
-  return models.map((m) => ({
+  return models.map((m): LocalModelInfo => ({
     ...m,
+    category: ((m.category as string) || 'general') as ModelCategory,
+    capabilities: ((m.capabilities as any) || defaultCapabilitiesForCategory(((m.category as string) || 'general') as ModelCategory)) as ModelCapability[],
+    source: ((m.source as string) || 'local') as 'huggingface' | 'local' | 'custom',
     fileExists: fs.existsSync(m.path),
   }));
 }
@@ -85,6 +156,14 @@ export function addModel(filePath: string, opts: AddModelOptions = {}): LocalMod
     category: opts.category || 'general',
     addedAt: Date.now(),
     fileExists: true,
+    // New fields (all optional)
+    quantization: opts.quantization,
+    architecture: opts.architecture,
+    parameterCount: opts.parameterCount,
+    capabilities: opts.capabilities || defaultCapabilitiesForCategory(opts.category || 'general'),
+    license: opts.license,
+    source: opts.source || 'local',
+    sourceUrl: opts.sourceUrl,
   };
 
   const state = loadState();
@@ -115,9 +194,9 @@ export function updateModel(id: string, patch: Partial<Omit<LocalModelInfo, 'id'
   const models = state.localModels || [];
   const idx = models.findIndex((m) => m.id === id);
   if (idx === -1) return null;
-  models[idx] = { ...models[idx], ...patch };
+  models[idx] = { ...models[idx], ...patch } as any;
   updateState({ localModels: models });
-  return { ...models[idx], fileExists: fs.existsSync(models[idx].path) };
+  return { ...models[idx], fileExists: fs.existsSync(models[idx].path) } as LocalModelInfo;
 }
 
 /**
