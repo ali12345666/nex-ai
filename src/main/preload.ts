@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+/**
+ * NEX AI Preload
+ *
+ * Security notes:
+ *  - contextIsolation: true — renderer cannot access Node globals directly
+ *  - Only the `nexAPI` object is exposed via contextBridge
+ *  - The old `execCommand` channel was REMOVED (allowed arbitrary shell exec)
+ *  - All IPC channels are explicitly listed here — no wildcard exposure
+ */
+
 contextBridge.exposeInMainWorld('nexAPI', {
   // ── Window Controls ──
   windowMinimize: () => ipcRenderer.send('window-minimize'),
@@ -38,10 +48,6 @@ contextBridge.exposeInMainWorld('nexAPI', {
     return () => ipcRenderer.removeAllListeners('terminal-exit');
   },
 
-  // ── Command Execution ──
-  execCommand: (command: string, cwd: string) =>
-    ipcRenderer.invoke('exec-command', command, cwd),
-
   // ── System ──
   systemInfo: () => ipcRenderer.invoke('system-info'),
 
@@ -50,7 +56,7 @@ contextBridge.exposeInMainWorld('nexAPI', {
   configSet: (key: string, value: any) => ipcRenderer.invoke('config-set', key, value),
   configGetAll: () => ipcRenderer.invoke('config-get-all'),
 
-  // ── External ──
+  // ── External (validated http/https only) ──
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
   // ── AI Chat ──
@@ -71,7 +77,7 @@ contextBridge.exposeInMainWorld('nexAPI', {
   gitStatus: (cwd: string) => ipcRenderer.invoke('git-status', cwd),
   gitLog: (cwd: string, count?: number) => ipcRenderer.invoke('git-log', cwd, count),
 
-  // ── Content Search ──
+  // ── Content Search (now safe — pure Node, no shell) ──
   fsSearchContent: (dirPath: string, query: string) =>
     ipcRenderer.invoke('fs-search-content', dirPath, query),
 

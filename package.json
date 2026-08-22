@@ -27,6 +27,7 @@
     "chokidar": "^3.6.0",
     "glob": "^10.3.10",
     "lucide-react": "^0.344.0",
+    "node-llama-cpp": "^3.20.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "xterm": "^5.3.0",
@@ -43,8 +44,11 @@
     "concurrently": "^8.2.2",
     "electron": "^28.2.3",
     "electron-builder": "^24.9.1",
+    "jsdom": "^30.0.1",
+    "linkedom": "^0.18.13",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.3",
     "vite": "^5.1.4"
   },
@@ -64,18 +68,25 @@
       {
         "from": "build",
         "to": "build",
-        "filter": ["icon.png", "icon.ico"]
+        "filter": [
+          "icon.png",
+          "icon.ico"
+        ]
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
@@ -95,5 +106,10 @@
     "portable": {
       "artifactName": "NEX-AI-Portable-${version}.${ext}"
     }
+  },
+  "allowScripts": {
+    "node-llama-cpp@3.20.0": true,
+    "esbuild@0.21.5": true,
+    "esbuild@0.28.2": true
   }
 }

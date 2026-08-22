@@ -1,7 +1,20 @@
 import { create } from 'zustand';
 
 export type Panel = 'chat' | 'editor' | 'terminal' | 'settings' | 'explorer';
-export type SidebarView = 'files' | 'search' | 'git' | 'extensions' | 'snippets' | 'diagnostics' | 'diff';
+export type SidebarView = 'files' | 'search' | 'git' | 'extensions' | 'snippets' | 'diagnostics' | 'diff' | 'models';
+
+/**
+ * AI Mode (Phase 6)
+ * - local:  only Local AI (no external calls, works offline)
+ * - online: only online providers (OpenAI/Claude)
+ * - auto:   tries Local first, falls back to online if local unavailable
+ */
+export type AIMode = 'local' | 'online' | 'auto';
+
+/**
+ * AI Provider Type
+ */
+export type AIProviderType = 'local' | 'openai' | 'claude';
 
 export interface OpenFile {
   path: string;
@@ -17,6 +30,18 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   tokens?: number;
+  provider?: string;
+}
+
+export interface LocalModelInfo {
+  id: string;            // internal id (uuid)
+  name: string;          // user-friendly name
+  path: string;          // absolute path to .gguf file
+  sizeBytes: number;
+  contextSize: number;   // default 2048
+  gpuLayers: number;     // -1 = auto, 0 = CPU only, >0 = N layers offloaded
+  category: 'general' | 'coding' | 'reasoning' | 'fast';
+  addedAt: number;
 }
 
 export interface NexSettings {
@@ -28,6 +53,62 @@ export interface NexSettings {
   aiApiKey: string;
   language: string;
   voiceEnabled: boolean;
+  // Phase 6: AI mode
+  aiMode: AIMode;
+  // Phase 4: Local model selection
+  activeLocalModelId: string | null;
+  // Phase 3: Local engine options
+  localThreads: number;        // CPU threads for inference
+  localContextSize: number;     // context window in tokens
+  localTemperature: number;
+  localMaxTokens: number;
+}
+
+/**
+ * Get the provider config to pass to aiChat IPC.
+ * Decides Local vs OpenAI vs Claude based on aiMode + availability.
+ */
+export function getProviderConfig(
+  settings: NexSettings,
+  mode: AIMode,
+  localModel: LocalModelInfo | null
+): {
+  provider: AIProviderType;
+  apiKey?: string;
+  model?: string;
+  endpoint?: string;
+  maxTokens: number;
+  temperature: number;
+  // Local-only fields (ignored by online providers)
+  localModelPath?: string;
+  localContextSize?: number;
+  localThreads?: number;
+  localGpuLayers?: number;
+} {
+  if (mode === 'local' || (mode === 'auto' && localModel)) {
+    return {
+      provider: 'local',
+      model: localModel?.name || 'local',
+      localModelPath: localModel?.path,
+      localContextSize: localModel?.contextSize || settings.localContextSize,
+      localThreads: settings.localThreads,
+      localGpuLayers: localModel?.gpuLayers ?? -1,
+      maxTokens: settings.localMaxTokens,
+      temperature: settings.localTemperature,
+    };
+  }
+  // Online mode (or Auto with no local model)
+  const isClaude = settings.aiEndpoint.includes('anthropic');
+  return {
+    provider: isClaude ? 'claude' : 'openai',
+    apiKey: settings.aiApiKey,
+    model: isClaude ? 'claude-sonnet-4-20250514' : 'gpt-4o',
+    endpoint: isClaude
+      ? 'https://api.anthropic.com/v1/messages'
+      : (settings.aiEndpoint || 'https://api.openai.com/v1') + '/chat/completions',
+    maxTokens: 4096,
+    temperature: 0.7,
+  };
 }
 
 interface AppState {
@@ -63,6 +144,16 @@ interface AppState {
   settings: NexSettings;
   updateSettings: (partial: Partial<NexSettings>) => void;
 
+  // Phase 6: AI Mode
+  aiMode: AIMode;
+  setAIMode: (mode: AIMode) => void;
+
+  // Phase 4: Local Models registry
+  localModels: LocalModelInfo[];
+  setLocalModels: (models: LocalModelInfo[]) => void;
+  activeLocalModel: LocalModelInfo | null;
+  setActiveLocalModel: (id: string | null) => void;
+
   // Terminal
   terminalVisible: boolean;
   toggleTerminal: () => void;
@@ -89,6 +180,23 @@ function getLanguageFromFilename(filename: string): string {
   };
   return map[ext] || 'plaintext';
 }
+
+const DEFAULT_SETTINGS: NexSettings = {
+  theme: 'darker',
+  fontSize: 14,
+  fontFamily: 'JetBrains Mono, Fira Code, monospace',
+  tabSize: 2,
+  aiEndpoint: 'https://api.openai.com/v1',
+  aiApiKey: '',
+  language: 'en',
+  voiceEnabled: false,
+  aiMode: 'local',  // ✅ Phase 6: default to Local
+  activeLocalModelId: null,
+  localThreads: 4,
+  localContextSize: 2048,
+  localTemperature: 0.7,
+  localMaxTokens: 1024,
+};
 
 export const useStore = create<AppState>((set, get) => ({
   // Panels
@@ -180,18 +288,22 @@ export const useStore = create<AppState>((set, get) => ({
   setAILoading: (loading) => set({ isAILoading: loading }),
 
   // Settings
-  settings: {
-    theme: 'darker',
-    fontSize: 14,
-    fontFamily: 'JetBrains Mono, Fira Code, monospace',
-    tabSize: 2,
-    aiEndpoint: 'https://api.openai.com/v1',
-    aiApiKey: '',
-    language: 'en',
-    voiceEnabled: false,
-  },
+  settings: DEFAULT_SETTINGS,
   updateSettings: (partial) =>
     set((s) => ({ settings: { ...s.settings, ...partial } })),
+
+  // Phase 6: AI Mode
+  aiMode: 'local',
+  setAIMode: (mode) => set({ aiMode: mode }),
+
+  // Phase 4: Local Models registry
+  localModels: [],
+  setLocalModels: (models) => set({ localModels: models }),
+  activeLocalModel: null,
+  setActiveLocalModel: (id) => {
+    const model = get().localModels.find((m) => m.id === id) || null;
+    set({ activeLocalModel: model, settings: { ...get().settings, activeLocalModelId: id } });
+  },
 
   // Terminal
   terminalVisible: false,
@@ -203,3 +315,7 @@ export const useStore = create<AppState>((set, get) => ({
   toggleCommandPalette: () =>
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
 }));
+
+// Attach helper as a static method on the store for use in components
+// (kept here so types align)
+(useStore as any).getProviderConfig = getProviderConfig;

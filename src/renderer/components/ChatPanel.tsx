@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useStore } from '../store/useStore';
+import { useStore, getProviderConfig } from '../store/useStore';
+import { renderMarkdownToHtml } from '../lib/markdown';
 import {
   Send,
   Bot,
@@ -8,14 +9,15 @@ import {
   Copy,
   Check,
   Trash2,
-  Code2,
   Loader2,
   Mic,
   MicOff,
   Paperclip,
-  ChevronDown,
   AlertCircle,
   RefreshCw,
+  Cpu,
+  Cloud,
+  Zap,
 } from 'lucide-react';
 
 function MessageBubble({ message }: { message: any }) {
@@ -28,41 +30,7 @@ function MessageBubble({ message }: { message: any }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const renderContent = (content: string) => {
-    const parts = content.split(/(```[\s\S]*?```)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('```') && part.endsWith('```')) {
-        const lines = part.split('\n');
-        const lang = lines[0].replace('```', '').trim();
-        const code = lines.slice(1, -1).join('\n');
-        return (
-          <div key={i} className="my-2 rounded-lg overflow-hidden border border-nex-border">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-nex-surface border-b border-nex-border">
-              <span className="text-[11px] text-nex-text-dim font-mono">{lang || 'code'}</span>
-              <button
-                onClick={handleCopy}
-                className="text-nex-text-dim hover:text-nex-text transition-colors"
-              >
-                {copied ? <Check size={12} /> : <Copy size={12} />}
-              </button>
-            </div>
-            <pre className="p-3 bg-nex-bg text-sm overflow-x-auto font-mono text-nex-text leading-relaxed">
-              <code>{code}</code>
-            </pre>
-          </div>
-        );
-      }
-      // Inline code + bold + italic
-      let html = part
-        .replace(/`([^`]+)`/g, '<code class="nex-inline-code">$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br/>');
-      return (
-        <div key={i} className="leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />
-      );
-    });
-  };
+  const html = isUser ? '' : renderMarkdownToHtml(message.content);
 
   return (
     <div className={`flex gap-3 animate-in ${isUser ? 'flex-row-reverse' : ''}`}>
@@ -70,11 +38,16 @@ function MessageBubble({ message }: { message: any }) {
         {isUser ? <User size={16} className="text-nex-accent-light" /> : <Bot size={16} className="text-white" />}
       </div>
       <div className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${isUser ? 'bg-nex-accent/15 border border-nex-accent/20 text-nex-text' : 'bg-nex-card border border-nex-border text-nex-text'}`}>
-        <div className="markdown-content">{renderContent(message.content)}</div>
+        {isUser ? (
+          <div className="leading-relaxed whitespace-pre-wrap break-words">{message.content}</div>
+        ) : (
+          <div className="markdown-content leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />
+        )}
         <div className="flex items-center justify-between mt-2 pt-1 border-t border-nex-border/30">
           <span className="text-[10px] text-nex-text-muted">
             {new Date(message.timestamp).toLocaleTimeString()}
             {message.tokens && <span className="ml-2">~{message.tokens} tokens</span>}
+            {message.provider && <span className="ml-2">via {message.provider}</span>}
           </span>
           {!isUser && (
             <button onClick={handleCopy} className="text-nex-text-dim hover:text-nex-text transition-colors" title="Copy message">
@@ -88,40 +61,31 @@ function MessageBubble({ message }: { message: any }) {
 }
 
 export default function ChatPanel() {
-  const { messages, addMessage, isAILoading, setAILoading, clearMessages, settings, openFiles, activeFile, projectPath } = useStore();
+  const { messages, addMessage, isAILoading, setAILoading, clearMessages, settings, openFiles, activeFile, projectPath, aiMode, activeLocalModel } = useStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [provider, setProvider] = useState(settings.aiEndpoint.includes('anthropic') ? 'claude' : 'openai');
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Build context from open files
   const buildContext = useCallback(() => {
     const contextParts: string[] = [];
-
-    // Active file content
     if (activeFile) {
       const file = openFiles.find((f) => f.path === activeFile);
       if (file) {
         contextParts.push(`Currently active file: ${file.name}\n\`\`\`${file.language}\n${file.content}\n\`\`\``);
       }
     }
-
-    // Other open files (just names)
     if (openFiles.length > 1) {
       const otherFiles = openFiles.filter((f) => f.path !== activeFile).map((f) => f.name);
       contextParts.push(`Other open files: ${otherFiles.join(', ')}`);
     }
-
-    // Project info
     if (projectPath) {
       contextParts.push(`Project directory: ${projectPath}`);
     }
-
     return contextParts.join('\n\n');
   }, [activeFile, openFiles, projectPath]);
 
@@ -129,52 +93,48 @@ export default function ChatPanel() {
     const trimmed = input.trim();
     if (!trimmed || isAILoading) return;
 
-    // Check API key
-    if (!settings.aiApiKey) {
-      setError('Please set your API key in Settings first.');
-      return;
-    }
-
     setError(null);
     addMessage({ role: 'user', content: trimmed });
     setInput('');
     setAILoading(true);
 
-    // Build messages with context
     const context = buildContext();
     const userMessage = context ? `Context:\n${context}\n\nUser request:\n${trimmed}` : trimmed;
 
-    // Convert store messages to API format (last 20 messages for context)
-    const recentMessages = messages.slice(-20).map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }));
+    const recentMessages = messages.slice(-20)
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
     const apiMessages = [...recentMessages, { role: 'user' as const, content: userMessage }];
 
-    const config = {
-      provider: provider as 'openai' | 'claude',
-      apiKey: settings.aiApiKey,
-      model: provider === 'claude' ? 'claude-sonnet-4-20250514' : 'gpt-4o',
-      endpoint: provider === 'claude' ? 'https://api.anthropic.com/v1/messages' : settings.aiEndpoint + '/chat/completions',
-      maxTokens: 4096,
-      temperature: 0.7,
-    };
+    // Build provider config based on aiMode
+    const providerConfig = getProviderConfig(settings, aiMode, activeLocalModel);
+
+    // Local mode requires no API key — show different empty-state messaging
+    if (providerConfig.provider === 'openai' || providerConfig.provider === 'claude') {
+      if (!settings.aiApiKey) {
+        setError(`AI Mode is set to "${aiMode.toUpperCase()}" but no online API key is configured. Switch to Local mode in the AI Mode selector, or set an API key in Settings.`);
+        setAILoading(false);
+        return;
+      }
+    }
 
     try {
-      const result = await window.nexAPI.aiChat(config, apiMessages);
+      const result = await window.nexAPI.aiChat(providerConfig, apiMessages);
 
       if (result.success && result.content) {
         addMessage({
           role: 'assistant',
           content: result.content,
           tokens: result.tokens,
+          provider: providerConfig.provider,
         });
       } else {
         setError(result.error || 'Failed to get AI response');
         addMessage({
           role: 'assistant',
           content: `⚠️ Error: ${result.error || 'Unknown error'}`,
+          provider: providerConfig.provider,
         });
       }
     } catch (err: any) {
@@ -182,11 +142,12 @@ export default function ChatPanel() {
       addMessage({
         role: 'assistant',
         content: `⚠️ Connection error: ${err.message}`,
+        provider: providerConfig.provider,
       });
     } finally {
       setAILoading(false);
     }
-  }, [input, isAILoading, messages, settings, provider, buildContext, addMessage, setAILoading, openFiles, activeFile, projectPath]);
+  }, [input, isAILoading, messages, settings, aiMode, activeLocalModel, buildContext, addMessage, setAILoading, openFiles, activeFile, projectPath]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -217,6 +178,9 @@ export default function ChatPanel() {
     setIsListening(true);
   };
 
+  const modeIcon = aiMode === 'local' ? <Cpu size={12} /> : aiMode === 'online' ? <Cloud size={12} /> : <Zap size={12} />;
+  const modeColor = aiMode === 'local' ? 'bg-green-500/20 text-green-400' : aiMode === 'online' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
+
   return (
     <div className="h-full flex flex-col bg-nex-bg">
       {/* Header */}
@@ -224,18 +188,10 @@ export default function ChatPanel() {
         <div className="flex items-center gap-2">
           <Sparkles size={14} className="text-nex-accent" />
           <span className="text-sm font-medium text-nex-text">AI Assistant</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${settings.aiApiKey ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-            {settings.aiApiKey ? 'Connected' : 'No API Key'}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium flex items-center gap-1 ${modeColor}`}>
+            {modeIcon}
+            {aiMode.toUpperCase()}
           </span>
-          {/* Provider selector */}
-          <select
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as 'openai' | 'claude')}
-            className="text-[11px] bg-nex-card border border-nex-border rounded px-2 py-0.5 text-nex-text-dim outline-none"
-          >
-            <option value="openai">OpenAI</option>
-            <option value="claude">Claude</option>
-          </select>
         </div>
         <div className="flex items-center gap-1">
           {activeFile && (
@@ -271,11 +227,15 @@ export default function ChatPanel() {
               </div>
               <h3 className="text-lg font-semibold text-nex-text mb-1">How can I help you?</h3>
               <p className="text-sm text-nex-text-muted max-w-sm mb-2">
-                I can help you write, debug, and understand code across all programming languages.
+                {aiMode === 'local'
+                  ? 'Running fully offline with your local model. No external API required.'
+                  : aiMode === 'online'
+                  ? 'Connected to online AI providers (OpenAI/Anthropic).'
+                  : 'Auto mode: tries Local first, falls back to online if needed.'}
               </p>
-              {!settings.aiApiKey && (
+              {aiMode !== 'local' && !settings.aiApiKey && (
                 <p className="text-xs text-yellow-400/80 mb-4">
-                  ⚠️ Set your API key in Settings to start chatting
+                  ⚠️ No online API key set. Switch to Local mode (top-right) or set a key in Settings.
                 </p>
               )}
               <div className="flex flex-wrap gap-2 justify-center mt-6">
@@ -306,7 +266,7 @@ export default function ChatPanel() {
                 <div className="bg-nex-card border border-nex-border rounded-xl px-4 py-3">
                   <div className="flex items-center gap-2 text-sm text-nex-text-dim">
                     <Loader2 size={14} className="animate-spin text-nex-accent" />
-                    <span>Thinking...</span>
+                    <span>Thinking ({aiMode})...</span>
                   </div>
                 </div>
               </div>
@@ -323,7 +283,7 @@ export default function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={settings.aiApiKey ? 'Ask NEX AI anything about code...' : 'Set API key in Settings first...'}
+            placeholder={aiMode === 'local' ? 'Ask NEX AI (running locally)...' : 'Ask NEX AI anything about code...'}
             className="w-full bg-transparent px-4 py-3 pr-24 text-sm text-nex-text placeholder-nex-text-muted outline-none resize-none max-h-40"
             rows={1}
             style={{ height: 'auto', minHeight: '44px', maxHeight: '160px' }}

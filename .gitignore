@@ -1,33 +1,10 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
 release/
-
-# IDE
+*.log
+.DS_Store
+.freebuff/
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Logs
-*.log
-npm-debug.log*
-
-# Environment
-.env
-.env.local
-.env.production
-
-# Electron
-*.blockmap
-
-# Temporary
-tmp/
-temp/
+*.gguf
+models/
