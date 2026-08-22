@@ -41,6 +41,7 @@ export interface LocalModelInfo {
   contextSize: number;   // default 2048
   gpuLayers: number;     // -1 = auto, 0 = CPU only, >0 = N layers offloaded
   category: 'general' | 'coding' | 'reasoning' | 'fast';
+  fileExists: boolean;   // verified at load time
   addedAt: number;
 }
 

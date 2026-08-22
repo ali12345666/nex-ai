@@ -3,6 +3,7 @@ import { useStore, type SidebarView } from '../store/useStore';
 import {
   Files, Search, GitBranch, MessageSquare, Terminal, Settings,
   PanelLeftClose, PanelLeft, Bot, Code2, AlertTriangle, ArrowLeftRight,
+  Cpu,
 } from 'lucide-react';
 
 export default function Sidebar() {
@@ -17,6 +18,7 @@ export default function Sidebar() {
     { id: 'files' as SidebarView, icon: <Files size={20} />, label: 'Explorer' },
     { id: 'search' as SidebarView, icon: <Search size={20} />, label: 'Search' },
     { id: 'git' as SidebarView, icon: <GitBranch size={20} />, label: 'Source Control' },
+    { id: 'models' as SidebarView, icon: <Cpu size={20} />, label: 'Local Models' },
     { id: 'snippets' as SidebarView, icon: <Code2 size={20} />, label: 'Snippets' },
     { id: 'diagnostics' as SidebarView, icon: <AlertTriangle size={20} />, label: 'Problems' },
   ];

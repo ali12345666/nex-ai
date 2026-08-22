@@ -31,6 +31,7 @@ import {
 } from './persistence';
 import { addModel, removeModel, listModels, updateModel, getModel } from './ai/model-registry';
 import { localChatComplete, localAbort } from './ai/local-engine';
+import { routeChat } from './ai/provider';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -614,25 +615,13 @@ function setupIPC(): void {
   // Routes to Local engine if provider === 'local', else to OpenAI/Claude.
   // Local mode requires NO external API and works fully offline.
   ipcMain.handle('ai-chat', async (_event, config: any, messages: AIMessage[]) => {
-    // ── Local AI path (no network) ──
+    // Use the unified provider abstraction
     if (config.provider === 'local') {
       const result = await localChatComplete(config as any, messages as any);
       return result;
     }
-
-    // ── Online AI path (validated origin) ──
-    if (!isAllowedAIOrigin(config.endpoint)) {
-      return {
-        success: false,
-        error: `Blocked: AI endpoint "${config.endpoint}" is not in the allowed origins list. Only OpenAI and Anthropic are permitted.`,
-      };
-    }
-    const userMessages = messages.filter((m) => m.role !== 'system');
-    const fullMessages: AIMessage[] = [
-      { role: 'system', content: getSystemPrompt() },
-      ...userMessages,
-    ];
-    return chatCompletion(config, fullMessages);
+    // Online providers — use routeChat for origin/apikey validation
+    return routeChat(config, messages);
   });
 
   ipcMain.handle('ai-abort', async () => {

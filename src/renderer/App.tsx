@@ -10,6 +10,7 @@ import GitPanel from './components/GitPanel';
 import SearchPanel from './components/SearchPanel';
 import SnippetPanel from './components/SnippetPanel';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
+import ModelsPanel from './components/ModelsPanel';
 import CommandPalette from './components/CommandPalette';
 import StatusBar from './components/StatusBar';
 import WelcomeScreen from './components/WelcomeScreen';
@@ -24,6 +25,7 @@ function SidebarContent() {
     files: projectPath ? <FileExplorer /> : null,
     search: <SearchPanel />,
     git: projectPath ? <GitPanel /> : null,
+    models: <ModelsPanel />,
     snippets: <SnippetPanel />,
     diagnostics: projectPath ? <DiagnosticsPanel /> : null,
   };
