@@ -3,6 +3,7 @@ import {
   BookOpen, RefreshCw, FileText, Layers, HardDrive, Cpu, ShieldCheck,
   Loader2, AlertCircle, X, ChevronRight, ChevronDown, Wrench,
   Plus, FolderPlus, Trash2, RotateCw, Search, Settings2, Check, Eye,
+  Eraser, Wind,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
@@ -190,6 +191,38 @@ export default function KnowledgePanel() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // ── P23: maintenance — purge deleted files / clear entire project index ──
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const purgeMissing = async () => {
+    if (!projectPath) return;
+    setBusy('purge'); setError(null);
+    try {
+      const res = await window.nexAPI.knowledgePurgeMissing(projectPath);
+      if (res.success) {
+        // surface the outcome even when 0 removed (honest feedback)
+        setError(res.purged && res.purged.length > 0 ? null : null);
+        void res;
+      } else {
+        setError(res.error || 'purge failed');
+      }
+      await refresh();
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
+  };
+
+  const clearAll = async () => {
+    if (!projectPath) return;
+    setConfirmClear(false);
+    setBusy('clear'); setError(null);
+    try {
+      const res = await window.nexAPI.knowledgeClear(projectPath);
+      if (!res.success) setError(res.error || 'clear failed');
+      await refresh();
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
   };
 
   // ── P11-F: Knowledge Viewer (open document → chunks + metadata) ──
@@ -385,7 +418,24 @@ export default function KnowledgePanel() {
             <ActionBtn onClick={addFiles} busy={busy === 'add-files'} icon={<Plus size={11} />} label="Add Files" />
             <ActionBtn onClick={addFolder} busy={busy === 'add-folder'} icon={<FolderPlus size={11} />} label="Add Folder" />
             <ActionBtn onClick={rebuild} busy={busy === 'rebuild'} icon={<Wrench size={11} />} label="Rebuild Index" />
+            <ActionBtn onClick={purgeMissing} busy={busy === 'purge'} icon={<Wind size={11} />} label="Purge Deleted" title="Remove index entries for files that no longer exist" />
+            {docs.length > 0 && !confirmClear ? (
+              <button onClick={() => setConfirmClear(true)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-nex-card border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors">
+                <Eraser size={11} /> Clear All…
+              </button>
+            ) : null}
           </div>
+          {confirmClear && (
+            <div className="px-3 pb-2.5 -mt-1.5 flex items-center gap-2 text-[10px] text-red-300">
+              <span className="flex-1">Delete the ENTIRE knowledge index for this project? Cannot be undone.</span>
+              <button onClick={clearAll} disabled={busy === 'clear'}
+                className="px-2 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-300 disabled:opacity-50">
+                {busy === 'clear' ? 'Clearing…' : 'Clear Everything'}
+              </button>
+              <button onClick={() => setConfirmClear(false)} className="text-nex-text-dim">Cancel</button>
+            </div>
+          )}
 
           {/* Error strip */}
           {error && (
@@ -539,11 +589,12 @@ function Stat({ icon, label, value, title }: { icon: React.ReactNode; label: str
   );
 }
 
-function ActionBtn({ onClick, busy, icon, label }: { onClick: () => void; busy: boolean; icon: React.ReactNode; label: string }) {
+function ActionBtn({ onClick, busy, icon, label, title }: { onClick: () => void; busy: boolean; icon: React.ReactNode; label: string; title?: string }) {
   return (
     <button
       onClick={onClick}
       disabled={busy}
+      title={title}
       className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-nex-card border border-nex-border text-nex-text-dim hover:text-nex-text hover:border-nex-accent/40 transition-colors disabled:opacity-50">
       {busy ? <Loader2 size={10} className="animate-spin" /> : icon}
       {label}
