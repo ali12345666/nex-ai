@@ -84,13 +84,19 @@ export function computeUnifiedDiff(before: string, after: string, filePath: stri
   // Simple LCS-based diff (line-by-line)
   // For Phase 7 we use a simple approach: walk through both line arrays
   // and emit changes. This is not as smart as Myers, but adequate for short diffs.
-  const lcs = computeLCS(beforeLines, afterLines);
+  //
+  // Phase 8 / P8-C BUGFIX: LCS entries must be (i,j) PAIRS. The previous
+  // single-index form treated "lcs[k]===i && lcs[k]===j" as a match, which is
+  // wrong whenever the paired j ≠ i (e.g. new files: before='' vs content —
+  // the diff dropped the real content lines). Pair form fixes new-file diffs
+  // and any case where common lines appear at shifted positions.
+  const pairs = computeLCSPairs(beforeLines, afterLines);
   let i = 0, j = 0, k = 0;
   let contextLines: string[] = [];
   const CONTEXT = 3; // lines of context
 
   while (i < beforeLines.length || j < afterLines.length) {
-    if (i < beforeLines.length && j < afterLines.length && lcs[k] === i && lcs[k] === j) {
+    if (k < pairs.length && pairs[k][0] === i && pairs[k][1] === j) {
       // Matching line
       contextLines.push(` ${beforeLines[i]}`);
       i++; j++; k++;
@@ -105,12 +111,12 @@ export function computeUnifiedDiff(before: string, after: string, filePath: stri
       contextLines = [];
 
       // Emit deletions
-      while (i < beforeLines.length && (k >= lcs.length || lcs[k] !== i)) {
+      while (i < beforeLines.length && (k >= pairs.length || pairs[k][0] !== i)) {
         diff.push(`-${beforeLines[i]}`);
         i++;
       }
       // Emit additions
-      while (j < afterLines.length && (k >= lcs.length || lcs[k] !== j)) {
+      while (j < afterLines.length && (k >= pairs.length || pairs[k][1] !== j)) {
         diff.push(`+${afterLines[j]}`);
         j++;
       }
@@ -126,9 +132,9 @@ export function computeUnifiedDiff(before: string, after: string, filePath: stri
 
 /**
  * Compute Longest Common Subsequence of two string arrays.
- * Returns indices into the first array that are common with the second.
+ * Returns (i,j) index PAIRS — positions in BOTH arrays that are common.
  */
-function computeLCS(a: string[], b: string[]): number[] {
+function computeLCSPairs(a: string[], b: string[]): Array<[number, number]> {
   const m = a.length, n = b.length;
   // For Phase 7: simple DP. For large files this is O(m*n) — should be fine
   // for typical source files (< 10k lines).
@@ -144,11 +150,11 @@ function computeLCS(a: string[], b: string[]): number[] {
     }
   }
   // Backtrack
-  const result: number[] = [];
+  const result: Array<[number, number]> = [];
   let i = m, j = n;
   while (i > 0 && j > 0) {
     if (a[i - 1] === b[j - 1]) {
-      result.unshift(i - 1);
+      result.unshift([i - 1, j - 1]);
       i--; j--;
     } else if (dp[i - 1][j] >= dp[i][j - 1]) {
       i--;

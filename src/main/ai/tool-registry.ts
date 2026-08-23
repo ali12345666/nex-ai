@@ -312,6 +312,10 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   const { CalculationTool } = await import('./tools/calculation-tool');
   const { SystemInfoTool } = await import('./tools/system-info-tool');
   const { LongRunningTestTool } = await import('./tools/long-running-test-tool');
+  // Phase 8 / P8-C: advanced coding-agent tools
+  const { ReadMultipleFilesTool } = await import('./tools/read-multiple-files-tool');
+  const { ProjectStructureTool } = await import('./tools/project-structure-tool');
+  const { MultiFileEditTool } = await import('./tools/multi-file-edit-tool');
 
   registerTool(new FS());
   registerTool(new SearchFilesTool());
@@ -325,4 +329,7 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   registerTool(new CalculationTool());
   registerTool(new SystemInfoTool());
   registerTool(new LongRunningTestTool());
+  registerTool(new ReadMultipleFilesTool());
+  registerTool(new ProjectStructureTool());
+  registerTool(new MultiFileEditTool());
 }
