@@ -52,7 +52,7 @@ export interface NexAPI {
   onTerminalExit: (callback: (code: number | null) => void) => () => void;
 
   // Exec
-  execCommand: (command: string, cwd: string) => Promise<{ success: boolean; output?: string; error?: string }>;
+  runTscCheck: (cwd: string) => Promise<{ success: boolean; output?: string; error?: string; exitCode?: number | null }>;
 
   // System
   systemInfo: () => Promise<NexSystemInfo>;

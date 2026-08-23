@@ -15,7 +15,7 @@ import { glob } from 'glob';
 import type { AIMessage, AIConfig } from './ai-service';
 import { chatCompletion, getSystemPrompt, getDefaultConfig } from './ai-service';
 
-import { CSP, ALLOWED_AI_ORIGINS, isAllowedAIOrigin } from './security';
+import { CSP, ALLOWED_AI_ORIGINS, isAllowedAIOrigin, assertPathInside } from './security';
 import { safeExecFile, safeSpawn, spawnInteractiveShell, searchFileContents } from './security/shell';
 import {
   initPersistence,
@@ -544,6 +544,23 @@ function setupIPC(): void {
   //   - run-npm-test (executes `npm test` only)
   //   - git-status, git-diff, git-log (already safe)
   // Arbitrary `run_command(...)` is reserved for Phase 9 with permission prompts.
+
+  // ── Safe TypeScript check (Phase 26: replaces the removed execCommand) ──
+  // Runs tsc --noEmit via safeExecFile (argv array, no shell, 30s timeout).
+  ipcMain.handle('run-tsc-check', async (_event, cwd: string) => {
+    try {
+      // Jail the working directory to the open project
+      const guard = assertPathInside(cwd, [cwd]); // cwd must be valid
+      if (!guard.ok) return { success: false, error: 'Invalid cwd' };
+      const result = await safeExecFile(
+        'npx', ['tsc', '--noEmit', '--pretty', 'false'], { cwd, timeout: 30000 }
+      );
+      // tsc exits 0 on success, non-zero on errors — both are valid results
+      return { success: true, output: result.stdout + result.stderr, exitCode: result.exitCode };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
 
   // ── System Info ──
   ipcMain.handle('system-info', () => ({

@@ -50,6 +50,8 @@ contextBridge.exposeInMainWorld('nexAPI', {
 
   // ── System ──
   systemInfo: () => ipcRenderer.invoke('system-info'),
+  // Phase 26: safe tsc check (replaces removed execCommand)
+  runTscCheck: (cwd: string) => ipcRenderer.invoke('run-tsc-check', cwd),
 
   // ── Config (legacy, kept for backwards-compat) ──
   configGet: (key: string) => ipcRenderer.invoke('config-get', key),

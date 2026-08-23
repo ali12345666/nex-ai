@@ -23,8 +23,9 @@ export default function DiagnosticsPanel() {
 
     // Check TypeScript errors
     try {
-      const tsResult = await window.nexAPI.execCommand('npx tsc --noEmit --pretty false 2>&1', projectPath);
-      if (tsResult.output) {
+      // Phase 26: safe IPC (replaces removed execCommand — Phase 1 security)
+      const tsResult = await window.nexAPI.runTscCheck(projectPath);
+      if (tsResult.success && tsResult.output) {
         const lines = tsResult.output.split('\n').filter((l: string) => l.includes('error TS'));
         lines.slice(0, 30).forEach((line: string) => {
           const match = line.match(/^(.+?)\((\d+),\d+\): error (TS\d+): (.+)/);
