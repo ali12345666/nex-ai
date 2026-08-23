@@ -1,5 +1,5 @@
 /**
- * NEX AI — Chat Panel (Phase 29)
+ * NEX AI — Chat Panel (Phase 29/33)
  *
  * Real conversational interface using existing AI infrastructure:
  *   - aiChatStream (P17) for streaming responses
@@ -7,7 +7,12 @@
  *   - getProviderConfig for provider routing
  *   - FilesystemService (P28) for file attachments
  *
- * Uses NEX token system throughout. Migrated from old ChatPanel.
+ * Phase 33 additions:
+ *   - Auto-save to conversation persistence (on message complete)
+ *   - Startup restore (last active conversation)
+ *   - Edit user message (truncates dependent responses, resends)
+ *   - Regenerate last assistant response
+ *   - Keyboard shortcuts (Ctrl+N, Ctrl+K — not in input/textarea)
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
@@ -37,6 +42,246 @@ export default function NexChatPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [chatStreaming, setChatStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase 33: conversation lifecycle state
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationTitle, setConversationTitle] = useState('');
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const conversationTitleRef = useRef<string>('');
+  const messagesRef = useRef<NexMessage[]>([]);
+
+  // Keep refs in sync for auto-save
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+  useEffect(() => { conversationTitleRef.current = conversationTitle; }, [conversationTitle]);
+
+  // ── Phase 33: Auto-save conversation to persistence ──
+  const saveConversation = useCallback(async (msgs?: NexMessage[]) => {
+    const toSave = msgs || messagesRef.current;
+    if (toSave.length === 0) return; // don't save empty conversations
+
+    const id = conversationIdRef.current || `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const title = conversationTitleRef.current ||
+      (toSave.find((m) => m.role === 'user' && m.content.trim())?.content.slice(0, 60) || 'Untitled');
+
+    // Don't re-save if nothing meaningful changed since last save
+    const now = Date.now();
+    if (lastSavedAt && now - lastSavedAt < 500) return; // dedup within 500ms
+
+    setConversationId(id);
+    setConversationTitle(title);
+    conversationIdRef.current = id;
+    conversationTitleRef.current = title;
+
+    // Strip attachment content (persist metadata only, not file contents)
+    const persistableMsgs = toSave.map((m) => ({
+      ...m,
+      attachments: m.attachments?.map((a) => ({
+        id: a.id, name: a.name, path: a.path, size: a.size, extension: a.extension,
+        // content intentionally NOT persisted for large files
+        ...(a.content && a.content.length < 2048 ? { content: a.content } : {}),
+        ...(a.error ? { error: a.error } : {}),
+      })),
+    }));
+
+    try {
+      await window.nexAPI.conversationSave({
+        id,
+        title,
+        createdAt: conversationCreatedAtRef.current || now,
+        updatedAt: now,
+        messageCount: persistableMsgs.length,
+        messages: persistableMsgs,
+        workspace: projectPath || undefined,
+        provider: aiMode,
+        model: activeLocalModel?.name,
+        mode: aiMode,
+      });
+      conversationCreatedAtRef.current = conversationCreatedAtRef.current || now;
+      setLastSavedAt(now);
+    } catch { /* non-fatal: chat still works */ }
+  }, [projectPath, aiMode, activeLocalModel, lastSavedAt]);
+
+  const conversationCreatedAtRef = useRef<number | null>(null);
+
+  // ── Phase 33: Load / New conversation from external events ──
+  useEffect(() => {
+    const loadHandler = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.id) {
+        try {
+          const r = await window.nexAPI.conversationLoad(detail.id);
+          if (r.success && r.data) {
+            setMessages(r.data.messages || []);
+            setConversationId(r.data.id);
+            setConversationTitle(r.data.title || '');
+            conversationIdRef.current = r.data.id;
+            conversationTitleRef.current = r.data.title || '';
+            conversationCreatedAtRef.current = r.data.createdAt || null;
+            setLastSavedAt(Date.now());
+          }
+        } catch { /* graceful */ }
+      }
+    };
+    const newHandler = () => {
+      setMessages([]);
+      setConversationId(null);
+      setConversationTitle('');
+      conversationIdRef.current = null;
+      conversationTitleRef.current = '';
+      conversationCreatedAtRef.current = null;
+      setLastSavedAt(null);
+      setError(null);
+    };
+    window.addEventListener('nex:load-conversation', loadHandler);
+    window.addEventListener('nex:new-conversation', newHandler);
+    return () => {
+      window.removeEventListener('nex:load-conversation', loadHandler);
+      window.removeEventListener('nex:new-conversation', newHandler);
+    };
+  }, []);
+
+  // ── Phase 33: Startup restore (last conversation) ──
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.nexAPI.conversationList();
+        if (r.success && r.conversations && r.conversations.length > 0) {
+          const last = r.conversations[0]; // sorted by updatedAt desc
+          const load = await window.nexAPI.conversationLoad(last.id);
+          if (load.success && load.data) {
+            setMessages(load.data.messages || []);
+            setConversationId(load.data.id);
+            setConversationTitle(load.data.title || '');
+            conversationIdRef.current = load.data.id;
+            conversationTitleRef.current = load.data.title || '';
+            conversationCreatedAtRef.current = load.data.createdAt || null;
+            setLastSavedAt(Date.now());
+          }
+        }
+      } catch { /* no conversations or IPC unavailable — fine */ }
+    })();
+  }, []); // run once on mount
+
+  // ── Phase 33: Keyboard shortcuts (not in input/textarea) ──
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n' && !isInput) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !isInput) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('nex:open-history-search'));
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // ── Phase 33: Save on unmount (crash/close safety) ──
+  useEffect(() => {
+    return () => {
+      // Save synchronously (best-effort) on unmount
+      if (messagesRef.current.length > 0 && conversationIdRef.current) {
+        window.nexAPI.conversationSave({
+          id: conversationIdRef.current,
+          title: conversationTitleRef.current || 'Untitled',
+          createdAt: conversationCreatedAtRef.current || Date.now(),
+          updatedAt: Date.now(),
+          messageCount: messagesRef.current.length,
+          messages: messagesRef.current,
+          workspace: projectPath || undefined,
+          provider: aiMode,
+          mode: aiMode,
+        }).catch(() => { /* best-effort */ });
+      }
+    };
+  }, [projectPath, aiMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Phase 33: Edit user message ──
+  const handleEditMessage = useCallback(async (messageId: string, newContent: string) => {
+    if (isGenerating) return;
+    setEditingMessageId(null);
+
+    const msgIndex = messages.findIndex((m) => m.id === messageId);
+    if (msgIndex === -1 || messages[msgIndex].role !== 'user') return;
+
+    // Truncate everything after the edited message
+    const updated = messages.slice(0, msgIndex);
+    const editedMsg = { ...messages[msgIndex], content: newContent, timestamp: Date.now() };
+    const newMessages = [...updated, editedMsg];
+    setMessages(newMessages);
+
+    // Re-send the edited message (will generate new assistant response)
+    setInput(newContent);
+    // Trigger send after state flush
+    setTimeout(() => {
+      const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+      if (el) {
+        el.value = newContent;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(() => {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }, 50);
+      }
+    }, 10);
+
+    // Persist the truncated conversation
+    saveConversation(newMessages);
+  }, [messages, isGenerating, saveConversation]);
+
+  // ── Phase 33: Regenerate last assistant response ──
+  const handleRegenerate = useCallback(async () => {
+    if (isGenerating) return;
+
+    // Find last assistant message
+    const lastAssistantIdx = messages.findIndex((m) => m.role === 'assistant' && m === [...messages].reverse().find((r) => r.role === 'assistant'));
+    if (lastAssistantIdx === -1) return;
+
+    // Find the user message before it
+    let lastUserIdx = -1;
+    for (let i = lastAssistantIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx === -1) return;
+
+    // Remove the assistant response (keep everything before it)
+    const truncated = messages.slice(0, lastAssistantIdx);
+    setMessages(truncated);
+
+    // Re-send the same user message
+    const userContent = messages[lastUserIdx].content;
+    setInput(userContent);
+    setTimeout(() => {
+      const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+      if (el) {
+        el.value = userContent;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(() => {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }, 50);
+      }
+    }, 10);
+  }, [messages, isGenerating]);
+
+  const startEdit = useCallback((messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (msg?.role === 'user') {
+      setEditingMessageId(messageId);
+      setEditText(msg.content);
+    }
+  }, [messages]);
+
+  const cancelEdit = useCallback(() => {
+    setEditingMessageId(null);
+    setEditText('');
+  }, []);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamBufRef = useRef<string>('');
@@ -201,6 +446,8 @@ export default function NexChatPanel() {
           }
           return next;
         });
+        // Phase 33: auto-save on completed assistant response
+        setTimeout(() => saveConversation(), 50);
       } else if (stream.error && /No local model|Model file not found/i.test(stream.error)) {
         setMessages((prev) => {
           const next = [...prev];
@@ -247,8 +494,10 @@ export default function NexChatPanel() {
       setIsGenerating(false);
       setChatStreaming(false);
       streamBufRef.current = '';
+      // Phase 33: final save (captures error/partial states too)
+      setTimeout(() => saveConversation(), 100);
     }
-  }, [input, messages, attachments, isGenerating, settings, aiMode, activeLocalModel]);
+  }, [input, messages, attachments, isGenerating, settings, aiMode, activeLocalModel, saveConversation]);
 
   const handleStop = useCallback(() => {
     window.nexAPI.aiChatStreamCancel().catch(() => {});
@@ -288,7 +537,58 @@ export default function NexChatPanel() {
           </div>
         )}
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <div key={msg.id}>
+            {/* Phase 33: Edit mode for user messages */}
+            {editingMessageId === msg.id ? (
+              <div className="flex gap-2 mb-3 ml-8">
+                <textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditMessage(msg.id, editText); }
+                    if (e.key === 'Escape') cancelEdit();
+                  }}
+                  className="flex-1 bg-white/[0.05] border border-[var(--nex-accent)]/30 rounded-lg px-3 py-2 text-[12px] resize-none outline-none"
+                  style={{ color: 'var(--nex-text)', minHeight: 40 }}
+                  autoFocus
+                  aria-label="Edit message"
+                />
+                <div className="flex flex-col gap-1">
+                  <button onClick={() => handleEditMessage(msg.id, editText)} className="px-2 py-1 rounded text-[9px] font-medium" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>Save</button>
+                  <button onClick={cancelEdit} className="px-2 py-1 rounded text-[9px]" style={{ border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text-muted)' }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <MessageBubble message={msg} />
+                {/* Phase 33: Edit/Regenerate actions */}
+                {!isGenerating && msg.status === 'complete' && (
+                  <div className={`flex gap-2 mt-0.5 mb-2 ${msg.role === 'user' ? 'justify-end pr-10' : 'pl-10'}`}>
+                    {msg.role === 'user' && (
+                      <button
+                        onClick={() => startEdit(msg.id)}
+                        className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+                        style={{ color: 'var(--nex-text-muted)' }}
+                        aria-label="Edit message"
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {msg.role === 'assistant' && msg === messages[messages.length - 1] && (
+                      <button
+                        onClick={handleRegenerate}
+                        className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+                        style={{ color: 'var(--nex-text-muted)' }}
+                        aria-label="Regenerate response"
+                      >
+                        Regenerate
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
