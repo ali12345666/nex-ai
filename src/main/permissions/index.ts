@@ -92,6 +92,9 @@ interface PersistedPermissionState {
 
 const _sessionGrants = new Map<string, PersistedGrant[]>(); // keyed by sessionId
 const _pendingRequests = new Map<string, (response: PermissionResponse) => void>();
+// Phase 22 / P22-A: original request context per pending id — lets the
+// response persist grants with the ACTUAL tool/permission the user approved.
+const _pendingRequestContexts = new Map<string, PermissionRequest>();
 let _permissionRequestHandler: ((req: PermissionRequest) => void) | null = null;
 
 // ─── Core API ───────────────────────────────────────────────────────────────
@@ -120,7 +123,7 @@ export function requestPermission(
   detail?: string
 ): { requestId: string; status: PermissionDecision } {
   // 1. Check session grants (fastest)
-  if (hasSessionGrant(context.sessionId, tool, permission)) {
+  if (hasSessionGrant(context.sessionId, tool, permission, context.targetPath)) {
     return { requestId: '', status: 'allow' };
   }
   // 2. Check project grants
@@ -142,6 +145,7 @@ export function requestPermission(
     context,
     requestedAt: Date.now(),
   };
+  _pendingRequestContexts.set(requestId, request); // Phase 22: fidelity
   if (_permissionRequestHandler) {
     _permissionRequestHandler(request);
   } else {
@@ -187,16 +191,18 @@ export function awaitPermissionDecision(requestId: string): Promise<PermissionRe
  * Respond to a pending permission request (called from UI).
  */
 export function respondToPermissionRequest(response: PermissionResponse): void {
-  // Persist the grant if scope is project or global
-  if (response.decision === 'allow' && (response.scope === 'project' || response.scope === 'global')) {
-    // Find the original request to know what we're granting
-    // (In a real implementation, we'd track this in the request map)
-    // For now, just persist what we know
-    addPersistedGrant(response, response.scope);
-  } else if (response.decision === 'allow' && response.scope === 'session') {
-    // Add to session grants
-    // (We need the request details — let's extend the API)
+  // Phase 22 / P22-A: persist grants with the ORIGINAL request's
+  // tool/permission/projectId — never a hardcoded approximation. Session
+  // grants are recorded too (previously dropped entirely).
+  const original = _pendingRequestContexts.get(response.requestId);
+  if (response.decision === 'allow' && original &&
+      (response.scope === 'project' || response.scope === 'global')) {
+    addPersistedGrant(response, response.scope, original);
+  } else if (response.decision === 'allow' && original && response.scope === 'session') {
+    addSessionGrant(original.context.sessionId, original.tool, original.permission, original.context.targetPath);
   }
+  _pendingRequestContexts.delete(response.requestId);
+
   // Resolve the waiting promise
   const resolver = _pendingRequests.get(response.requestId);
   if (resolver) {
@@ -230,10 +236,13 @@ export async function requestPermissionAndWait(
 
 // ─── Grant Storage ──────────────────────────────────────────────────────────
 
-function hasSessionGrant(sessionId: string | undefined, tool: string, permission: Permission): boolean {
+function hasSessionGrant(sessionId: string | undefined, tool: string, permission: Permission, targetPath?: string): boolean {
   if (!sessionId) return false;
   const grants = _sessionGrants.get(sessionId) || [];
-  return grants.some((g) => g.tool === tool && g.permission === permission && matchesPath(g.pathPattern, undefined));
+  // Phase 22 / P22-A FIX: previously passed targetPath=undefined, so any
+  // session grant WITH a path pattern never matched (pattern + undefined
+  // target = no match in matchesPath). Thread the real target through.
+  return grants.some((g) => g.tool === tool && g.permission === permission && matchesPath(g.pathPattern, targetPath));
 }
 
 function addSessionGrant(sessionId: string | undefined, tool: string, permission: Permission, targetPath?: string): void {
@@ -263,17 +272,26 @@ function hasGlobalGrant(tool: string, permission: Permission, targetPath?: strin
   return grants.some((g) => g.tool === tool && g.permission === permission && matchesPath(g.pathPattern, targetPath));
 }
 
-function addPersistedGrant(response: PermissionResponse, scope: PermissionScope): void {
+function addPersistedGrant(response: PermissionResponse, scope: PermissionScope, original?: PermissionRequest): void {
+  // Phase 22 / P22-A: grants persist the ORIGINAL tool/permission the user
+  // actually approved (previously hardcoded tool:'' + permission:'read').
+  // Project grants key on the original projectId.
   const state = loadPermissionState();
   const grant: PersistedGrant = {
-    tool: '',  // Would be filled from original request
-    permission: 'read', // Would be filled from original request
+    tool: original?.tool ?? '',
+    permission: original?.permission ?? 'read',
     scope,
     grantedAt: Date.now(),
     expiresAt: 0,
-  };
-  if (scope === 'project' && response.requestId) {
-    // TODO: Look up the original request to get tool/permission/projectId
+    ...(original?.context?.targetPath ? { pathPattern: original.context.targetPath } : {}),
+  } as PersistedGrant;
+
+  if (scope === 'project' && original?.context?.projectId) {
+    state.projectGrants = state.projectGrants || {};
+    state.projectGrants[original.context.projectId] = state.projectGrants[original.context.projectId] || [];
+    state.projectGrants[original.context.projectId].push(grant);
+    savePermissionState(state);
+    return;
   }
   if (scope === 'global') {
     state.globalGrants = state.globalGrants || [];
