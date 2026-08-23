@@ -9,7 +9,7 @@
  *   - Performance: adaptive particle count, DPR cap, proper cleanup
  */
 
-import React, { useRef, useMemo, useCallback } from 'react';
+import React, { useRef, useMemo, useCallback, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { computeOrbVisual, type NexOrbState } from './orb-state';
@@ -138,6 +138,20 @@ function ParticleSphere({ state, audioLevel, primaryColor, secondaryColor, parti
     }
   });
 
+  // Phase 27 REVIEW: explicit geometry disposal (R3F auto-disposes most
+  // resources, but bufferAttribute with args[] can leak on hot-reload
+  // or rapid mount/unmount cycles)
+  useEffect(() => {
+    return () => {
+      if (pointsRef.current) {
+        pointsRef.current.geometry?.dispose();
+      }
+      if (materialRef.current) {
+        materialRef.current.dispose?.();
+      }
+    };
+  }, []);
+
   return (
     <points ref={pointsRef}>
       <bufferGeometry>
@@ -241,6 +255,19 @@ export default function NexOrb({
   const ambientCount = quality === 'high' ? 120 : quality === 'medium' ? 70 : 40;
   const dpr: [number, number] = quality === 'high' ? [1, 2] : [1, 1.5];
 
+  // Phase 27 REVIEW: reduced-motion support — slow WebGL to near-static
+  const [reducedMotion, setReducedMotion] = React.useState(false);
+  React.useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReducedMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  // When reduced motion, drop particle count and freeze high-speed animation
+  const effectiveState: NexOrbState = reducedMotion ? 'offline' : state;
+
   return (
     <div className={className} style={{ width: '100%', height: '100%', position: 'relative' }}>
       {/* Ground reflection */}
@@ -252,7 +279,7 @@ export default function NexOrb({
         style={{ background: 'transparent' }}
       >
         <ParticleSphere
-          state={state}
+          state={effectiveState}
           audioLevel={audioLevel}
           primaryColor={primaryColor}
           secondaryColor={secondaryColor}

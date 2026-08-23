@@ -50,7 +50,13 @@ function SidebarContent() {
   );
 }
 
-export default function App() {
+// Phase 27 REVIEW: resolve AppShell once at module level (not per-render)
+let AppShellReady: React.ComponentType | null = null;
+try {
+  AppShellReady = require('./components/layout/AppShell').default;
+} catch { AppShellReady = null; }
+
+function App() {
   const {
     activePanel, openFiles, activeFile, terminalVisible,
     commandPaletteOpen, toggleCommandPalette, toggleTerminal, projectPath,
@@ -219,15 +225,11 @@ export default function App() {
 
   // Phase 27: NEX Command Center — new AppShell with orb/rail/chat/dock
   // The legacy layout is kept as a fallback if AppShell fails to render.
-  let Shell: React.ComponentType | null = null;
-  try {
-    Shell = require('./components/layout/AppShell').default;
-  } catch { Shell = null; }
-
-  if (Shell) {
+  // REVIEW FIX: module-level check (runs once, not on every render)
+  if (AppShellReady) {
     return (
       <>
-        <Shell />
+        <AppShellReady />
         {commandPaletteOpen && <CommandPalette />}
         <PermissionPrompt
           request={pendingPermission}
@@ -291,3 +293,5 @@ export default function App() {
     </div>
   );
 }
+
+export default App;
