@@ -80,7 +80,8 @@ export const CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "connect-src 'self' https://api.openai.com https://api.anthropic.com",
+  // Phase 8/37: connect-src must include all allowed AI origins + Vite dev HMR
+  "connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn",
   "img-src 'self' data: blob:",
   "font-src 'self' https://fonts.gstatic.com data:",
   "object-src 'none'",

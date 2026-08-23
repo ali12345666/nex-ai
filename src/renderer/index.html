@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- CSP is set authoritatively via onHeadersReceived in main.ts -->
     <!-- This meta tag is a fallback for the initial HTML load -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' https://api.openai.com https://api.anthropic.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-src 'none';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-src 'none';" />
     <title>NEX AI</title>
     <!-- Phase 27/37: NEX design system (loaded as <link> to avoid PostCSS @import ordering warnings) -->
     <link rel="stylesheet" href="./styles/tokens.css" />
