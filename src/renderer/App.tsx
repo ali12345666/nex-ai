@@ -8,7 +8,6 @@ import TerminalPanel from './components/TerminalPanel';
 import FileExplorer from './components/FileExplorer';
 import GitPanel from './components/GitPanel';
 import SearchPanel from './components/SearchPanel';
-import SnippetPanel from './components/SnippetPanel';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
 import ModelsPanel from './components/ModelsPanel';
 import KnowledgePanel from './components/KnowledgePanel';
@@ -36,7 +35,6 @@ function SidebarContent() {
     system: <HardwareMonitorPanel />,  // works without a project too
     memory: <MemoryPanel />,
     plugins: <PluginsPanel />,
-    snippets: <SnippetPanel />,
     diagnostics: projectPath ? <DiagnosticsPanel /> : null,
   };
 
