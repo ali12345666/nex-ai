@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, RefreshCw, FileText, Layers, HardDrive, Cpu, ShieldCheck,
   Loader2, AlertCircle, X, ChevronRight, ChevronDown, Wrench,
-  Plus, FolderPlus, Trash2, RotateCw, Search, Settings2, Check,
+  Plus, FolderPlus, Trash2, RotateCw, Search, Settings2, Check, Eye,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
@@ -42,8 +42,12 @@ interface SearchHit {
   startLine?: number;
   endLine?: number;
   section?: string;
+  symbols?: string[];
+  jsonPath?: string;
+  rowRange?: string;
   score: number;
   snippet: string;
+  citation?: string;
 }
 
 interface EmbeddingModelEntry {
@@ -186,6 +190,28 @@ export default function KnowledgePanel() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // ── P11-F: Knowledge Viewer (open document → chunks + metadata) ──
+  const [viewDoc, setViewDoc] = useState<{
+    document: NonNullable<Awaited<ReturnType<typeof window.nexAPI.knowledgeChunks>>['document']>;
+    embedding?: NonNullable<Awaited<ReturnType<typeof window.nexAPI.knowledgeChunks>>['embedding']>;
+    chunks: NonNullable<Awaited<ReturnType<typeof window.nexAPI.knowledgeChunks>>['chunks']>;
+  } | null>(null);
+  const [viewBusy, setViewBusy] = useState(false);
+
+  const openDoc = async (id: string) => {
+    if (!projectPath) return;
+    setViewBusy(true); setError(null);
+    try {
+      const res = await window.nexAPI.knowledgeChunks(projectPath, id);
+      if (res.success && res.document && res.chunks) {
+        setViewDoc({ document: res.document, embedding: res.embedding, chunks: res.chunks });
+      } else {
+        setError(res.error || 'cannot open document');
+      }
+    } catch (err: any) { setError(err.message); }
+    finally { setViewBusy(false); }
   };
 
   // ── P10-D/E: embedding backend state (hash default / local GGUF) ──
@@ -409,12 +435,73 @@ export default function KnowledgePanel() {
                         ? ` → lines ${r.startLine}${r.endLine !== undefined ? `-${r.endLine}` : ''}`
                         : ''}
                       {r.section ? ` · § ${r.section}` : ''}
+                      {r.citation ? '' : ''}
                     </div>
+                    {r.citation && (
+                      <div className="text-[9px] text-nex-accent/80 mt-0.5 truncate font-mono" title="citation">
+                        {r.citation}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </div>
+
+          {/* Knowledge Viewer (P11-F) */}
+          {viewDoc && (
+            <div className="px-3 py-2 border-b border-nex-border/50 bg-nex-bg/30">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Eye size={11} className="text-nex-accent shrink-0" />
+                <span className="text-[11px] font-medium text-nex-text truncate flex-1">{viewDoc.document.title}</span>
+                <button onClick={() => setViewDoc(null)} className="text-nex-text-dim hover:text-nex-text shrink-0" title="Close viewer">
+                  <X size={11} />
+                </button>
+              </div>
+              <div className="text-[9px] text-nex-text-muted space-y-0.5 mb-1.5">
+                <div className="truncate" title={viewDoc.document.sourcePath}>path: {viewDoc.document.sourcePath || '—'}</div>
+                <div>
+                  format: {viewDoc.document.format}
+                  {viewDoc.document.language ? ` · lang: ${viewDoc.document.language}` : ''}
+                  {typeof viewDoc.document.symbolCount === 'number' ? ` · symbols: ${viewDoc.document.symbolCount}` : ''}
+                  {` · chunks: ${viewDoc.chunks.length}`}
+                </div>
+                {viewDoc.document.imports && viewDoc.document.imports.length > 0 && (
+                  <div className="truncate" title={viewDoc.document.imports.join(', ')}>imports: {viewDoc.document.imports.slice(0, 5).join(', ')}{viewDoc.document.imports.length > 5 ? ' …' : ''}</div>
+                )}
+                <div>
+                  index: {viewDoc.document.chunkCount ? 'Ready' : '—'} · size: {formatBytes(viewDoc.document.sizeBytes || 0)} · indexed: {timeAgo(viewDoc.document.indexedAt)}
+                </div>
+                {viewDoc.embedding && (
+                  <div>
+                    embedding: {viewDoc.embedding.backend === 'hash' ? `Local hash${viewDoc.embedding.dimension ? ` (${viewDoc.embedding.dimension}d)` : ''}` : 'Local GGUF'} · offline: yes
+                  </div>
+                )}
+              </div>
+              <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1">Chunks ({viewDoc.chunks.length})</div>
+              <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                {viewDoc.chunks.map((c) => (
+                  <div key={c.id} className={`p-1.5 rounded border ${c.suspectedInjection ? 'border-yellow-500/40 bg-yellow-500/5' : 'border-nex-border/60 bg-nex-card/60'}`}>
+                    <div className="flex items-center gap-1 text-[9px]">
+                      <span className="text-nex-text-muted font-mono">#{c.index}</span>
+                      {c.startLine !== undefined && (
+                        <span className="text-nex-text-dim font-mono">
+                          {c.jsonPath ? c.jsonPath : c.rowRange ? c.rowRange : `L${c.startLine}${c.endLine !== undefined ? `-${c.endLine}` : ''}`}
+                        </span>
+                      )}
+                      {c.sectionTitle && <span className="text-nex-accent/70 truncate">§ {c.sectionTitle}</span>}
+                      {c.symbols && c.symbols.length > 0 && (
+                        <span className="text-nex-accent/80 truncate flex-1" title={c.symbols.join(', ')}>{c.symbols.slice(0, 2).join(' + ')}</span>
+                      )}
+                      <span className="text-nex-text-muted ml-auto shrink-0">{c.chars}c</span>
+                    </div>
+                    {c.suspectedInjection && <div className="text-[8px] text-yellow-400 mt-0.5">⚠ injection-suspected (stored as data)</div>}
+                    <p className="text-[9px] text-nex-text-dim mt-0.5 line-clamp-2 whitespace-pre-wrap">{c.preview}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Document list */}
           <div className="px-3 py-2">
@@ -429,7 +516,7 @@ export default function KnowledgePanel() {
               </p>
             )}
             {docs.map((d) => (
-              <DocRow key={d.id} doc={d} busy={busy} onReindex={() => reindexDoc(d)} onDelete={() => removeDoc(d.id)} />
+              <DocRow key={d.id} doc={d} busy={busy} onReindex={() => reindexDoc(d)} onDelete={() => removeDoc(d.id)} onView={() => openDoc(d.id)} viewBusy={viewBusy} />
             ))}
           </div>
         </div>
@@ -481,11 +568,13 @@ function EmbOption({ active, onClick, disabled, title, desc }: {
   );
 }
 
-function DocRow({ doc, busy, onReindex, onDelete }: {
+function DocRow({ doc, busy, onReindex, onDelete, onView, viewBusy }: {
   doc: KnowledgeDoc;
   busy: string | null;
   onReindex: () => void;
   onDelete: () => void;
+  onView: () => void;
+  viewBusy: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -504,6 +593,11 @@ function DocRow({ doc, busy, onReindex, onDelete }: {
             <div>indexed: {timeAgo(doc.indexedAt)}{doc.domain ? ` · domain: ${doc.domain}` : ''}</div>
           </div>
           <div className="flex gap-1">
+            <button onClick={onView} disabled={viewBusy}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-nex-accent border border-nex-border hover:border-nex-accent/40 transition-colors disabled:opacity-50">
+              <Eye size={9} />
+              View
+            </button>
             <button onClick={onReindex} disabled={busy === `re:${doc.id}`}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-nex-accent border border-nex-border hover:border-nex-accent/40 transition-colors disabled:opacity-50">
               {busy === `re:${doc.id}` ? <Loader2 size={9} className="animate-spin" /> : <RotateCw size={9} />}

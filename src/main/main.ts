@@ -911,6 +911,8 @@ function setupIPC(): void {
     try {
       const svc = await knowledgeServiceFor(projectPath);
       const { framed, results } = await svc.retrieveForPrompt(query || '', limit ?? 4);
+      // Phase 11 / P11-E: canonical citation string per result
+      const { formatCitation } = await import('./knowledge/citation');
       return {
         success: true,
         framed,
@@ -921,8 +923,56 @@ function setupIPC(): void {
           startLine: r.chunk.metadata?.startLine,
           endLine: r.chunk.metadata?.endLine,
           section: r.chunk.sectionTitle,
+          symbols: r.chunk.metadata?.symbols,
+          jsonPath: r.chunk.metadata?.jsonPath,
+          rowRange: r.chunk.metadata?.rowRange,
           score: Number(r.score.toFixed(4)),
           snippet: r.chunk.content.slice(0, 200),
+          citation: formatCitation({
+            chunk: r.chunk,
+            document: r.document,
+            score: Number(r.score.toFixed(4)),
+          }),
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Phase 11 / P11-F: Knowledge Viewer — chunk list for one document
+  ipcMain.handle('knowledge-chunks', async (_event, projectPath: string, documentId: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      const doc = await svc.getDocument(documentId);
+      if (!doc) return { success: false, error: 'Document not found' };
+      const chunks = svc.getStatsStore().listChunksByDocument(documentId);
+      return {
+        success: true,
+        document: {
+          id: doc.id, title: doc.title, format: doc.format, domain: doc.domain,
+          sourcePath: doc.sourcePath,
+          language: (doc.metadata as any)?.language,
+          imports: (doc.metadata as any)?.imports,
+          symbolCount: (doc.metadata as any)?.symbolCount,
+          chunkCount: (doc.metadata as any)?.chunkCount,
+          sizeBytes: (doc.metadata as any)?.sizeBytes,
+          indexedAt: (doc.metadata as any)?.indexedAt,
+        },
+        embedding: svc.embeddingInfo(),
+        chunks: chunks.map((c: any) => ({
+          id: c.id,
+          index: c.index,
+          startLine: c.metadata?.startLine,
+          endLine: c.metadata?.endLine,
+          sectionTitle: c.sectionTitle,
+          symbols: c.metadata?.symbols,
+          jsonPath: c.metadata?.jsonPath,
+          rowRange: c.metadata?.rowRange,
+          language: c.metadata?.language,
+          suspectedInjection: c.metadata?.suspectedInjection === true,
+          preview: c.content.slice(0, 160),
+          chars: c.content.length,
         })),
       };
     } catch (err: any) {

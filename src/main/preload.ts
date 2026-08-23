@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('nexAPI', {
   knowledgePurgeMissing: (projectPath: string) => ipcRenderer.invoke('knowledge-purge-missing', projectPath),
   knowledgeRebuild: (projectPath: string) => ipcRenderer.invoke('knowledge-rebuild', projectPath),
   knowledgeClear: (projectPath: string) => ipcRenderer.invoke('knowledge-clear', projectPath),
+  knowledgeChunks: (projectPath: string, documentId: string) => ipcRenderer.invoke('knowledge-chunks', projectPath, documentId),
   knowledgeEmbeddingGet: () => ipcRenderer.invoke('knowledge-embedding-get'),
   knowledgeEmbeddingSet: (modelId: string | null) => ipcRenderer.invoke('knowledge-embedding-set', modelId),
   dialogOpenFiles: () => ipcRenderer.invoke('dialog-open-files'),

@@ -224,6 +224,9 @@ export class KnowledgeService implements KnowledgeBase {
         startLine: m.startLine,
         endLine: m.endLine,
         content: r.chunk.content,
+        symbols: m.symbols,       // Phase 11 / P11-E: symbol-level citations
+        jsonPath: m.jsonPath,
+        rowRange: m.rowRange,
       });
     }).join('\n\n');
     return { framed, results };
