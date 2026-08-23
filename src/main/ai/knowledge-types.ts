@@ -25,7 +25,7 @@
 
 export type DocumentFormat =
   | 'pdf' | 'html' | 'markdown' | 'plaintext'
-  | 'source-code' | 'json' | 'yaml' | 'csv'
+  | 'source-code' | 'json' | 'yaml' | 'csv' | 'xml'   // xml: Phase 11 / P11-A
   | 'image' | 'office-doc';
 
 export interface KnowledgeDocument {
@@ -53,6 +53,11 @@ export interface KnowledgeDocument {
     modifiedAt?: number;
     chunkCount?: number;
     indexedAt?: number;
+    // Phase 11 / P11-A (additive, optional — structural code metadata).
+    // NOTE: reuses the pre-existing `language` field above — for source-code
+    // documents it carries the PROGRAMMING language (e.g. 'typescript').
+    imports?: string[];
+    symbolCount?: number;
   };
 }
 

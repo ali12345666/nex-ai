@@ -37,6 +37,7 @@ const EXT_TO_FORMAT: Record<string, DocumentFormat> = {
   '.json': 'json',
   '.yaml': 'yaml', '.yml': 'yaml',
   '.csv': 'csv', '.tsv': 'csv',
+  '.xml': 'xml',
   '.html': 'html', '.htm': 'html',
   '.ts': 'source-code', '.tsx': 'source-code', '.js': 'source-code', '.jsx': 'source-code',
   '.mjs': 'source-code', '.cjs': 'source-code', '.py': 'source-code', '.rb': 'source-code',
@@ -170,6 +171,41 @@ export class HtmlParser implements DocumentParser {
   }
 }
 
+/**
+ * XML (Phase 11 / P11-A): tags → text with entity decoding and comment
+ * removal. Structure-light (element names are NOT preserved as sections —
+ * text retrieval only). Pure regex, zero deps — same posture as HtmlParser.
+ */
+export class XmlParser implements DocumentParser {
+  canHandle(format: DocumentFormat): boolean { return format === 'xml'; }
+  async parse(filePath: string): Promise<ParsedDocument> {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    // CDATA content may contain '<'/'>' that must NOT be eaten by later
+    // tag-stripping → stash it behind a sentinel, strip tags, then restore.
+    const cdataStash: string[] = [];
+    const text = raw
+      .replace(/<!--[\s\S]*?-->/g, ' ')                    // comments
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_m, inner) => {
+        cdataStash.push(inner);
+        return `\u0000CD${cdataStash.length - 1}\u0000`;
+      })
+      .replace(/<\?[\s\S]*?\?>/g, ' ')                     // processing instructions
+      .replace(/\s*\/>/g, ' ')                               // self-closing tails
+      .replace(/<\/[A-Za-z][\w:.-]*>/g, '\n')               // closing tags → newline
+      .replace(/<[A-Za-z][\w:.-]*(?:\s[^<>]*)?>/g, ' ')      // opening tags
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(parseInt(d, 10)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\u0000CD(\d+)\u0000/g, (_m, i) => cdataStash[Number(i)] || '')
+      .trim();
+    return { text };
+  }
+}
+
 // ─── Registry ───────────────────────────────────────────────────────────────
 
 const PARSERS: DocumentParser[] = [
@@ -179,6 +215,7 @@ const PARSERS: DocumentParser[] = [
   new LineTextParser(),
   new SourceCodeParser(),
   new HtmlParser(),
+  new XmlParser(),   // Phase 11 / P11-A
 ];
 
 /** Find the parser for a format (null when unsupported). */

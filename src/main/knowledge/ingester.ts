@@ -22,6 +22,8 @@ import type { DocumentChunk, KnowledgeDocument, KnowledgeDomain } from '../ai/kn
 import { detectFormat, getParser } from './parsers';
 import { chunkDocument, type ChunkerConfig } from './chunker';
 import { validateIngestFile, stripControlChars, scanForInjection, type IngestGuardOptions } from './security';
+// Phase 11 / P11-A: structural source-code metadata (additive enrichment)
+import { detectLanguage, extractCodeStructure, attachSymbolsToChunks } from './code-structure';
 
 export interface IngestOptions {
   projectId: string;
@@ -94,6 +96,20 @@ export async function ingestFile(filePath: string, opts: IngestOptions): Promise
     config: opts.chunkerConfig,
   });
 
+  // 4.5) Phase 11 / P11-A: structural metadata for source files — language,
+  // imports and symbols attached to document + overlapping chunks (citations
+  // can then say "calculator.ts → function add → lines 10-18").
+  const language = detectLanguage(filename);
+  let structure: ReturnType<typeof extractCodeStructure> | null = null;
+  if (language) {
+    try {
+      structure = extractCodeStructure(text, language);
+      attachSymbolsToChunks(chunks, structure);
+    } catch {
+      structure = null; // best-effort only — never fail ingestion
+    }
+  }
+
   // 5) Injection annotation (data stays data — flag only)
   for (const c of chunks) {
     const scan = scanForInjection(c.content);
@@ -123,6 +139,10 @@ export async function ingestFile(filePath: string, opts: IngestOptions): Promise
       modifiedAt: Math.round(stat.mtimeMs),
       chunkCount: chunks.length,
       indexedAt: Date.now(),
+      // Phase 11 / P11-A: structural document metadata
+      ...(language ? { language } : {}),
+      ...(structure && structure.imports.length > 0 ? { imports: structure.imports.slice(0, 100) } : {}),
+      ...(structure && structure.symbols.length > 0 ? { symbolCount: structure.symbols.length } : {}),
     },
   };
 
