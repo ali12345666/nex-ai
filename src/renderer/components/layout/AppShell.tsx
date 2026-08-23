@@ -23,7 +23,8 @@ import BottomStatusBar from './BottomStatusBar';
 const NexOrb = lazy(() => import('../orb/NexOrb'));
 
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
-const ChatPanel = lazy(() => import('../ChatPanel'));
+// Phase 29: Real chat panel using NEX token system
+const NexChatPanel = lazy(() => import('../chat/NexChatPanel'));
 // Phase 28: Real terminal + workspace explorer
 const TerminalSessionPanel = lazy(() => import('./TerminalSessionPanel'));
 const WorkspaceExplorer = lazy(() => import('./WorkspaceExplorer'));
@@ -156,7 +157,7 @@ export default function AppShell() {
           {/* Chat Body */}
           <div className="flex-1 overflow-hidden">
             <Suspense fallback={<PanelLoading />}>
-              <ChatPanel />
+              <NexChatPanel />
             </Suspense>
           </div>
         </div>
