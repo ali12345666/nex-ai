@@ -217,6 +217,37 @@ export default function App() {
 
   const hasFiles = openFiles.length > 0;
 
+  // Phase 27: NEX Command Center — new AppShell with orb/rail/chat/dock
+  // The legacy layout is kept as a fallback if AppShell fails to render.
+  let Shell: React.ComponentType | null = null;
+  try {
+    Shell = require('./components/layout/AppShell').default;
+  } catch { Shell = null; }
+
+  if (Shell) {
+    return (
+      <>
+        <Shell />
+        {commandPaletteOpen && <CommandPalette />}
+        <PermissionPrompt
+          request={pendingPermission}
+          onRespond={handlePermissionRespond}
+        />
+        {showDiffViewer && pendingDiffs.length > 0 && (
+          <AgentDiffViewer
+            diffs={pendingDiffs}
+            onAccept={handleAcceptDiff}
+            onReject={handleRejectDiff}
+            onAcceptAll={handleAcceptAll}
+            onRejectAll={handleRejectAll}
+            onClose={() => setShowDiffViewer(false)}
+          />
+        )}
+      </>
+    );
+  }
+
+  // Legacy layout (fallback)
   return (
     <div className="h-screen w-screen flex flex-col bg-nex-bg text-nex-text overflow-hidden">
       <TitleBar />

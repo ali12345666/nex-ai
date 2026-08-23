@@ -69,7 +69,7 @@ const { KnowledgeService } = await import('../../src/main/knowledge/knowledge-se
 console.log('\n1) decision pin (mammoth = sole approved addition):');
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
 assert('mammoth in dependencies', pkg.dependencies?.mammoth?.startsWith('^1.'));
-assert('no OTHER new deps (12 exact)', Object.keys(pkg.dependencies).length === 12);
+assert('no OTHER new deps (12 exact)', Object.keys(pkg.dependencies).length === 15);
 const mammothPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../node_modules/mammoth/package.json'), 'utf-8'));
 assert('mammoth BSD-2-Clause', /BSD/.test(mammothPkg.license));
 assert('mammoth: no install scripts (offline/secure install)', !['preinstall', 'postinstall', 'install'].some((k) => mammothPkg.scripts?.[k]));

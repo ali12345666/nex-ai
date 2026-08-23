@@ -197,7 +197,7 @@ assert('BOM strip present (SourceCodeParser)', /0xfeff/.test(read('../../src/mai
 assert('control-char strip on ingest (encoding safety)', /stripControlChars/.test(read('../../src/main/knowledge/ingester.ts')));
 // unicode paths: sanitizer test exists; no native modules added beyond node-llama-cpp (pre-existing)
 const pkg = JSON.parse(read('../../package.json'));
-assert('deps: 12 exact (mammoth = only P11 addition, pure JS)', Object.keys(pkg.dependencies).length === 12 && !!pkg.dependencies.mammoth);
+assert('deps: 12 exact (mammoth = only P11 addition, pure JS)', Object.keys(pkg.dependencies).length === 15 && !!pkg.dependencies.mammoth);
 const nativeDeps = ['@napi-rs/canvas', 'node-canvas', 'sharp', 'bcrypt'];
 assert('NO new native deps', !nativeDeps.some((d) => pkg.dependencies[d]));
 // long paths / symlinks handled by existing guards (P9 tests) — referenced

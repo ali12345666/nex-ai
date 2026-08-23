@@ -1,0 +1,154 @@
+/**
+ * NEX AI — Design Tokens & Theme System (Phase 27)
+ *
+ * CSS custom properties for the entire futuristic UI. 16 orb presets,
+ * glass effects, cosmic background, smooth theme transitions.
+ */
+
+:root {
+  /* ── Base ── */
+  --nex-bg: #04060c;
+  --nex-bg-secondary: #080d18;
+  --nex-panel: rgba(12, 18, 32, 0.75);
+  --nex-panel-solid: #0c1220;
+  --nex-panel-border: rgba(0, 229, 255, 0.12);
+  --nex-panel-border-hover: rgba(0, 229, 255, 0.25);
+
+  /* ── Accent (bound to active theme) ── */
+  --nex-accent: #00e5ff;
+  --nex-accent-secondary: #00b8ff;
+  --nex-accent-dim: rgba(0, 229, 255, 0.15);
+  --nex-accent-glow: rgba(0, 229, 255, 0.3);
+  --nex-accent-text: #7ff4ff;
+
+  /* ── Orb (bound to active theme) ── */
+  --nex-orb-primary: #00e5ff;
+  --nex-orb-secondary: #2563ff;
+  --nex-orb-glow: rgba(0, 229, 255, 0.4);
+
+  /* ── Text ── */
+  --nex-text: #e8eaf6;
+  --nex-text-dim: #8a8fa8;
+  --nex-text-muted: #5a5e75;
+
+  /* ── Status ── */
+  --nex-success: #00ff9d;
+  --nex-warning: #ffc107;
+  --nex-error: #ff3b5c;
+  --nex-info: #00b8ff;
+
+  /* ── Glass ── */
+  --nex-glass-blur: 24px;
+  --nex-glass-bg: rgba(12, 18, 32, 0.65);
+  --nex-glass-border: rgba(255, 255, 255, 0.06);
+
+  /* ── Layout ── */
+  --nex-nav-width: 68px;
+  --nex-radius-sm: 8px;
+  --nex-radius-md: 12px;
+  --nex-radius-lg: 18px;
+  --nex-radius-xl: 24px;
+
+  /* ── Transitions ── */
+  --nex-transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --nex-transition-fast: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── 16 Theme Presets ── */
+
+[data-theme="cyan"] {
+  --nex-accent: #00e5ff; --nex-accent-secondary: #00b8ff;
+  --nex-orb-primary: #00e5ff; --nex-orb-secondary: #2563ff;
+  --nex-accent-glow: rgba(0, 229, 255, 0.3); --nex-orb-glow: rgba(0, 229, 255, 0.4);
+  --nex-accent-dim: rgba(0, 229, 255, 0.15); --nex-accent-text: #7ff4ff;
+}
+[data-theme="electric-blue"] {
+  --nex-accent: #00b8ff; --nex-accent-secondary: #0080ff;
+  --nex-orb-primary: #00b8ff; --nex-orb-secondary: #0044cc;
+  --nex-accent-glow: rgba(0, 184, 255, 0.3); --nex-orb-glow: rgba(0, 184, 255, 0.4);
+  --nex-accent-dim: rgba(0, 184, 255, 0.15); --nex-accent-text: #7fdcff;
+}
+[data-theme="deep-blue"] {
+  --nex-accent: #2563ff; --nex-accent-secondary: #1a3fcc;
+  --nex-orb-primary: #2563ff; --nex-orb-secondary: #0a1a80;
+  --nex-accent-glow: rgba(37, 99, 255, 0.3); --nex-orb-glow: rgba(37, 99, 255, 0.4);
+  --nex-accent-dim: rgba(37, 99, 255, 0.15); --nex-accent-text: #7fa5ff;
+}
+[data-theme="azure"] {
+  --nex-accent: #00a8ff; --nex-accent-secondary: #0090e0;
+  --nex-orb-primary: #00a8ff; --nex-orb-secondary: #0060c0;
+  --nex-accent-glow: rgba(0, 168, 255, 0.3); --nex-orb-glow: rgba(0, 168, 255, 0.4);
+  --nex-accent-dim: rgba(0, 168, 255, 0.15); --nex-accent-text: #7fd4ff;
+}
+[data-theme="turquoise"] {
+  --nex-accent: #00e5cc; --nex-accent-secondary: #00c4ad;
+  --nex-orb-primary: #00e5cc; --nex-orb-secondary: #009a88;
+  --nex-accent-glow: rgba(0, 229, 204, 0.3); --nex-orb-glow: rgba(0, 229, 204, 0.4);
+  --nex-accent-dim: rgba(0, 229, 204, 0.15); --nex-accent-text: #7ff4e8;
+}
+[data-theme="violet"] {
+  --nex-accent: #8b5cf6; --nex-accent-secondary: #7c3aed;
+  --nex-orb-primary: #8b5cf6; --nex-orb-secondary: #4c1d95;
+  --nex-accent-glow: rgba(139, 92, 246, 0.3); --nex-orb-glow: rgba(139, 92, 246, 0.4);
+  --nex-accent-dim: rgba(139, 92, 246, 0.15); --nex-accent-text: #c4b5fd;
+}
+[data-theme="purple"] {
+  --nex-accent: #a855f7; --nex-accent-secondary: #9333ea;
+  --nex-orb-primary: #a855f7; --nex-orb-secondary: #581c87;
+  --nex-accent-glow: rgba(168, 85, 247, 0.3); --nex-orb-glow: rgba(168, 85, 247, 0.4);
+  --nex-accent-dim: rgba(168, 85, 247, 0.15); --nex-accent-text: #d8b4fe;
+}
+[data-theme="magenta"] {
+  --nex-accent: #ec4899; --nex-accent-secondary: #db2777;
+  --nex-orb-primary: #ec4899; --nex-orb-secondary: #831843;
+  --nex-accent-glow: rgba(236, 72, 153, 0.3); --nex-orb-glow: rgba(236, 72, 153, 0.4);
+  --nex-accent-dim: rgba(236, 72, 153, 0.15); --nex-accent-text: #f9a8d4;
+}
+[data-theme="pink"] {
+  --nex-accent: #f472b6; --nex-accent-secondary: #ec4899;
+  --nex-orb-primary: #f472b6; --nex-orb-secondary: #9d174d;
+  --nex-accent-glow: rgba(244, 114, 182, 0.3); --nex-orb-glow: rgba(244, 114, 182, 0.4);
+  --nex-accent-dim: rgba(244, 114, 182, 0.15); --nex-accent-text: #fbcfe8;
+}
+[data-theme="red"] {
+  --nex-accent: #ef4444; --nex-accent-secondary: #dc2626;
+  --nex-orb-primary: #ef4444; --nex-orb-secondary: #7f1d1d;
+  --nex-accent-glow: rgba(239, 68, 68, 0.3); --nex-orb-glow: rgba(239, 68, 68, 0.4);
+  --nex-accent-dim: rgba(239, 68, 68, 0.15); --nex-accent-text: #fca5a5;
+}
+[data-theme="orange"] {
+  --nex-accent: #f97316; --nex-accent-secondary: #ea580c;
+  --nex-orb-primary: #f97316; --nex-orb-secondary: #7c2d12;
+  --nex-accent-glow: rgba(249, 115, 22, 0.3); --nex-orb-glow: rgba(249, 115, 22, 0.4);
+  --nex-accent-dim: rgba(249, 115, 22, 0.15); --nex-accent-text: #fdba74;
+}
+[data-theme="amber"] {
+  --nex-accent: #f59e0b; --nex-accent-secondary: #d97706;
+  --nex-orb-primary: #f59e0b; --nex-orb-secondary: #78350f;
+  --nex-accent-glow: rgba(245, 158, 11, 0.3); --nex-orb-glow: rgba(245, 158, 11, 0.4);
+  --nex-accent-dim: rgba(245, 158, 11, 0.15); --nex-accent-text: #fcd34d;
+}
+[data-theme="gold"] {
+  --nex-accent: #eab308; --nex-accent-secondary: #ca8a04;
+  --nex-orb-primary: #eab308; --nex-orb-secondary: #713f12;
+  --nex-accent-glow: rgba(234, 179, 8, 0.3); --nex-orb-glow: rgba(234, 179, 8, 0.4);
+  --nex-accent-dim: rgba(234, 179, 8, 0.15); --nex-accent-text: #fde047;
+}
+[data-theme="lime"] {
+  --nex-accent: #84cc16; --nex-accent-secondary: #65a30d;
+  --nex-orb-primary: #84cc16; --nex-orb-secondary: #365314;
+  --nex-accent-glow: rgba(132, 204, 22, 0.3); --nex-orb-glow: rgba(132, 204, 22, 0.4);
+  --nex-accent-dim: rgba(132, 204, 22, 0.15); --nex-accent-text: #bef264;
+}
+[data-theme="green"] {
+  --nex-accent: #22c55e; --nex-accent-secondary: #16a34a;
+  --nex-orb-primary: #22c55e; --nex-orb-secondary: #14532d;
+  --nex-accent-glow: rgba(34, 197, 94, 0.3); --nex-orb-glow: rgba(34, 197, 94, 0.4);
+  --nex-accent-dim: rgba(34, 197, 94, 0.15); --nex-accent-text: #86efac;
+}
+[data-theme="ice"] {
+  --nex-accent: #e0f2fe; --nex-accent-secondary: #b3e5fc;
+  --nex-orb-primary: #e0f2fe; --nex-orb-secondary: #81d4fa;
+  --nex-accent-glow: rgba(224, 242, 254, 0.25); --nex-orb-glow: rgba(224, 242, 254, 0.3);
+  --nex-accent-dim: rgba(224, 242, 254, 0.12); --nex-accent-text: #f0f9ff;
+}

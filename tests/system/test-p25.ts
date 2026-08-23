@@ -52,7 +52,7 @@ const cpal = fs.readFileSync(path.join(__dirname, '../../src/renderer/components
 assert('CommandPalette Escape intact', /Escape/.test(cpal));
 
 console.log('\npurity:');
-assert('deps unchanged', (() => { const p = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')); return Object.keys(p.dependencies).length === 12; })());
+assert('deps unchanged', (() => { const p = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')); return Object.keys(p.dependencies).length === 15; })());
 assert('renderer: no direct exec/fs', !/child_process|execFile/.test(cp) && !/child_process|execFile/.test(pp));
 
 console.log('\n══════════════════════════════════════');

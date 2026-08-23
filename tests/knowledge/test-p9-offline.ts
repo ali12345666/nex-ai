@@ -175,7 +175,10 @@ assert('agent/ still has ZERO knowledge/ imports', agentViolation === '', agentV
 // decision pinned by tests/knowledge/test-p11-c.ts). Phase 9's INTENT
 // (no accidental/silent deps) is preserved: the list is still EXACT.
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
-const expectedDeps = ['@monaco-editor/react', 'chokidar', 'glob', 'lucide-react', 'mammoth', 'node-llama-cpp', 'react', 'react-dom', 'xterm', 'xterm-addon-fit', 'xterm-addon-web-links', 'zustand'];
+// Phase 27 update: three/@react-three/fiber/@react-three/drei added for
+// the NEX AI Orb (WebGL procedural visualization — local-only, no network).
+// Documented addition per the UI directive.
+const expectedDeps = ['@monaco-editor/react', '@react-three/drei', '@react-three/fiber', 'chokidar', 'glob', 'lucide-react', 'mammoth', 'node-llama-cpp', 'react', 'react-dom', 'three', 'xterm', 'xterm-addon-fit', 'xterm-addon-web-links', 'zustand'];
 assert('package.json deps EXACT allowlist (no silent additions)', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(expectedDeps.sort()), JSON.stringify(Object.keys(pkg.dependencies)));
 
 // main.ts wiring uses dynamic imports only (no static coupling)

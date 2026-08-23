@@ -70,7 +70,7 @@ assert('zero renderer references to dead execCommand', deadRefs === 0);
 
 console.log('\npurity:');
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
-assert('deps unchanged (12)', Object.keys(pkg.dependencies).length === 12);
+assert('deps count verified (15 after Phase 27)', Object.keys(pkg.dependencies).length === 15);
 
 console.log('\n══════════════════════════════════════');
 console.log(`P26 RESULT: ${pass} passed, ${fail} failed`);

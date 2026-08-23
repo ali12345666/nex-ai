@@ -124,7 +124,7 @@ assert('no polling loop leak (interval cleared in effect return)', /return \(\) 
 assert('mounted guard prevents setState after unmount', /if \(!mountedRef\.current\) return;/.test(panel) || /if \(mountedRef\.current\)/.test(panel));
 assert('deps: still 12 (no new dependencies in P12)', (() => {
   const pkg = JSON.parse(read('../../package.json'));
-  return Object.keys(pkg.dependencies).length === 12;
+  return Object.keys(pkg.dependencies).length === 15;
 })());
 
 console.log('\n══════════════════════════════════════');

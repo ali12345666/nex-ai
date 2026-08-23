@@ -87,7 +87,7 @@ assert('project change re-polls (dep)', /\[poll\]/.test(src));
 console.log('\npurity:');
 assert('no direct fs/git in renderer', !/child_process|execFile|require\('fs'\)/.test(src));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
-assert('deps unchanged (12)', Object.keys(pkg.dependencies).length === 12);
+assert('deps count verified (15 after Phase 27)', Object.keys(pkg.dependencies).length === 15);
 
 console.log('\n══════════════════════════════════════');
 console.log(`P24 RESULT: ${pass} passed, ${fail} failed`);

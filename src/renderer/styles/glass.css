@@ -1,0 +1,185 @@
+/**
+ * NEX AI — Glass & Effect Utilities (Phase 27)
+ *
+ * Glassmorphism panels, cosmic background, glow utilities, animations.
+ */
+
+/* ── Glass Panels ── */
+.nex-glass {
+  background: var(--nex-glass-bg);
+  backdrop-filter: blur(var(--nex-glass-blur));
+  -webkit-backdrop-filter: blur(var(--nex-glass-blur));
+  border: 1px solid var(--nex-glass-border);
+}
+
+.nex-glass-accent {
+  background: var(--nex-panel);
+  backdrop-filter: blur(var(--nex-glass-blur));
+  -webkit-backdrop-filter: blur(var(--nex-glass-blur));
+  border: 1px solid var(--nex-panel-border);
+}
+
+.nex-glass-strong {
+  background: rgba(8, 12, 24, 0.92);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 1px solid var(--nex-glass-border);
+}
+
+/* ── Glow Utilities ── */
+.nex-glow {
+  box-shadow: 0 0 20px var(--nex-accent-glow), 0 0 40px var(--nex-accent-dim);
+}
+
+.nex-glow-sm {
+  box-shadow: 0 0 10px var(--nex-accent-glow);
+}
+
+.nex-glow-text {
+  text-shadow: 0 0 12px var(--nex-accent-glow), 0 0 30px var(--nex-accent-dim);
+}
+
+.nex-border-glow {
+  border-color: var(--nex-accent) !important;
+  box-shadow: 0 0 8px var(--nex-accent-dim), inset 0 0 12px var(--nex-accent-dim);
+}
+
+/* ── Cosmic Background ── */
+.nex-cosmic-bg {
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 40%, var(--nex-accent-dim) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 30% at 80% 80%, rgba(37, 99, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 30% 40% at 20% 90%, rgba(139, 92, 246, 0.05) 0%, transparent 50%),
+    linear-gradient(180deg, var(--nex-bg) 0%, var(--nex-bg-secondary) 100%);
+}
+
+.nex-stars::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,0.3) 50%, transparent 50%),
+    radial-gradient(1px 1px at 30% 60%, rgba(255,255,255,0.2) 50%, transparent 50%),
+    radial-gradient(2px 2px at 70% 10%, rgba(255,255,255,0.15) 50%, transparent 50%),
+    radial-gradient(1px 1px at 90% 40%, rgba(255,255,255,0.25) 50%, transparent 50%),
+    radial-gradient(1px 1px at 50% 80%, rgba(255,255,255,0.2) 50%, transparent 50%),
+    radial-gradient(1px 1px at 15% 90%, rgba(255,255,255,0.15) 50%, transparent 50%),
+    radial-gradient(2px 2px at 85% 70%, rgba(255,255,255,0.1) 50%, transparent 50%);
+  animation: nex-star-twinkle 4s ease-in-out infinite alternate;
+}
+
+@keyframes nex-star-twinkle {
+  0% { opacity: 0.5; }
+  100% { opacity: 0.9; }
+}
+
+/* ── Ground Reflection (Energy Platform) ── */
+.nex-orb-reflection {
+  position: absolute;
+  bottom: -8%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 45%;
+  height: 8%;
+  background: radial-gradient(ellipse at center, var(--nex-accent-glow) 0%, var(--nex-accent-dim) 40%, transparent 70%);
+  filter: blur(20px);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+/* ── Animations ── */
+@keyframes nex-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.02); }
+}
+
+@keyframes nex-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+@keyframes nex-spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes nex-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes nex-slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.nex-animate-in { animation: nex-fade-in 0.3s ease-out; }
+.nex-animate-slide { animation: nex-slide-in-right 0.3s ease-out; }
+.nex-animate-pulse { animation: nex-pulse 2s ease-in-out infinite; }
+.nex-animate-breathe { animation: nex-breathe 4s ease-in-out infinite; }
+.nex-animate-spin-slow { animation: nex-spin-slow 30s linear infinite; }
+
+/* ── Micro Interactions ── */
+.nex-hover-lift {
+  transition: var(--nex-transition);
+}
+.nex-hover-lift:hover {
+  transform: translateY(-1px);
+  border-color: var(--nex-panel-border-hover);
+  box-shadow: 0 4px 20px var(--nex-accent-dim);
+}
+
+.nex-click {
+  transition: var(--nex-transition-fast);
+}
+.nex-click:active {
+  transform: scale(0.97);
+}
+
+/* ── Scrollbar ── */
+.nex-scroll::-webkit-scrollbar { width: 4px; }
+.nex-scroll::-webkit-scrollbar-track { background: transparent; }
+.nex-scroll::-webkit-scrollbar-thumb {
+  background: var(--nex-accent-dim);
+  border-radius: 2px;
+}
+.nex-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--nex-accent-glow);
+}
+
+/* ── Font Import (Inter for English) ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Typography Helpers ── */
+.nex-brand-title {
+  font-family: 'Inter', sans-serif;
+  font-weight: 200;
+  letter-spacing: 0.5em;
+  color: var(--nex-accent);
+  text-shadow: 0 0 20px var(--nex-accent-glow);
+}
+
+.nex-brand-subtitle {
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--nex-text-muted);
+}
+
+/* ── Focus Visible ── */
+.nex-focus:focus-visible {
+  outline: 2px solid var(--nex-accent);
+  outline-offset: 2px;
+  border-radius: var(--nex-radius-sm);
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

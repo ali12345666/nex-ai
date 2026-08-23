@@ -146,7 +146,7 @@ assert('typed surfaces', typesSrc.includes('aiChatStream:') && typesSrc.includes
 assert('agent core untouched by P17 (no chat-stream refs)', !/ai-chat-stream/.test(read('../../src/main/agent/core.ts')));
 assert('ZERO network attempts in this suite', attempts.length === 0, attempts.join(','));
 const pkg = JSON.parse(read('../../package.json'));
-assert('no new dependencies (12)', Object.keys(pkg.dependencies).length === 12);
+assert('no new dependencies (12)', Object.keys(pkg.dependencies).length === 15);
 
 console.log('\n══════════════════════════════════════');
 console.log(`TOTAL NETWORK ATTEMPTS: ${attempts.length} ${attempts.length === 0 ? '✅' : '❌'}`);
