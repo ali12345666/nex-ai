@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { DocumentChunk, KnowledgeDocument, KnowledgeDomain } from '../ai/knowledge-types';
+import type { DocumentChunk, DocumentParser, KnowledgeDocument, KnowledgeDomain } from '../ai/knowledge-types';
 import { detectFormat, getParser } from './parsers';
 import { chunkDocument, type ChunkerConfig } from './chunker';
 import { validateIngestFile, stripControlChars, scanForInjection, type IngestGuardOptions } from './security';
@@ -75,7 +75,14 @@ export async function ingestFile(filePath: string, opts: IngestOptions): Promise
   if (!parser) {
     return { status: 'unsupported', reason: `No parser for ${format}`, filePath };
   }
-  const parsed = await parser.parse(abs);
+  let parsed: Awaited<ReturnType<DocumentParser['parse']>>;
+  try {
+    parsed = await parser.parse(abs);
+  } catch (err: any) {
+    // Phase 11 / P11-C: containment for malformed/corrupt containers
+    // (e.g. truncated DOCX zips, zip-bomb guards) — reject cleanly, never throw.
+    return { status: 'rejected', reason: `Parse failed: ${err.message}`, filePath };
+  }
   const text = stripControlChars(parsed.text);
   if (text.trim().length === 0) {
     return { status: 'rejected', reason: 'No extractable text', filePath };

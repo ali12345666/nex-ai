@@ -28,6 +28,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { DocumentFormat, DocumentParser } from '../ai/knowledge-types';
+// Phase 11 / P11-C: DOCX (lazy mammoth inside the parser — no static coupling)
+import { DocxParser } from './docx-parser';
 
 // ─── Format detection ───────────────────────────────────────────────────────
 
@@ -48,7 +50,10 @@ const EXT_TO_FORMAT: Record<string, DocumentFormat> = {
   // Detected but NOT parseable in Phase 9 (no binary-format deps allowed).
   // Detection lets the ingester say "PDF unsupported" instead of "unknown".
   '.pdf': 'pdf',
-  '.docx': 'office-doc', '.doc': 'office-doc', '.xlsx': 'office-doc', '.pptx': 'office-doc',
+  // Phase 11 / P11-C: modern OOXML .docx is SUPPORTED (mammoth, local-only);
+  // legacy .doc and other office containers stay office-doc = unsupported.
+  '.docx': 'docx',
+  '.doc': 'office-doc', '.xlsx': 'office-doc', '.pptx': 'office-doc',
   '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.webp': 'image', '.svg': 'image',
 };
 
@@ -216,6 +221,7 @@ const PARSERS: DocumentParser[] = [
   new SourceCodeParser(),
   new HtmlParser(),
   new XmlParser(),   // Phase 11 / P11-A
+  new DocxParser(),  // Phase 11 / P11-C (lazy mammoth)
 ];
 
 /** Find the parser for a format (null when unsupported). */

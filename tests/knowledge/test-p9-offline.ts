@@ -169,10 +169,14 @@ for (const f of fs.readdirSync(agentDir)) {
 }
 assert('agent/ still has ZERO knowledge/ imports', agentViolation === '', agentViolation);
 
-// no new dependencies added by Phase 9
+// dependency allowlist — updated in Phase 11 / P11-C with documented cause:
+// 'mammoth' added for local DOCX text extraction (BSD-2-Clause, pure JS,
+// zero native deps, no install scripts — evaluation in the Phase 11 report;
+// decision pinned by tests/knowledge/test-p11-c.ts). Phase 9's INTENT
+// (no accidental/silent deps) is preserved: the list is still EXACT.
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
-const expectedDeps = ['@monaco-editor/react', 'chokidar', 'glob', 'lucide-react', 'node-llama-cpp', 'react', 'react-dom', 'xterm', 'xterm-addon-fit', 'xterm-addon-web-links', 'zustand'];
-assert('package.json deps UNCHANGED (no new dependencies)', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(expectedDeps.sort()), JSON.stringify(Object.keys(pkg.dependencies)));
+const expectedDeps = ['@monaco-editor/react', 'chokidar', 'glob', 'lucide-react', 'mammoth', 'node-llama-cpp', 'react', 'react-dom', 'xterm', 'xterm-addon-fit', 'xterm-addon-web-links', 'zustand'];
+assert('package.json deps EXACT allowlist (no silent additions)', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(expectedDeps.sort()), JSON.stringify(Object.keys(pkg.dependencies)));
 
 // main.ts wiring uses dynamic imports only (no static coupling)
 const mainSrc = fs.readFileSync(path.join(__dirname, '../../src/main/main.ts'), 'utf-8');

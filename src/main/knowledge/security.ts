@@ -101,15 +101,21 @@ export function validateIngestFile(filePath: string, opts: IngestGuardOptions): 
   }
 
   // 6) binary sniff (first 4 KB must not contain NUL)
-  const fd = fs.openSync(real, 'r');
-  try {
-    const head = Buffer.alloc(Math.min(4096, stat.size));
-    fs.readSync(fd, head, 0, head.length, 0);
-    if (head.includes(0)) {
-      return { ok: false, reason: 'Binary file rejected', sizeBytes: stat.size };
+  //    EXEMPT: formats whose registered parser consumes a binary container
+  //    by design ('docx' = OOXML zip — Phase 11 / P11-C). Text formats and
+  //    every unknown format remain fully sniffed.
+  const BINARY_CONTAINER_FORMATS = new Set(['docx']);
+  if (!BINARY_CONTAINER_FORMATS.has(format)) {
+    const fd = fs.openSync(real, 'r');
+    try {
+      const head = Buffer.alloc(Math.min(4096, stat.size));
+      fs.readSync(fd, head, 0, head.length, 0);
+      if (head.includes(0)) {
+        return { ok: false, reason: 'Binary file rejected', sizeBytes: stat.size };
+      }
+    } finally {
+      fs.closeSync(fd);
     }
-  } finally {
-    fs.closeSync(fd);
   }
 
   return { ok: true, resolvedPath: real, format, sizeBytes: stat.size };

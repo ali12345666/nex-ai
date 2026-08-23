@@ -26,6 +26,7 @@
 export type DocumentFormat =
   | 'pdf' | 'html' | 'markdown' | 'plaintext'
   | 'source-code' | 'json' | 'yaml' | 'csv' | 'xml'   // xml: Phase 11 / P11-A
+  | 'docx'                                           // docx: Phase 11 / P11-C (mammoth)
   | 'image' | 'office-doc';
 
 export interface KnowledgeDocument {
