@@ -56,6 +56,8 @@ import { createTokenStreamer } from './stream-emit';
 import { redactSecrets } from './logger';
 import { prepareToolCall } from './tool-selector';
 import { verifyToolResult } from './verification';
+// Phase 14: trust levels + classified retries
+import { assessTrust, corroborate, decideRetry, sleep } from './trust-retry';
 import { buildContext } from './context-manager';
 import { proposeChange, acceptChange, rejectChange, listPendingChanges } from './diff-manager';
 import { AgentLogger, emitEvent } from './logger';
@@ -725,6 +727,46 @@ async function executeStep(
         data: { success: result.success, durationMs: toolCallRecord.durationMs, error: result.error },
       });
 
+      // ── Phase 14 / P14-A: trust-aware verification gate ──
+      // Model-generated SUCCESS claims require corroborating structured
+      // evidence before the step may count as completed.
+      if (result.success) {
+        const trust = assessTrust(step.toolName, result);
+        if (trust.requiresCorroboration) {
+          const { corroborated, evidence } = corroborate(result, trust);
+          if (!corroborated) {
+            emit({
+              type: 'observation',
+              taskId: task.id,
+              stepId: step.id,
+              toolCallId: toolCallRecord.id,
+              message: `Unverified claim: "${step.toolName}" reported success without structural evidence`,
+              data: { trustLevel: trust.level, needsEvidence: true },
+            });
+            const verificationEntry = {
+              id: `ver-trust-${Date.now()}`,
+              stepId: step.id,
+              description: `Trust gate for ${step.toolName}`,
+              verifiedBy: 'trust-gate' as const,
+              status: 'inconclusive' as const,
+              details: `${trust.reason}; no corroborating evidence (${evidence.join('; ') || 'none'})`,
+              timestamp: Date.now(),
+            };
+            task.verification.push(verificationEntry as any);
+          } else {
+            task.verification.push({
+              id: `ver-trust-${Date.now()}`,
+              stepId: step.id,
+              description: `Trust gate for ${step.toolName}`,
+              verifiedBy: 'trust-gate' as const,
+              status: 'verified' as const,
+              details: `Corroborated: ${evidence.join('; ')}`,
+              timestamp: Date.now(),
+            } as any);
+          }
+        }
+      }
+
       // Build observation
       const observation: Observation = {
         id: `obs-${Date.now()}`,
@@ -828,27 +870,32 @@ async function handleStepFailure(
   model: LocalModelInfo
 ): Promise<void> {
   const retryCount = step.retryCount || 0;
-  if (retryCount < task.maxRetries) {
+  // Phase 14 / P14-B: classified retry with backoff — permanent failures
+  // (permission/validation/security) are never pointlessly re-run.
+  const decision = decideRetry({ errorMessage, attempt: retryCount, maxRetries: task.maxRetries });
+  if (decision.shouldRetry) {
     step.retryCount = retryCount + 1;
     step.status = 'pending'; // allow re-execution
     emit({
       type: 'retry',
       taskId: task.id,
       stepId: step.id,
-      message: `Retrying step ${step.index + 1} (attempt ${step.retryCount + 1}/${task.maxRetries})`,
-      data: { retryCount: step.retryCount, maxRetries: task.maxRetries },
+      message: `Retrying step ${step.index + 1}: ${decision.reason}`,
+      data: { retryCount: step.retryCount, maxRetries: task.maxRetries, classification: decision.classification, backoffMs: decision.backoffMs },
     });
-    AgentLogger.warn(`Retrying step ${step.index + 1} after failure: ${errorMessage}`, { taskId: task.id, stepId: step.id });
+    AgentLogger.warn(`Retrying step ${step.index + 1} (${decision.classification}) after failure: ${errorMessage}`, { taskId: task.id, stepId: step.id });
+    await sleep(decision.backoffMs); // exponential backoff + jitter
     // Re-execute
     await executeStep(task, step, token, runtime, model);
   } else {
     step.status = 'failed';
-    step.error = `Max retries (${task.maxRetries}) exceeded: ${errorMessage}`;
+    step.error = `No retry (${decision.classification}): ${errorMessage}`;
     emit({
       type: 'step_failed',
       taskId: task.id,
       stepId: step.id,
-      message: `Step ${step.index + 1} failed permanently: ${errorMessage}`,
+      message: `Step ${step.index + 1} failed permanently: ${decision.reason}`,
+      data: { classification: decision.classification },
     });
   }
 }
