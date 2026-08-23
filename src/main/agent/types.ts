@@ -306,6 +306,8 @@ export type AgentEventType =
   | 'task_completed'
   | 'task_failed'
   | 'task_cancelled'
+  // Phase 8 / P8-E-1: streamed model tokens (planning/final response)
+  | 'agent_token'
   | 'log';
 
 export interface AgentEvent {

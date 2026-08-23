@@ -47,6 +47,9 @@ import { selectChatModel, selectCodingModel } from './model-selector';
 // NOTE: model-router is provider-blind — online details are injected.
 import { routeModel, estimateComplexity, type OnlineEnvironment } from './model-router';
 import { generatePlan } from './planner';
+// Phase 8 / P8-E-1: throttled token streaming (pure module, injected emit)
+import { createTokenStreamer } from './stream-emit';
+import { redactSecrets } from './logger';
 import { prepareToolCall } from './tool-selector';
 import { verifyToolResult } from './verification';
 import { buildContext } from './context-manager';
@@ -120,10 +123,12 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
   let model: LocalModelInfo | null = null;
   let backend: 'local' | 'online' = 'local';
   let onlineModelName: string | undefined;
+  let routingReason: string | undefined; // Phase 8 / P8-E-2: surfaced in task_created event
 
   if (request.modelId) {
     const { getModel } = await import('../ai/model-registry');
     model = getModel(request.modelId);
+    routingReason = `Explicit model: ${model?.name || request.modelId}`;
   } else {
     // Phase 8 / P8-B: route by complexity through the provider-blind router.
     const onlineEnv: OnlineEnvironment = request.onlineEnvironment || { available: false };
@@ -139,6 +144,7 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     backend = routing.backend;
     model = routing.localModel;
     onlineModelName = routing.onlineModel?.name;
+    routingReason = routing.reason;
     AgentLogger.info(`Routing decision: ${routing.reason}`, { taskId });
   }
 
@@ -189,7 +195,14 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     type: 'task_created',
     taskId,
     message: `Task created: "${request.userRequest.slice(0, 80)}${request.userRequest.length > 80 ? '...' : ''}"`,
-    data: { intent: request.intent, modelId: model?.id, modelName: backend === 'online' ? onlineModelName : model?.name, backend },
+    data: {
+      intent: request.intent,
+      modelId: model?.id,
+      modelName: backend === 'online' ? onlineModelName : model?.name,
+      backend,
+      // Phase 8 / P8-E-2: routing transparency for the UI badge tooltip
+      routingReason,
+    },
   });
 
   return task;
@@ -251,6 +264,26 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     });
 
     const tools = listToolDefinitions();
+
+    // Phase 8 / P8-E-1: stream planner tokens to the renderer (throttled).
+    // Content is model output — logged ASSEMBLED and REDACTED, never raw-key risk.
+    const streamer = createTokenStreamer(taskId, undefined, 'planning',
+      (payload) => {
+        emit({
+          type: 'agent_token',
+          taskId,
+          message: 'token',
+          data: payload,
+        });
+      },
+      {
+        logAssembled: (redacted) => {
+          AgentLogger.plan(`Plan stream (${redacted.length} chars)`, redacted.slice(0, 500), { taskId } as any);
+        },
+        redact: (s) => redactSecrets(s).redacted,
+      }
+    );
+
     const plan = await generatePlan(runtime, model, {
       userRequest: task.userRequest,
       intent: task.intent,
@@ -258,14 +291,29 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       recentConversation: task.context.recentConversation,
       projectPath: task.context.projectPath,
       activeFile: task.context.activeFile,
+      onToken: (chunk) => streamer.push(chunk),
     });
+    streamer.end();
 
     task.plan = plan.steps;
+    // Phase 8 / P8-E-2: track token usage for context budget display
+    if (plan.usage?.tokensGenerated) {
+      task.context.estimatedTokensUsed += plan.usage.tokensGenerated;
+    }
     emit({
       type: 'planning_completed',
       taskId,
       message: `Plan generated: ${plan.steps.length} steps (confidence: ${plan.confidence.toFixed(2)})`,
-      data: { stepCount: plan.steps.length, confidence: plan.confidence, reasoning: plan.reasoning, warnings: plan.warnings },
+      data: {
+        stepCount: plan.steps.length,
+        confidence: plan.confidence,
+        reasoning: plan.reasoning,
+        warnings: plan.warnings,
+        // Phase 8 / P8-E-2: usage + backend/model visibility
+        usage: plan.usage,
+        backend: task.backend,
+        model: task.backend === 'online' ? task.onlineModelName : model.name,
+      },
     });
     if (plan.warnings.length > 0) {
       AgentLogger.warn(`Plan warnings: ${plan.warnings.join('; ')}`, { taskId });
@@ -402,7 +450,15 @@ async function executeStep(
     taskId: task.id,
     stepId: step.id,
     message: `Step ${step.index + 1}: ${step.description}`,
-    data: { toolName: step.toolName, requiresPermission: step.requiresPermission },
+    // Phase 8 / P8-E-3: progress + backend visibility on every step
+    data: {
+      toolName: step.toolName,
+      requiresPermission: step.requiresPermission,
+      stepIndex: step.index,
+      totalSteps: task.plan.length,
+      backend: task.backend,
+      model: task.backend === 'online' ? task.onlineModelName : model.name,
+    },
   });
 
   try {

@@ -120,10 +120,34 @@ export default function ChatPanel() {
   const [error, setError] = useState<string | null>(null);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [agentRunning, setAgentRunning] = useState(false);
+  // Phase 8 / P8-E-1: live streaming buffer (agent_token events)
+  const [streamText, setStreamText] = useState('');
+  const [streamPhase, setStreamPhase] = useState<string | null>(null);
+  const streamBufRef = useRef<string>('');
 
   // Listen for agent events
   useEffect(() => {
     const cleanup = window.nexAPI.onAgentEvent((event: AgentEvent) => {
+      // Phase 8 / P8-E-1: tokens go to the streaming buffer, NOT the event list
+      if (event.type === 'agent_token' && event.data) {
+        const d = event.data as { text?: string; phase?: string; done?: boolean; chars?: number };
+        if (d.text) {
+          streamBufRef.current += d.text;
+          setStreamText(streamBufRef.current);
+        }
+        if (d.phase) setStreamPhase(d.phase);
+        if (d.done) {
+          // keep text visible until the next phase starts streaming
+          setStreamPhase(null);
+        }
+        return;
+      }
+      // A new non-token event clears the stream preview
+      if (streamBufRef.current.length > 0) {
+        streamBufRef.current = '';
+        setStreamText('');
+        setStreamPhase(null);
+      }
       setAgentEvents((prev) => [...prev.slice(-49), event]);
       // Track if agent is running
       if (event.type === 'task_created' || event.type === 'planning_started' || event.type === 'step_started' || event.type === 'tool_call_started') {
@@ -154,11 +178,11 @@ export default function ChatPanel() {
       }
     });
     return cleanup;
-  }, [addMessage]);
+  }, [addMessage, messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, streamText]);
 
   const buildContext = useCallback(() => {
     const contextParts: string[] = [];
@@ -369,7 +393,13 @@ export default function ChatPanel() {
       </div>
 
       {/* Agent State Display (shows real-time agent status from onAgentEvent) */}
-      <AgentStateDisplay events={agentEvents} isRunning={agentRunning} />
+      <AgentStateDisplay
+        events={agentEvents}
+        isRunning={agentRunning}
+        streamText={streamText}
+        streamPhase={streamPhase}
+        onStop={handleStopAgent}
+      />
 
       {/* Input Area */}
       <div className="px-4 pb-4 pt-2 border-t border-nex-border/50 shrink-0">

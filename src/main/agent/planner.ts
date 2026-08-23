@@ -32,6 +32,17 @@ export interface PlanRequest {
   // Project context
   projectPath?: string;
   activeFile?: string;
+  // Phase 8 / P8-E-1: streaming callback. When provided, the planner uses
+  // runtime.chatStream instead of runtime.chat and forwards each chunk.
+  onToken?: (chunk: string) => void;
+}
+
+/** Phase 8 / P8-E-2: token/time usage surfaced to events & UI. */
+export interface PlanUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  tokensGenerated?: number;
+  durationMs?: number;
 }
 
 export interface PlanResult {
@@ -41,6 +52,8 @@ export interface PlanResult {
   confidence: number;
   // Any warnings (e.g. ambiguous request)
   warnings: string[];
+  // Phase 8 / P8-E-2: usage telemetry from the planning call
+  usage?: PlanUsage;
 }
 
 const PLANNER_SYSTEM_PROMPT = `You are the NEX AI Planner. Your job is to break down a user request into concrete, executable steps.
@@ -119,14 +132,33 @@ export async function generatePlan(
   } as any);
 
   try {
-    const result = await runtime.chat(context.messages, {
+    const started = Date.now();
+    const chatOpts = {
       contextSize: model.contextSize,
       temperature: 0.3,  // Low temperature for structured output
       maxTokens: 1500,
       systemPrompt,
-    });
+    };
 
-    return parsePlanResponse(result.content, request);
+    // Phase 8 / P8-E-1: stream when a token callback is provided.
+    let result;
+    if (request.onToken) {
+      result = await runtime.chatStream(context.messages, (chunk) => {
+        if (chunk.error) return;
+        request.onToken!(chunk.content || '');
+      }, chatOpts);
+    } else {
+      result = await runtime.chat(context.messages, chatOpts);
+    }
+
+    const plan = parsePlanResponse(result.content, request);
+    plan.usage = {
+      promptTokens: result.promptTokens,
+      completionTokens: result.completionTokens,
+      tokensGenerated: result.tokensGenerated,
+      durationMs: Date.now() - started,
+    };
+    return plan;
   } catch (err: any) {
     AgentLogger.error(`Planner failed: ${err.message}`);
     return fallbackPlan(request.userRequest, err.message);
