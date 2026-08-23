@@ -50,11 +50,11 @@ function SidebarContent() {
   );
 }
 
-// Phase 27 REVIEW: resolve AppShell once at module level (not per-render)
-let AppShellReady: React.ComponentType | null = null;
-try {
-  AppShellReady = require('./components/layout/AppShell').default;
-} catch { AppShellReady = null; }
+// Phase 36 FIX: require() is undefined in Vite production browser builds.
+// This caused AppShell to NEVER load (silent fallback to legacy) in production.
+// Solution: use a static import (always works in both dev and production).
+import AppShell from './components/layout/AppShell';
+const AppShellReady: React.ComponentType | null = AppShell;
 
 // Phase 35: ErrorBoundary — catches render errors, prevents white-screen
 import NexErrorBoundary from './components/layout/NexErrorBoundary';
