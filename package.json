@@ -41,7 +41,7 @@
     "@react-three/fiber": "^9.7.0",
     "chokidar": "^3.6.0",
     "glob": "^10.3.10",
-    "lucide-react": "^0.344.0",
+    "lucide-react": "^1.33.0",
     "mammoth": "^1.12.1",
     "node-llama-cpp": "^3.20.0",
     "react": "^19.2.8",
@@ -72,7 +72,7 @@
   "build": {
     "appId": "com.nexai.desktop",
     "productName": "NEX AI",
-    "copyright": "Copyright \u00a9 2024 NEX AI Team",
+    "copyright": "Copyright © 2024 NEX AI Team",
     "directories": {
       "output": "release",
       "buildResources": "build"
