@@ -102,6 +102,9 @@ export class KnowledgeService implements KnowledgeBase {
    *
    * `force` bypasses the unchanged-skip (rebuildIndex after an embedder
    * model swap must re-embed even identical content — vectors changed).
+   *
+   * P11-G note: this remains the PUBLIC entry (name kept for all existing
+   * callers/tests); the internal smart path uses the precomputed variant.
    */
   async ingestWithReport(
     filePath: string,
@@ -126,6 +129,28 @@ export class KnowledgeService implements KnowledgeBase {
       existing
     )) {
       return { status: 'skipped-unchanged', documentId: outcome.document.id, chunkCount: existing?.metadata?.chunkCount ?? 0 };
+    }
+
+    // Phase 11 / P11-G: path+hash dedup — stableDocumentId is PATH-derived,
+    // so a renamed file (adopted id) or any prior registration under another
+    // id must not create duplicates: identical content at the SAME path
+    // stored under a different id → skip, keeping the stored record.
+    const freshHash = outcome.document.metadata!.checksum!;
+    const samePathTwin = this.store
+      .listDocuments()
+      .find((d) => d.sourcePath === outcome.document.sourcePath && d.id !== outcome.document.id);
+    if (!force && samePathTwin && samePathTwin.metadata?.checksum === freshHash) {
+      return {
+        status: 'skipped-unchanged',
+        documentId: samePathTwin.id,
+        chunkCount: samePathTwin.metadata?.chunkCount ?? 0,
+      };
+    }
+
+    // On insert: drop stale same-path records under OTHER ids (prevents the
+    // adopted-id + path-id interplay from leaving duplicates).
+    if (samePathTwin) {
+      await this.store.deleteByDocument(samePathTwin.id);
     }
 
     // embed chunks (LOCAL embedder — offline guarantee)
@@ -183,6 +208,115 @@ export class KnowledgeService implements KnowledgeBase {
 
   async clearProject(): Promise<void> {
     await this.store.clearProject();
+  }
+
+  /**
+   * Phase 11 / P11-G: RENAME detection — a newly ingested file whose content
+   * hash matches an existing document whose sourcePath is GONE is treated as
+   * the same document moved/renamed: we reuse its stable documentId (chunk
+   * IDs stay stable) and refresh path/filename metadata. Returns the adopted
+   * id, or null when no stale twin exists.
+   */
+  private findRenamedTwin(filePath: string): Promise<string | null> {
+    return (async () => {
+      try {
+        const { hashFileContent } = await import('./ingester');
+        const { existsSync } = require('fs') as typeof import('fs');
+        const hash = hashFileContent(filePath);
+        for (const doc of this.store.listDocuments()) {
+          if (doc.sourcePath
+            && doc.metadata?.checksum === hash
+            && !existsSync(doc.sourcePath)
+            && doc.sourcePath !== filePath) {
+            return doc.id; // stale twin — adopt identity
+          }
+        }
+      } catch { /* best-effort */ }
+      return null;
+    })();
+  }
+
+  /**
+   * Phase 11 / P11-G: SMART incremental folder ingestion.
+   *   unchanged files  → skipped (hash dedup — no re-embed)
+   *   changed files    → re-indexed IN PLACE (only that document)
+   *   renamed files    → detected via stale-twin hash match; document id and
+   *                      chunk ids stay stable, path/filename metadata updated
+   *   deleted files    → index entries removed (purge) at the end
+   * Folder must live inside the project roots (validated by the scanner).
+   */
+  async smartIngestFolder(
+    folderPath: string,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<{
+    indexed: number; skipped: number; renamed: number; removed: number;
+    failed: Array<{ file: string; reason: string }>;
+    truncated: boolean;
+  }> {
+    const { scanFolderForIngest } = await import('./folder-scan');
+    const { ingestFile } = await import('./ingester');
+    const scan = scanFolderForIngest(folderPath, { roots: this.roots });
+
+    let indexed = 0, skipped = 0, renamed = 0;
+    const failed: Array<{ file: string; reason: string }> = [];
+    let done = 0;
+
+    for (const file of scan.files) {
+      // rename adoption: keep the stale twin's stable documentId
+      let documentId: string | undefined;
+      const twinId = await this.findRenamedTwin(file);
+      if (twinId) {
+        documentId = twinId;
+        // drop the twin's stale record; the fresh ingest re-registers it
+        // under the SAME id with the NEW path
+        await this.store.deleteByDocument(twinId);
+      }
+
+      if (twinId) {
+        // renamed twin: forced ingest under the adopted stable id
+        const outcome = await ingestFile(file, {
+          projectId: this.projectId,
+          roots: this.roots,
+          documentId: twinId,
+        });
+        if (outcome.status === 'indexed') {
+          const report = await this.ingestPrecomputed(outcome);
+          indexed++; renamed++;
+          void report;
+        } else {
+          failed.push({ file, reason: outcome.reason || outcome.status });
+        }
+      } else {
+        // normal incremental path: hash-dedup skip / in-place re-index
+        const report = await this.ingestWithReport(file);
+        if (report.status === 'indexed') indexed++;
+        else if (report.status === 'skipped-unchanged') skipped++;
+        else failed.push({ file, reason: report.reason || report.status });
+      }
+      done++;
+      onProgress?.(done, scan.files.length);
+    }
+
+    // deleted files: drop their index entries (smart cleanup)
+    const purged = await this.purgeMissing();
+
+    return { indexed, skipped, renamed, removed: purged.length, failed, truncated: scan.truncated };
+  }
+
+  /**
+   * P11-G internal: embed + persist a PRE-COMPUTED ingest outcome (used by
+   * smartIngestFolder's rename path — avoids a second file parse).
+   */
+  private async ingestPrecomputed(outcome: {
+    document: KnowledgeDocument;
+    chunks: DocumentChunk[];
+  }): Promise<AddDocumentReport> {
+    const chunks = outcome.chunks;
+    const embeddings = await this.embedder.embedBatch(chunks.map((c) => c.content));
+    const embedded: DocumentChunk[] = chunks.map((c, i) => ({ ...c, embedding: embeddings[i] }));
+    await this.store.updateDocument(outcome.document, embedded);
+    this.store.flush();
+    return { status: 'indexed', documentId: outcome.document.id, chunkCount: embedded.length };
   }
 
   /**
