@@ -1,6 +1,6 @@
 {
   "name": "nex-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "NEX AI - Advanced AI-Powered Code Assistant",
   "main": "dist/main/main.js",
   "author": "NEX AI Team",
@@ -72,7 +72,7 @@
   "build": {
     "appId": "com.nexai.desktop",
     "productName": "NEX AI",
-    "copyright": "Copyright © 2024 NEX AI Team",
+    "copyright": "Copyright \u00a9 2024 NEX AI Team",
     "directories": {
       "output": "release",
       "buildResources": "build"
