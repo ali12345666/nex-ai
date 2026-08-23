@@ -56,6 +56,9 @@ try {
   AppShellReady = require('./components/layout/AppShell').default;
 } catch { AppShellReady = null; }
 
+// Phase 35: ErrorBoundary — catches render errors, prevents white-screen
+import NexErrorBoundary from './components/layout/NexErrorBoundary';
+
 function App() {
   const {
     activePanel, openFiles, activeFile, terminalVisible,
@@ -228,7 +231,7 @@ function App() {
   // REVIEW FIX: module-level check (runs once, not on every render)
   if (AppShellReady) {
     return (
-      <>
+      <NexErrorBoundary>
         <AppShellReady />
         {commandPaletteOpen && <CommandPalette />}
         <PermissionPrompt
@@ -245,12 +248,13 @@ function App() {
             onClose={() => setShowDiffViewer(false)}
           />
         )}
-      </>
+      </NexErrorBoundary>
     );
   }
 
-  // Legacy layout (fallback)
+  // Legacy layout (fallback) — also wrapped for resilience
   return (
+    <NexErrorBoundary>
     <div className="h-screen w-screen flex flex-col bg-nex-bg text-nex-text overflow-hidden">
       <TitleBar />
 
@@ -291,6 +295,7 @@ function App() {
         />
       )}
     </div>
+    </NexErrorBoundary>
   );
 }
 

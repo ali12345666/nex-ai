@@ -194,6 +194,7 @@ export default function TerminalSessionPanel() {
             className="px-1.5 py-0.5 rounded text-[9px] font-mono transition-colors hover:bg-white/[0.06]"
             style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-glass-border)' }}
             title="Send Ctrl+C"
+            aria-label="Send Ctrl+C"
           >
             ^C
           </button>
@@ -202,6 +203,7 @@ export default function TerminalSessionPanel() {
             className="p-1 rounded transition-colors hover:bg-white/[0.06]"
             style={{ color: 'var(--nex-text-muted)' }}
             title="Clear"
+            aria-label="Clear terminal"
           >
             <Trash2 size={10} />
           </button>
@@ -210,6 +212,7 @@ export default function TerminalSessionPanel() {
             className="p-1 rounded transition-colors hover:bg-white/[0.06]"
             style={{ color: 'var(--nex-text-muted)' }}
             title="Close"
+            aria-label="Close terminal"
           >
             <X size={10} />
           </button>

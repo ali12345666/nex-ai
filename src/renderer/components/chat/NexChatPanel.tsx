@@ -26,6 +26,8 @@ import {
   type NexMessage, type FileAttachment, MAX_ATTACHMENT_INLINE,
 } from '../../lib/chat-model';
 import MessageBubble from './MessageBubble';
+// Phase 35: Malformed conversation protection
+import { validateConversationData } from '../../lib/conversation-validator';
 // Phase 30: Voice → Chat integration (transcripts + thinking state)
 import { voiceController } from '../../services/voice-controller';
 
@@ -114,7 +116,12 @@ export default function NexChatPanel() {
         try {
           const r = await window.nexAPI.conversationLoad(detail.id);
           if (r.success && r.data) {
-            setMessages(r.data.messages || []);
+            const validated = validateConversationData(r.data);
+            if (validated === null) {
+              console.warn('[NEX AI] Malformed conversation on load — ignoring');
+              return;
+            }
+            setMessages(validated);
             setConversationId(r.data.id);
             setConversationTitle(r.data.title || '');
             conversationIdRef.current = r.data.id;
@@ -152,7 +159,12 @@ export default function NexChatPanel() {
           const last = r.conversations[0]; // sorted by updatedAt desc
           const load = await window.nexAPI.conversationLoad(last.id);
           if (load.success && load.data) {
-            setMessages(load.data.messages || []);
+            const validated = validateConversationData(load.data);
+            if (validated === null) {
+              console.warn('[NEX AI] Malformed conversation data on startup — starting fresh');
+              return;
+            }
+            setMessages(validated);
             setConversationId(load.data.id);
             setConversationTitle(load.data.title || '');
             conversationIdRef.current = load.data.id;

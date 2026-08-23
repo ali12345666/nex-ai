@@ -100,12 +100,12 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
         role="dialog"
         aria-modal="true"
         aria-label={`Permission request: ${request.tool} (${request.permission})`}
-        className="bg-nex-surface border border-nex-border rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
+        className="bg-[var(--nex-panel-solid)] border border-[var(--nex-glass-border)] rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
         {/* Header */}
-        <div className={`px-5 py-3 border-b border-nex-border flex items-center justify-between ${permInfo.bg}`}>
+        <div className={`px-5 py-3 border-b border-[var(--nex-glass-border)] flex items-center justify-between ${permInfo.bg}`}>
           <div className="flex items-center gap-2">
             <Shield size={18} className={permInfo.text} />
-            <span className="text-sm font-semibold text-nex-text">Permission Required</span>
+            <span className="text-sm font-semibold text-[var(--nex-text)]">Permission Required</span>
             <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${permInfo.bg} ${permInfo.text} border border-current`}>
               {permInfo.label}
             </span>
@@ -115,44 +115,44 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
               </span>
             )}
           </div>
-          <span className="text-[10px] text-nex-text-muted">
+          <span className="text-[10px] text-[var(--nex-text-muted)]">
             auto-deny in {secondsLeft}s
           </span>
         </div>
 
         {/* Body */}
         <div className="p-5 space-y-4">
-          <div className="text-sm text-nex-text-dim leading-relaxed">
+          <div className="text-sm text-[var(--nex-text-dim)] leading-relaxed">
             NEX AI Agent wants to execute:
           </div>
 
-          <div className="bg-nex-card border border-nex-border rounded-lg p-3">
-            <div className="text-sm font-mono text-nex-text font-semibold">{request.tool}</div>
-            <div className="text-xs text-nex-text-muted mt-1">{request.description}</div>
+          <div className="bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded-lg p-3">
+            <div className="text-sm font-mono text-[var(--nex-text)] font-semibold">{request.tool}</div>
+            <div className="text-xs text-[var(--nex-text-muted)] mt-1">{request.description}</div>
           </div>
 
           {request.detail && (
-            <div className={`text-xs p-3 rounded-lg border ${isDestructive ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-nex-card border-nex-border text-nex-text-dim'}`}>
+            <div className={`text-xs p-3 rounded-lg border ${isDestructive ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-[var(--nex-glass-bg)] border-[var(--nex-glass-border)] text-[var(--nex-text-dim)]'}`}>
               <pre className="whitespace-pre-wrap break-words font-mono text-[11px]">{request.detail}</pre>
             </div>
           )}
 
           {request.context?.targetPath && (
             <div className="text-xs">
-              <span className="text-nex-text-muted">Target: </span>
-              <code className="text-nex-accent font-mono">{request.context.targetPath}</code>
+              <span className="text-[var(--nex-text-muted)]">Target: </span>
+              <code className="text-[var(--nex-accent)] font-mono">{request.context.targetPath}</code>
             </div>
           )}
 
           {showDenyReason && (
             <div>
-              <label className="block text-xs text-nex-text-muted mb-1">Reason (optional):</label>
+              <label className="block text-xs text-[var(--nex-text-muted)] mb-1">Reason (optional):</label>
               <input
                 type="text"
                 value={denyReason}
                 onChange={(e) => setDenyReason(e.target.value)}
                 placeholder="Why are you denying this?"
-                className="w-full bg-nex-card border border-nex-border rounded px-3 py-2 text-xs text-nex-text outline-none focus:border-nex-accent/50"
+                className="w-full bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded px-3 py-2 text-xs text-[var(--nex-text)] outline-none focus:border-[var(--nex-accent)]/50"
                 autoFocus
               />
             </div>
@@ -160,10 +160,10 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
         </div>
 
         {/* Actions */}
-        <div className="p-4 border-t border-nex-border bg-nex-bg flex flex-wrap gap-2 justify-end">
+        <div className="p-4 border-t border-[var(--nex-glass-border)] bg-[var(--nex-bg)] flex flex-wrap gap-2 justify-end">
           <button
             onClick={() => setShowDenyReason(!showDenyReason)}
-            className="px-3 py-2 text-xs text-nex-text-dim hover:text-nex-text rounded-lg hover:bg-nex-card transition-all"
+            className="px-3 py-2 text-xs text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] rounded-lg hover:bg-white/[0.04] transition-all"
           >
             {showDenyReason ? 'Cancel' : 'Deny with reason'}
           </button>
@@ -178,7 +178,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
           <button
             onClick={() => handleAllow('once')}
                 aria-label="Allow once"
-            className="px-4 py-2 text-xs font-medium bg-nex-card border border-nex-border text-nex-text hover:border-nex-accent/50 rounded-lg transition-all flex items-center gap-1.5"
+            className="px-4 py-2 text-xs font-medium bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] text-[var(--nex-text)] hover:border-[var(--nex-accent)]/50 rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow Once
           </button>
@@ -186,7 +186,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
           <button
             onClick={() => handleAllow('session')}
                 aria-label="Allow for this session"
-            className="px-4 py-2 text-xs font-medium bg-nex-card border border-nex-border text-nex-text hover:border-nex-accent/50 rounded-lg transition-all flex items-center gap-1.5"
+            className="px-4 py-2 text-xs font-medium bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] text-[var(--nex-text)] hover:border-[var(--nex-accent)]/50 rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow for Session
           </button>
@@ -194,7 +194,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
           <button
             onClick={() => handleAllow('project')}
                 aria-label="Always allow for this project"
-            className="px-4 py-2 text-xs font-medium bg-nex-accent text-white hover:bg-nex-accent-light rounded-lg transition-all flex items-center gap-1.5"
+            className="px-4 py-2 text-xs font-medium bg-[var(--nex-accent)] text-white hover:opacity-90 rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow for Project
           </button>

@@ -66,17 +66,17 @@ export default function AgentDiffViewer({
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in">
-      <div className="bg-nex-surface border border-nex-border rounded-xl shadow-2xl max-w-4xl w-full mx-4 max-h-[85vh] flex flex-col overflow-hidden">
+      <div className="bg-[var(--nex-panel-solid)] border border-[var(--nex-glass-border)] rounded-xl shadow-2xl max-w-4xl w-full mx-4 max-h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="px-5 py-3 border-b border-nex-border flex items-center justify-between bg-nex-bg">
+        <div className="px-5 py-3 border-b border-[var(--nex-glass-border)] flex items-center justify-between bg-[var(--nex-bg)]">
           <div className="flex items-center gap-2">
-            <GitCompare size={18} className="text-nex-accent" />
-            <span className="text-sm font-semibold text-nex-text">Proposed Changes</span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-nex-card text-nex-text-muted">
+            <GitCompare size={18} className="text-[var(--nex-accent)]" />
+            <span className="text-sm font-semibold text-[var(--nex-text)]">Proposed Changes</span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--nex-glass-bg)] text-[var(--nex-text-muted)]">
               {diffs.length} pending
             </span>
           </div>
-          <button onClick={onClose} className="text-nex-text-dim hover:text-nex-text transition-colors">
+          <button onClick={onClose} className="text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -85,7 +85,7 @@ export default function AgentDiffViewer({
         <div className="flex-1 overflow-hidden flex">
           {/* File list sidebar */}
           {diffs.length > 1 && (
-            <div className="w-[200px] border-r border-nex-border bg-nex-bg overflow-auto shrink-0">
+            <div className="w-[200px] border-r border-[var(--nex-glass-border)] bg-[var(--nex-bg)] overflow-auto shrink-0">
               {diffs.map((diff) => {
                 const fileName = diff.filePath.split(/[\\/]/).pop() || diff.filePath;
                 const isActive = diff.id === activeDiffId;
@@ -94,7 +94,7 @@ export default function AgentDiffViewer({
                     key={diff.id}
                     onClick={() => setActiveDiffId(diff.id)}
                     className={`w-full text-left px-3 py-2 text-xs transition-all flex items-center gap-2 ${
-                      isActive ? 'bg-nex-accent/10 text-nex-accent-light' : 'text-nex-text-dim hover:text-nex-text hover:bg-nex-card'
+                      isActive ? 'bg-[var(--nex-accent-dim)] text-[var(--nex-accent-text)]' : 'text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04]'
                     }`}
                   >
                     <FileText size={12} className="shrink-0" />
@@ -103,7 +103,7 @@ export default function AgentDiffViewer({
                       <span className={`text-[9px] px-1 py-0.5 rounded-full ml-auto ${
                         diff.status === 'applied' ? 'bg-green-500/20 text-green-400' :
                         diff.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
-                        'bg-nex-card text-nex-text-muted'
+                        'bg-[var(--nex-glass-bg)] text-[var(--nex-text-muted)]'
                       }`}>
                         {diff.status}
                       </span>
@@ -116,11 +116,11 @@ export default function AgentDiffViewer({
 
           {/* Diff content */}
           <div className="flex-1 overflow-auto">
-            <div className="px-4 py-2 border-b border-nex-border bg-nex-bg flex items-center gap-2">
-              <FileText size={14} className="text-nex-text-dim" />
-              <code className="text-xs font-mono text-nex-text-dim">{activeDiff.filePath}</code>
+            <div className="px-4 py-2 border-b border-[var(--nex-glass-border)] bg-[var(--nex-bg)] flex items-center gap-2">
+              <FileText size={14} className="text-[var(--nex-text-dim)]" />
+              <code className="text-xs font-mono text-[var(--nex-text-dim)]">{activeDiff.filePath}</code>
             </div>
-            <pre className="p-4 text-xs font-mono leading-relaxed bg-nex-bg overflow-auto">
+            <pre className="p-4 text-xs font-mono leading-relaxed bg-[var(--nex-bg)] overflow-auto">
               {activeDiff.diff.split('\n').map((line, i) => (
                 <div
                   key={i}
@@ -130,10 +130,10 @@ export default function AgentDiffViewer({
                       : line.startsWith('-') && !line.startsWith('---')
                       ? 'bg-red-500/10 text-red-400'
                       : line.startsWith('@@')
-                      ? 'bg-nex-accent/10 text-nex-accent-light'
+                      ? 'bg-[var(--nex-accent-dim)] text-[var(--nex-accent-text)]'
                       : line.startsWith('---') || line.startsWith('+++')
-                      ? 'text-nex-text-muted'
-                      : 'text-nex-text-dim'
+                      ? 'text-[var(--nex-text-muted)]'
+                      : 'text-[var(--nex-text-dim)]'
                   }`}
                 >
                   {line || ' '}
@@ -144,8 +144,8 @@ export default function AgentDiffViewer({
         </div>
 
         {/* Footer / Actions */}
-        <div className="px-4 py-3 border-t border-nex-border bg-nex-bg flex items-center justify-between">
-          <div className="text-[11px] text-nex-text-muted">
+        <div className="px-4 py-3 border-t border-[var(--nex-glass-border)] bg-[var(--nex-bg)] flex items-center justify-between">
+          <div className="text-[11px] text-[var(--nex-text-muted)]">
             <AlertCircle size={11} className="inline mr-1" />
             Files are <strong>not modified on disk</strong> until you accept.
           </div>
@@ -156,7 +156,7 @@ export default function AgentDiffViewer({
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
                 placeholder="Reason (optional)"
-                className="bg-nex-card border border-nex-border rounded px-2 py-1 text-xs text-nex-text outline-none focus:border-nex-accent/50"
+                className="bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded px-2 py-1 text-xs text-[var(--nex-text)] outline-none focus:border-[var(--nex-accent)]/50"
                 autoFocus
               />
             )}
@@ -165,7 +165,7 @@ export default function AgentDiffViewer({
                 <button onClick={onRejectAll} className="px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 rounded-lg transition-all flex items-center gap-1">
                   <X size={11} /> Reject All
                 </button>
-                <button onClick={onAcceptAll} className="px-3 py-1.5 text-xs text-nex-text-dim hover:text-nex-text hover:bg-nex-card rounded-lg transition-all flex items-center gap-1">
+                <button onClick={onAcceptAll} className="px-3 py-1.5 text-xs text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] rounded-lg transition-all flex items-center gap-1">
                   <Check size={11} /> Accept All
                 </button>
               </>
@@ -185,7 +185,7 @@ export default function AgentDiffViewer({
             <button
               onClick={handleAccept}
               disabled={activeDiff.status !== 'pending'}
-              className="px-4 py-1.5 text-xs font-medium bg-nex-accent text-white hover:bg-nex-accent-light rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-50"
+              className="px-4 py-1.5 text-xs font-medium bg-[var(--nex-accent)] text-white hover:opacity-90 rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-50"
             >
               <Check size={12} /> Accept
             </button>

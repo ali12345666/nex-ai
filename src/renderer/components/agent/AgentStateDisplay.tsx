@@ -34,17 +34,17 @@ interface StateInfo {
 function getEventState(event: AgentEvent): StateInfo {
   switch (event.type) {
     case 'task_created':
-      return { icon: <Brain size={12} />, label: event.message, color: 'text-nex-text-dim' };
+      return { icon: <Brain size={12} />, label: event.message, color: 'text-[var(--nex-text-dim)]' };
     case 'planning_started':
-      return { icon: <Brain size={12} className="animate-pulse" />, label: event.message, color: 'text-nex-accent' };
+      return { icon: <Brain size={12} className="animate-pulse" />, label: event.message, color: 'text-[var(--nex-accent)]' };
     case 'planning_completed':
-      return { icon: <Brain size={12} />, label: event.message, color: 'text-nex-accent-light' };
+      return { icon: <Brain size={12} />, label: event.message, color: 'text-[var(--nex-accent-text)]' };
     case 'step_started':
-      return { icon: <Loader2 size={12} className="animate-spin" />, label: event.message.slice(0, 50), color: 'text-nex-accent' };
+      return { icon: <Loader2 size={12} className="animate-spin" />, label: event.message.slice(0, 50), color: 'text-[var(--nex-accent)]' };
     case 'tool_call_started':
       return { icon: <Wrench size={12} className="animate-pulse" />, label: event.message, color: 'text-orange-400' };
     case 'tool_call_completed':
-      return { icon: <Wrench size={12} />, label: event.message, color: 'text-nex-text-dim' };
+      return { icon: <Wrench size={12} />, label: event.message, color: 'text-[var(--nex-text-dim)]' };
     case 'permission_requested':
       return { icon: <ShieldAlert size={12} className="animate-pulse" />, label: 'Permission Required', color: 'text-yellow-400' };
     case 'permission_granted':
@@ -58,7 +58,7 @@ function getEventState(event: AgentEvent): StateInfo {
     case 'diff_rejected':
       return { icon: <FileEdit size={12} />, label: 'Changes Rejected', color: 'text-red-400' };
     case 'observation':
-      return { icon: <Search size={12} />, label: event.message.slice(0, 80), color: 'text-nex-text-dim' };
+      return { icon: <Search size={12} />, label: event.message.slice(0, 80), color: 'text-[var(--nex-text-dim)]' };
     case 'verification_started':
       return { icon: <FlaskConical size={12} className="animate-pulse" />, label: 'Verifying', color: 'text-purple-400' };
     case 'verification_completed':
@@ -76,7 +76,7 @@ function getEventState(event: AgentEvent): StateInfo {
     case 'task_cancelled':
       return { icon: <Ban size={14} />, label: event.message, color: 'text-red-400' };
     default:
-      return { icon: <Loader2 size={12} />, label: event.message.slice(0, 60), color: 'text-nex-text-dim' };
+      return { icon: <Loader2 size={12} />, label: event.message.slice(0, 60), color: 'text-[var(--nex-text-dim)]' };
   }
 }
 
@@ -140,7 +140,7 @@ export default function AgentStateDisplay({
   const recent = events.slice(-12);
 
   return (
-    <div className="border-t border-nex-border bg-nex-surface/50">
+    <div className="border-t border-[var(--nex-glass-border)] bg-[var(--nex-panel-solid)]/50">
       {/* ── P8-E-2: header bar — backend badge + model + usage + progress ── */}
       {(meta.backend || meta.model || meta.stepProgress) && (
         <div className="flex items-center gap-2 px-4 pt-2 text-[11px] flex-wrap">
@@ -158,32 +158,32 @@ export default function AgentStateDisplay({
             </span>
           )}
           {meta.model && (
-            <span className="text-nex-text-dim font-mono truncate max-w-[220px]" title={meta.model}>
+            <span className="text-[var(--nex-text-dim)] font-mono truncate max-w-[220px]" title={meta.model}>
               {meta.model}
             </span>
           )}
           {meta.usage?.tokensGenerated !== undefined && (
-            <span className="inline-flex items-center gap-1 text-nex-text-muted" title="planning tokens">
+            <span className="inline-flex items-center gap-1 text-[var(--nex-text-muted)]" title="planning tokens">
               <Coins size={10} />
               {meta.usage.tokensGenerated} tok
             </span>
           )}
           {meta.usage?.durationMs !== undefined && (
-            <span className="inline-flex items-center gap-1 text-nex-text-muted" title="planning duration">
+            <span className="inline-flex items-center gap-1 text-[var(--nex-text-muted)]" title="planning duration">
               <Timer size={10} />
               {(meta.usage.durationMs / 1000).toFixed(1)}s
             </span>
           )}
           {meta.stepProgress && (
-            <span className="text-nex-text-dim">
+            <span className="text-[var(--nex-text-dim)]">
               step {meta.stepProgress.current}/{meta.stepProgress.total}
             </span>
           )}
           {/* progress bar */}
           {meta.stepProgress && (
-            <div className="flex-1 min-w-[80px] h-1 rounded-full bg-nex-border overflow-hidden">
+            <div className="flex-1 min-w-[80px] h-1 rounded-full bg-[var(--nex-glass-border)] overflow-hidden">
               <div
-                className="h-full bg-nex-accent transition-all"
+                className="h-full bg-[var(--nex-accent)] transition-all"
                 style={{ width: `${Math.round((meta.stepProgress.current / Math.max(1, meta.stepProgress.total)) * 100)}%` }}
               />
             </div>
@@ -205,12 +205,12 @@ export default function AgentStateDisplay({
       {/* ── P8-E-1: live streaming preview ── */}
       {streamText && (
         <div className="px-4 py-2">
-          <div className="flex items-center gap-2 text-[11px] text-nex-accent mb-1">
+          <div className="flex items-center gap-2 text-[11px] text-[var(--nex-accent)] mb-1">
             <Loader2 size={11} className="animate-spin" />
             <span className="capitalize">{streamPhase || 'thinking'}…</span>
-            <span className="text-nex-text-muted ml-auto">{streamText.length} chars</span>
+            <span className="text-[var(--nex-text-muted)] ml-auto">{streamText.length} chars</span>
           </div>
-          <pre className="text-[11px] text-nex-text-dim font-mono whitespace-pre-wrap break-words max-h-24 overflow-y-auto bg-nex-bg/50 rounded border border-nex-border/50 p-2">
+          <pre className="text-[11px] text-[var(--nex-text-dim)] font-mono whitespace-pre-wrap break-words max-h-24 overflow-y-auto bg-[var(--nex-bg)]/50 rounded border border-[var(--nex-glass-border)]/50 p-2">
             {streamText.slice(-800)}
           </pre>
         </div>
@@ -233,12 +233,12 @@ export default function AgentStateDisplay({
               <span className="shrink-0">{state.icon}</span>
               <span className="truncate">{state.label}</span>
               {toolMs && (
-                <span className="text-[9px] text-nex-text-muted shrink-0 inline-flex items-center gap-0.5">
+                <span className="text-[9px] text-[var(--nex-text-muted)] shrink-0 inline-flex items-center gap-0.5">
                   <Timer size={8} />
                   {toolMs}
                 </span>
               )}
-              <span className="text-[9px] text-nex-text-muted ml-auto shrink-0">
+              <span className="text-[9px] text-[var(--nex-text-muted)] ml-auto shrink-0">
                 {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </span>
             </div>
@@ -248,14 +248,14 @@ export default function AgentStateDisplay({
           <div className="flex items-center gap-2 py-1 text-[11px] text-orange-400">
             <Wrench size={11} className="animate-pulse" />
             <span className="truncate">{activeTool.message}</span>
-            <span className="text-[9px] text-nex-text-muted ml-auto shrink-0 inline-flex items-center gap-0.5">
+            <span className="text-[9px] text-[var(--nex-text-muted)] ml-auto shrink-0 inline-flex items-center gap-0.5">
               <Timer size={8} />
               {(elapsed / 1000).toFixed(1)}s
             </span>
           </div>
         )}
         {isRunning && !toolActive && !streamText && (
-          <div className="flex items-center gap-2 py-1 text-[11px] text-nex-text-muted">
+          <div className="flex items-center gap-2 py-1 text-[11px] text-[var(--nex-text-muted)]">
             <Loader2 size={11} className="animate-spin" />
             <span>Agent running…</span>
           </div>

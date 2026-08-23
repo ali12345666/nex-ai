@@ -45,13 +45,13 @@ function Meter({ value, label, icon, warn = 80, danger = 92 }: {
   const filled = value === undefined ? 0 : Math.round((value / 100) * 10);
   const bar = value === undefined ? '░'.repeat(10) : '█'.repeat(filled) + '░'.repeat(10 - filled);
   const color =
-    value === undefined ? 'text-nex-text-muted'
+    value === undefined ? 'text-[var(--nex-text-muted)]'
     : value >= danger ? 'text-red-400'
     : value >= warn ? 'text-yellow-400'
-    : 'text-nex-accent-light';
+    : 'text-[var(--nex-accent-text)]';
   return (
     <div className="flex items-center gap-2 py-0.5" title={label}>
-      <span className="text-nex-text-muted shrink-0 flex items-center gap-1 w-[86px] text-[10px]">{icon}{label}</span>
+      <span className="text-[var(--nex-text-muted)] shrink-0 flex items-center gap-1 w-[86px] text-[10px]">{icon}{label}</span>
       <span className={`font-mono text-[11px] tracking-tighter ${color} shrink-0`}>{bar}</span>
       <span className={`text-[10px] font-mono ml-auto ${color}`}>{pct(value)}</span>
     </div>
@@ -61,13 +61,13 @@ function Meter({ value, label, icon, warn = 80, danger = 92 }: {
 function Row({ label, value, title }: { label: string; value: React.ReactNode; title?: string }) {
   return (
     <div className="flex items-baseline gap-2 text-[10px] py-[1px]" title={title}>
-      <span className="text-nex-text-muted shrink-0">{label}</span>
-      <span className="text-nex-text-dim truncate ml-auto text-right font-mono">{value}</span>
+      <span className="text-[var(--nex-text-muted)] shrink-0">{label}</span>
+      <span className="text-[var(--nex-text-dim)] truncate ml-auto text-right font-mono">{value}</span>
     </div>
   );
 }
 
-const NA = <span className="text-nex-text-muted">N/A</span>;
+const NA = <span className="text-[var(--nex-text-muted)]">N/A</span>;
 const val = (v?: number) => (v === undefined || v === null ? NA : String(v));
 
 export default function HardwareMonitorPanel() {
@@ -111,26 +111,26 @@ export default function HardwareMonitorPanel() {
 
   const rt = snap?.aiRuntime;
   const ag = snap?.agent;
-  const backendColor = rt?.backend === 'online' ? 'text-emerald-400' : rt?.backend === 'local' ? 'text-sky-300' : 'text-nex-text-muted';
+  const backendColor = rt?.backend === 'online' ? 'text-emerald-400' : rt?.backend === 'local' ? 'text-sky-300' : 'text-[var(--nex-text-muted)]';
   const queueColor =
-    ag?.queueState === 'running' ? 'text-nex-accent'
+    ag?.queueState === 'running' ? 'text-[var(--nex-accent)]'
     : ag?.queueState === 'waiting-permission' ? 'text-yellow-400'
-    : ag?.queueState === 'idle' ? 'text-nex-text-muted'
-    : 'text-nex-text-dim';
+    : ag?.queueState === 'idle' ? 'text-[var(--nex-text-muted)]'
+    : 'text-[var(--nex-text-dim)]';
 
   return (
-    <div className="w-full h-full flex flex-col bg-nex-surface">
+    <div className="w-full h-full flex flex-col bg-[var(--nex-panel-solid)]">
       {/* Header */}
-      <div className="px-3 py-2.5 border-b border-nex-border flex items-center gap-2">
-        <Activity size={15} className="text-nex-accent" />
-        <span className="text-sm font-semibold text-nex-text">System Monitor</span>
+      <div className="px-3 py-2.5 border-b border-[var(--nex-glass-border)] flex items-center gap-2">
+        <Activity size={15} className="text-[var(--nex-accent)]" />
+        <span className="text-sm font-semibold text-[var(--nex-text)]">System Monitor</span>
         <button onClick={() => setPaused((p) => !p)}
-          className={`ml-auto px-1.5 py-0.5 rounded text-[9px] border transition-colors ${paused ? 'text-yellow-400 border-yellow-500/40' : 'text-nex-text-dim border-nex-border hover:text-nex-text'}`}
+          className={`ml-auto px-1.5 py-0.5 rounded text-[9px] border transition-colors ${paused ? 'text-yellow-400 border-yellow-500/40' : 'text-[var(--nex-text-dim)] border-[var(--nex-glass-border)] hover:text-[var(--nex-text)]'}`}
           title={paused ? 'Resume live updates' : 'Pause live updates (stops polling)'}>
           {paused ? 'PAUSED' : 'LIVE'}
         </button>
         <button onClick={refresh} disabled={refreshing}
-          className="p-1 rounded text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-colors"
+          className="p-1 rounded text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-colors"
           title="Refresh now">
           <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
         </button>
@@ -144,15 +144,15 @@ export default function HardwareMonitorPanel() {
 
       {!snap && !error && (
         <div className="flex-1 flex items-center justify-center">
-          <Loader2 size={20} className="animate-spin text-nex-text-muted" />
+          <Loader2 size={20} className="animate-spin text-[var(--nex-text-muted)]" />
         </div>
       )}
 
       {snap && (
         <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2.5">
           {/* Meters */}
-          <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1">Hardware</div>
+          <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1">Hardware</div>
             <Meter label="CPU" value={snap.cpu.usagePercent} icon={<Cpu size={10} />} />
             <Meter label="RAM" value={snap.memory.usagePercent} icon={<MemoryStick size={10} />} />
             {(snap.gpus || []).map((g, i) => (
@@ -166,8 +166,8 @@ export default function HardwareMonitorPanel() {
           </div>
 
           {/* CPU details */}
-          <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1 flex items-center gap-1">
+          <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1 flex items-center gap-1">
               <Cpu size={9} /> CPU
             </div>
             <Row label="model" value={<span title={snap.cpu.model}>{snap.cpu.model.split('@')[0].trim().slice(0, 26)}</span>} />
@@ -175,23 +175,23 @@ export default function HardwareMonitorPanel() {
             <Row label="frequency" value={snap.cpu.frequencyMHz ? `${snap.cpu.frequencyMHz} MHz` : NA} />
             <Row label="temperature" value={snap.cpu.temperatureC !== undefined ? `${snap.cpu.temperatureC} °C` : NA} />
             {snap.cpu.perCore && snap.cpu.perCore.length > 0 && (
-              <div className="mt-1 pt-1 border-t border-nex-border/50">
-                <div className="text-[9px] text-nex-text-muted mb-0.5">per-core</div>
+              <div className="mt-1 pt-1 border-t border-[var(--nex-glass-border)]/50">
+                <div className="text-[9px] text-[var(--nex-text-muted)] mb-0.5">per-core</div>
                 <div className="grid grid-cols-2 gap-x-2">
                   {snap.cpu.perCore.slice(0, 16).map((v, i) => (
                     <Row key={i} label={`core ${i}`} value={`${Math.round(v)}%`} />
                   ))}
                 </div>
                 {snap.cpu.perCore.length > 16 && (
-                  <div className="text-[9px] text-nex-text-muted">+{snap.cpu.perCore.length - 16} more…</div>
+                  <div className="text-[9px] text-[var(--nex-text-muted)]">+{snap.cpu.perCore.length - 16} more…</div>
                 )}
               </div>
             )}
           </div>
 
           {/* Memory details */}
-          <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1 flex items-center gap-1">
+          <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1 flex items-center gap-1">
               <HardDrive size={9} /> Memory
             </div>
             <Row label="used" value={fmtBytes(snap.memory.usedBytes)} />
@@ -201,8 +201,8 @@ export default function HardwareMonitorPanel() {
 
           {/* GPU details */}
           {(snap.gpus || []).map((g, i) => (
-            <div key={i} className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-              <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1 flex items-center gap-1">
+            <div key={i} className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+              <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1 flex items-center gap-1">
                 <Gauge size={9} /> GPU{i + 1}
               </div>
               <Row label="name" value={<span title={g.name}>{g.name.slice(0, 28)}</span>} />
@@ -216,15 +216,15 @@ export default function HardwareMonitorPanel() {
           ))}
 
           {/* AI Runtime */}
-          <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1 flex items-center gap-1">
+          <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1 flex items-center gap-1">
               <Bot size={9} /> AI Runtime
             </div>
             <Row label="backend" value={<span className={backendColor}>{rt?.backend ?? '—'} · {rt?.runtimeType ?? '—'}</span>} />
             <Row label="model" value={rt?.activeModelName || NA} title={rt?.activeModelName} />
             <Row label="state" value={
               <span className="flex items-center gap-1 justify-end">
-                {rt?.inferenceActive && <CircleDot size={9} className="text-nex-accent animate-pulse" />}
+                {rt?.inferenceActive && <CircleDot size={9} className="text-[var(--nex-accent)] animate-pulse" />}
                 {rt?.modelLoaded ? (rt?.inferenceActive ? 'inferring' : 'loaded') : 'no model'}
               </span>
             } />
@@ -241,8 +241,8 @@ export default function HardwareMonitorPanel() {
           </div>
 
           {/* Agent */}
-          <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1 flex items-center gap-1">
+          <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1 flex items-center gap-1">
               <Wrench size={9} /> Agent
             </div>
             <Row label="state" value={<span className={queueColor}>{ag?.queueState ?? 'unknown'}</span>} />
@@ -257,7 +257,7 @@ export default function HardwareMonitorPanel() {
           </div>
 
           {/* Footer meta */}
-          <div className="text-[8px] text-nex-text-muted px-1 pb-1 flex items-center justify-between">
+          <div className="text-[8px] text-[var(--nex-text-muted)] px-1 pb-1 flex items-center justify-between">
             <span>{snap.platform} · {new Date(snap.timestamp).toLocaleTimeString()}</span>
             {snap.degradedSources.length > 0 && (
               <span title={`unavailable sources: ${snap.degradedSources.join(', ')}`}>

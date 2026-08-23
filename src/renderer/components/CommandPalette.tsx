@@ -221,10 +221,10 @@ export default function CommandPalette() {
         if (e.target === e.currentTarget) toggleCommandPalette();
       }}
     >
-      <div className="w-full max-w-[560px] mx-4 bg-nex-surface border border-nex-border rounded-xl shadow-2xl overflow-hidden animate-in glow-accent">
+      <div className="w-full max-w-[560px] mx-4 bg-[var(--nex-panel-solid)] border border-[var(--nex-glass-border)] rounded-xl shadow-2xl overflow-hidden animate-in nex-glow-sm">
         {/* Search Input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-nex-border">
-          <Search size={18} className="text-nex-text-dim shrink-0" />
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--nex-glass-border)]">
+          <Search size={18} className="text-[var(--nex-text-dim)] shrink-0" />
           <input
             ref={inputRef}
             type="text"
@@ -232,11 +232,11 @@ export default function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type a command..."
-            className="flex-1 bg-transparent text-sm text-nex-text placeholder-nex-text-muted outline-none"
+            className="flex-1 bg-transparent text-sm text-[var(--nex-text)] placeholder-[var(--nex-text-muted)] outline-none"
           />
           <button
             onClick={toggleCommandPalette}
-            className="text-nex-text-dim hover:text-nex-text transition-colors"
+            className="text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] transition-colors"
           >
             <X size={14} />
           </button>
@@ -245,7 +245,7 @@ export default function CommandPalette() {
         {/* Results */}
         <div className="max-h-[300px] overflow-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-nex-text-muted">
+            <div className="px-4 py-8 text-center text-sm text-[var(--nex-text-muted)]">
               No commands found
             </div>
           ) : (
@@ -254,20 +254,20 @@ export default function CommandPalette() {
                 key={cmd.id}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
                   i === selectedIndex
-                    ? 'bg-nex-accent/10 text-nex-text'
-                    : 'text-nex-text-dim hover:bg-nex-card hover:text-nex-text'
+                    ? 'bg-[var(--nex-accent-dim)] text-[var(--nex-text)]'
+                    : 'text-[var(--nex-text-dim)] hover:bg-white/[0.04] hover:text-[var(--nex-text)]'
                 }`}
                 onClick={() => executeCommand(cmd)}
                 onMouseEnter={() => setSelectedIndex(i)}
               >
-                <span className={i === selectedIndex ? 'text-nex-accent' : 'text-nex-text-muted'}>
+                <span className={i === selectedIndex ? 'text-[var(--nex-accent)]' : 'text-[var(--nex-text-muted)]'}>
                   {cmd.icon}
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{cmd.label}</div>
-                  <div className="text-xs text-nex-text-muted truncate">{cmd.description}</div>
+                  <div className="text-xs text-[var(--nex-text-muted)] truncate">{cmd.description}</div>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-nex-card text-nex-text-muted shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--nex-glass-bg)] text-[var(--nex-text-muted)] shrink-0">
                   {cmd.category}
                 </span>
               </button>
@@ -276,15 +276,15 @@ export default function CommandPalette() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-4 px-4 py-2 border-t border-nex-border text-[10px] text-nex-text-muted">
+        <div className="flex items-center gap-4 px-4 py-2 border-t border-[var(--nex-glass-border)] text-[10px] text-[var(--nex-text-muted)]">
           <span>
-            <kbd className="px-1 py-0.5 bg-nex-card border border-nex-border rounded">↑↓</kbd> navigate
+            <kbd className="px-1 py-0.5 bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded">↑↓</kbd> navigate
           </span>
           <span>
-            <kbd className="px-1 py-0.5 bg-nex-card border border-nex-border rounded">↵</kbd> select
+            <kbd className="px-1 py-0.5 bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded">↵</kbd> select
           </span>
           <span>
-            <kbd className="px-1 py-0.5 bg-nex-card border border-nex-border rounded">esc</kbd> close
+            <kbd className="px-1 py-0.5 bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded">esc</kbd> close
           </span>
         </div>
       </div>

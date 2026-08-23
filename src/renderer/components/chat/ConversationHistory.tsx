@@ -172,6 +172,7 @@ export default function ConversationHistory({ activeId, onSelect, onNew, onDelet
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
             placeholder="Search conversations…"
+            aria-label="Search conversations"
             className="w-full bg-white/[0.03] border border-[var(--nex-glass-border)] rounded-md pl-7 pr-2 py-1 text-[10px] outline-none focus:border-[var(--nex-accent)]/30"
             style={{ color: 'var(--nex-text)' }}
           />
