@@ -166,9 +166,19 @@ assert('needsReindex false for identical bytes', needsReindex({ hash: sameHash, 
 fs.writeFileSync(path.join(DOCS, 'doc.pdf'), '%PDF-1.4 fake');
 const rPdf = await ingestFile(path.join(DOCS, 'doc.pdf'), opts);
 assert('pdf → unsupported (no binary dep in Phase 9)', rPdf.status === 'unsupported' && /Unsupported/.test((rPdf as any).reason));
+// Phase 11 / P11-C update: .docx became SUPPORTED via the evaluated
+// mammoth dependency (BSD, pure JS — see Phase 11 report + test-p11-c).
+// Phase 9's original assertion ('docx unsupported because no dep existed')
+// is superseded BY DESIGN. The format-gating INTENT is preserved:
 fs.writeFileSync(path.join(DOCS, 'doc.docx'), 'PK\x03\x04zip');
 const rDocx = await ingestFile(path.join(DOCS, 'doc.docx'), opts);
-assert('docx → unsupported', rDocx.status === 'unsupported');
+assert('.docx → now docx format (P11-C mammoth); garbage zip → rejected not unsupported',
+  rDocx.status === 'rejected' && /Parse failed/.test((rDocx as any).reason || ''),
+  JSON.stringify(rDocx));
+// legacy office containers REMAIN unsupported (no parser):
+fs.writeFileSync(path.join(DOCS, 'old.doc'), 'legacy-binary');
+const rDoc = await ingestFile(path.join(DOCS, 'old.doc'), opts);
+assert('.doc (legacy office) → still unsupported', rDoc.status === 'unsupported');
 
 // ─── P9-I: security guards ──────────────────────────────────────────────────
 console.log('\nP9-I security (guards):');
