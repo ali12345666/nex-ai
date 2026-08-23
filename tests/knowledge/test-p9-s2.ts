@@ -163,9 +163,11 @@ await storeB.clearProject();
 assert('clearProject removes B data', new LocalVectorStore(UD, 'projB').allChunks().length === 0);
 assert('clearProject leaves A intact', new LocalVectorStore(UD, 'projA').allChunks().length === 1);
 
-// dangerous projectId sanitized for paths ('../evil/../proj' → '___evil___proj')
+// dangerous projectId sanitized for paths ('../evil/../proj' → '___evil____proj')
 const weird = knowledgeDirFor(UD, '../evil/../proj');
-assert('projectId sanitized (no traversal in dir)', !weird.split(path.sep).includes('..') && weird.endsWith(path.join('knowledge', '___evil___proj')));
+const segs = weird.split(path.sep);
+assert('projectId sanitized (no traversal dir segments)', !segs.includes('..') && !segs.includes('.'));
+assert('projectId sanitized (charset locked to [_a-zA-Z0-9-])', /^[_a-zA-Z0-9-]+$/.test(segs[segs.length - 1]));
 
 // ─── Keyword index ──────────────────────────────────────────────────────────
 console.log('\nkeyword index:');
