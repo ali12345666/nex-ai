@@ -8,3 +8,4 @@ release/
 .idea/
 *.gguf
 models/
+logs/
