@@ -32,6 +32,15 @@ export interface HybridRetrieverDeps {
 /** RRF constants (standard k=60). */
 const RRF_K = 60;
 
+/**
+ * Semantic-only floor (Phase 9): a chunk surfaced ONLY by the semantic leg
+ * (zero keyword corroboration) must clear this cosine similarity or it is
+ * dropped — hash-embedding noise on unrelated text measures ≈ [-0.1, +0.05]
+ * while true paraphrase matches measure ≥ ~0.2. Chunks the KEYWORD leg
+ * independently ranked are always kept (exact-term evidence beats floors).
+ */
+const SEMANTIC_ONLY_FLOOR = 0.08;
+
 export class HybridRetriever {
   private store: LocalVectorStore;
   private embedder: Embedder;
@@ -82,6 +91,7 @@ export class HybridRetriever {
       ? this.keywordIndex!.search(query.query, pool, byId)
           .filter((h) => allow.has(h.chunk.documentId))
       : this.keywordIndex!.search(query.query, pool, byId);
+    const keywordIds = new Set(keyword.map((h) => h.chunk.id));
 
     // domain filter applies to BOTH legs
     const domainOk = (chunk: DocumentChunk): boolean => {
@@ -92,12 +102,15 @@ export class HybridRetriever {
 
     // ── reciprocal-rank fusion ──
     const fused = new Map<string, { chunk: DocumentChunk; semRank?: number; kwRank?: number; score: number }>();
-    semantic.filter((h) => domainOk(h.chunk)).forEach((h, i) => {
-      const e = fused.get(h.chunk.id) || { chunk: h.chunk, score: 0 };
-      e.semRank = i + 1;
-      e.score += 1 / (RRF_K + i + 1);
-      fused.set(h.chunk.id, e);
-    });
+    semantic
+      .filter((h) => domainOk(h.chunk))
+      .filter((h) => keywordIds.has(h.chunk.id) || h.score >= SEMANTIC_ONLY_FLOOR)
+      .forEach((h, i) => {
+        const e = fused.get(h.chunk.id) || { chunk: h.chunk, score: 0 };
+        e.semRank = i + 1;
+        e.score += 1 / (RRF_K + i + 1);
+        fused.set(h.chunk.id, e);
+      });
     keyword.filter((h) => domainOk(h.chunk)).forEach((h, i) => {
       const e = fused.get(h.chunk.id) || { chunk: h.chunk, score: 0 };
       e.kwRank = i + 1;

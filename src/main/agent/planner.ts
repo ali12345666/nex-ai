@@ -21,6 +21,7 @@ import type { AgentStep } from './types';
 import type { ToolDefinition } from '../ai/tool-registry';
 import { buildContext, estimateTokens } from './context-manager';
 import { AgentLogger } from './logger';
+import type { ContextKnowledgeItem } from './types';
 
 export interface PlanRequest {
   userRequest: string;
@@ -32,6 +33,8 @@ export interface PlanRequest {
   // Project context
   projectPath?: string;
   activeFile?: string;
+  // Phase 9 / P9-S4: retrieved knowledge (cited, untrusted-framed)
+  relevantKnowledge?: ContextKnowledgeItem[];
   // Phase 8 / P8-E-1: streaming callback. When provided, the planner uses
   // runtime.chatStream instead of runtime.chat and forwards each chunk.
   onToken?: (chunk: string) => void;
@@ -119,6 +122,7 @@ export async function generatePlan(
     recentConversation: request.recentConversation,
     projectPath: request.projectPath,
     activeFile: request.activeFile,
+    relevantKnowledge: request.relevantKnowledge,
     systemPrompt,
     toolSchemas: request.tools.map((t) => ({
       name: t.name,

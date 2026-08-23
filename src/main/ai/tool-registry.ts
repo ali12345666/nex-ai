@@ -316,6 +316,8 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   const { ReadMultipleFilesTool } = await import('./tools/read-multiple-files-tool');
   const { ProjectStructureTool } = await import('./tools/project-structure-tool');
   const { MultiFileEditTool } = await import('./tools/multi-file-edit-tool');
+  // Phase 9 / P9-S4: local knowledge search (offline RAG)
+  const { KnowledgeSearchTool } = await import('./tools/knowledge-search-tool');
 
   registerTool(new FS());
   registerTool(new SearchFilesTool());
@@ -332,4 +334,5 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   registerTool(new ReadMultipleFilesTool());
   registerTool(new ProjectStructureTool());
   registerTool(new MultiFileEditTool());
+  registerTool(new KnowledgeSearchTool());
 }

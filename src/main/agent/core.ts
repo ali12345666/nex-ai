@@ -46,6 +46,10 @@ import { selectChatModel, selectCodingModel } from './model-selector';
 // Phase 8 / P8-B: multi-backend routing (local GGUF vs online provider).
 // NOTE: model-router is provider-blind — online details are injected.
 import { routeModel, estimateComplexity, type OnlineEnvironment } from './model-router';
+// Phase 9 / P9-S4: knowledge retrieval PORT (injected; agent/ never
+// imports the knowledge/ subsystem directly — architecture rule)
+import type { KnowledgePort, KnowledgeHit } from './knowledge-port';
+import { hitsToContextItems } from './knowledge-port';
 import { generatePlan } from './planner';
 // Phase 8 / P8-E-1: throttled token streaming (pure module, injected emit)
 import { createTokenStreamer } from './stream-emit';
@@ -110,6 +114,10 @@ export interface CreateTaskRequest {
   backend?: 'auto' | 'local' | 'online';
   /** Injected by main.ts wiring from settings+secrets. NEVER imported here. */
   onlineEnvironment?: OnlineEnvironment;
+  /** Phase 9 / P9-S4: injected knowledge retrieval port (project RAG). */
+  knowledgePort?: KnowledgePort;
+  /** Phase 9: how many knowledge chunks to inject (default 3). */
+  knowledgeLimit?: number;
 }
 
 /**
@@ -190,6 +198,31 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
   _activeTasks.set(taskId, task);
   const token = createCancellationToken();
   _cancellationTokens.set(taskId, token);
+
+  // ── Phase 9 / P9-S4: knowledge retrieval (injected port, optional) ──
+  // Fills task.context.relevantKnowledge BEFORE planning so the planner's
+  // context includes cited, injection-framed document excerpts.
+  if (request.knowledgePort?.available?.(request.projectPath)) {
+    try {
+      const hits: KnowledgeHit[] = await request.knowledgePort.retrieve(
+        request.userRequest,
+        request.projectPath,
+        request.knowledgeLimit ?? 3
+      );
+      task.context.relevantKnowledge = hitsToContextItems(hits);
+      if (hits.length > 0) {
+        emit({
+          type: 'log',
+          taskId,
+          message: `Knowledge: ${hits.length} chunks retrieved (${hits.map((h) => h.documentTitle).slice(0, 3).join(', ')})`,
+          data: { knowledgeHits: hits.map((h) => ({ doc: h.documentTitle, score: Number(h.score.toFixed(3)), source: h.source, startLine: h.startLine })) },
+        });
+      }
+    } catch (err: any) {
+      // Knowledge retrieval is an ENRICHMENT — never fail the task on it.
+      AgentLogger.warn(`Knowledge retrieval failed (continuing without): ${err.message}`, { taskId });
+    }
+  }
 
   emit({
     type: 'task_created',
@@ -291,6 +324,9 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       recentConversation: task.context.recentConversation,
       projectPath: task.context.projectPath,
       activeFile: task.context.activeFile,
+      // Phase 9 / P9-S4: cited knowledge chunks (already injection-framed
+      // by the context manager's UNTRUSTED-DATA layer)
+      relevantKnowledge: task.context.relevantKnowledge,
       onToken: (chunk) => streamer.push(chunk),
     });
     streamer.end();

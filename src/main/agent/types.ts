@@ -120,7 +120,12 @@ export interface ContextKnowledgeItem {
   chunkId: string;
   content: string;
   score: number;
-  // Future: citation
+  // Phase 9 (additive — the "Future: citation" planned fields):
+  /** source file path as shown to the user, e.g. "docs/auth.md" */
+  source?: string;
+  startLine?: number;
+  endLine?: number;
+  sectionTitle?: string;
 }
 
 // ─── Tool Calls ─────────────────────────────────────────────────────────────
