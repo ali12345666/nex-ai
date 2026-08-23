@@ -99,6 +99,21 @@ contextBridge.exposeInMainWorld('nexAPI', {
   agentRejectAllDiffs: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-reject-all-diffs', taskId, reason),
   agentListPendingDiffs: (taskId: string) => ipcRenderer.invoke('agent-list-pending-diffs', taskId),
   permissionRespond: (response: any) => ipcRenderer.invoke('permission-respond', response),
+
+  // ── Knowledge / Local RAG (Phase 9 services, Phase 10 UI bridge) ──
+  // Renderer NEVER touches the filesystem directly for knowledge: every
+  // operation flows through Main → KnowledgeService (project-isolated).
+  knowledgeStats: (projectPath: string) => ipcRenderer.invoke('knowledge-stats', projectPath),
+  knowledgeList: (projectPath: string) => ipcRenderer.invoke('knowledge-list', projectPath),
+  knowledgeSearch: (projectPath: string, query: string, limit?: number) => ipcRenderer.invoke('knowledge-search', projectPath, query, limit),
+  knowledgeIngest: (projectPath: string, filePath: string) => ipcRenderer.invoke('knowledge-ingest', projectPath, filePath),
+  knowledgeIngestMany: (projectPath: string, filePaths: string[]) => ipcRenderer.invoke('knowledge-ingest-many', projectPath, filePaths),
+  knowledgeRemove: (projectPath: string, documentId: string) => ipcRenderer.invoke('knowledge-remove', projectPath, documentId),
+  knowledgePurgeMissing: (projectPath: string) => ipcRenderer.invoke('knowledge-purge-missing', projectPath),
+  knowledgeRebuild: (projectPath: string) => ipcRenderer.invoke('knowledge-rebuild', projectPath),
+  knowledgeClear: (projectPath: string) => ipcRenderer.invoke('knowledge-clear', projectPath),
+  dialogOpenFiles: () => ipcRenderer.invoke('dialog-open-files'),
+  dialogOpenFolder: () => ipcRenderer.invoke('dialog-open-folder'),
   onAgentEvent: (callback: (event: any) => void) => {
     ipcRenderer.on('agent-event', (_event, ev) => callback(ev));
     return () => ipcRenderer.removeAllListeners('agent-event');

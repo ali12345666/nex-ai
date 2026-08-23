@@ -102,6 +102,18 @@ export interface NexAPI {
   agentAcceptAllDiffs: (taskId: string) => Promise<{ success: boolean; error?: string }>;
   agentRejectAllDiffs: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
   agentListPendingDiffs: (taskId: string) => Promise<any[]>;
+  // ── Knowledge / Local RAG (Phase 9 services / Phase 10 bridge) ──
+  knowledgeStats: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: number; chunks?: number; domains?: Record<string, number>; embedding?: { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } }>;
+  knowledgeList: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: Array<{ id: string; title: string; format: string; domain?: string; sourcePath?: string; chunkCount: number; sizeBytes: number; indexedAt?: number }> }>;
+  knowledgeSearch: (projectPath: string, query: string, limit?: number) => Promise<{ success: boolean; error?: string; framed?: string; results?: Array<{ documentId: string; title: string; source?: string; startLine?: number; endLine?: number; section?: string; score: number; snippet: string }> }>;
+  knowledgeIngest: (projectPath: string, filePath: string) => Promise<{ success: boolean; report?: { status: string; reason?: string; chunkCount?: number }; error?: string }>;
+  knowledgeIngestMany: (projectPath: string, filePaths: string[]) => Promise<{ success: boolean; reports?: Array<{ filePath: string; status: string; reason?: string; chunkCount?: number }>; error?: string }>;
+  knowledgeRemove: (projectPath: string, documentId: string) => Promise<{ success: boolean; error?: string }>;
+  knowledgePurgeMissing: (projectPath: string) => Promise<{ success: boolean; purged?: string[]; error?: string }>;
+  knowledgeRebuild: (projectPath: string) => Promise<{ success: boolean; indexed?: number; skipped?: number; failed?: number; error?: string }>;
+  knowledgeClear: (projectPath: string) => Promise<{ success: boolean; error?: string }>;
+  dialogOpenFiles: () => Promise<{ canceled: boolean; paths?: string[] }>;
+  dialogOpenFolder: () => Promise<{ canceled: boolean; path?: string }>;
   permissionRespond: (response: any) => Promise<{ success: boolean }>;
   onAgentEvent: (callback: (event: any) => void) => () => void;
   onPermissionRequest: (callback: (request: any) => void) => () => void;

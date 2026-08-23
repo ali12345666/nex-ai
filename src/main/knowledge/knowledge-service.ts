@@ -62,6 +62,22 @@ export class KnowledgeService implements KnowledgeBase {
   /** Exposed for the tool layer / IPC stats. */
   getStatsStore(): LocalVectorStore { return this.store; }
 
+  /**
+   * Phase 10 / P10-A: describe the active embedder for the UI —
+   * duck-typed so the service keeps depending on the Embedder INTERFACE
+   * (no concrete-class imports here).
+   */
+  embeddingInfo(): { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } {
+    const e = this.embedder as any;
+    if (typeof e?.embedSync === 'function') {
+      return { backend: 'hash', dimension: this.embedder.dimension, offline: true };
+    }
+    if (typeof e?.dispose === 'function' && typeof e?.opts?.modelPath === 'string') {
+      return { backend: 'llamacpp', dimension: this.embedder.dimension, offline: true, modelPath: e.opts.modelPath };
+    }
+    return { backend: 'custom', offline: true };
+  }
+
   // ── KnowledgeBase interface ───────────────────────────────────────────────
 
   async addDocument(

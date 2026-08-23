@@ -464,6 +464,23 @@ function setupIPC(): void {
     return { path: result.filePaths[0] };
   });
 
+  // Phase 10 / P10-B: multi-select file picker for knowledge ingestion
+  ipcMain.handle('dialog-open-files', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Knowledge Documents', extensions: [
+          'txt', 'log', 'md', 'markdown', 'json', 'yaml', 'yml', 'csv', 'tsv',
+          'html', 'htm', 'ts', 'tsx', 'js', 'jsx', 'py', 'rb', 'go', 'rs',
+          'java', 'c', 'h', 'cpp', 'cs', 'php', 'css', 'scss', 'less', 'sql', 'sh',
+        ] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled) return { canceled: true };
+    return { paths: result.filePaths };
+  });
+
   ipcMain.handle('dialog-open-file', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       properties: ['openFile'],
@@ -933,7 +950,11 @@ function setupIPC(): void {
   ipcMain.handle('knowledge-stats', async (_event, projectPath: string) => {
     try {
       const svc = await knowledgeServiceFor(projectPath);
-      return { success: true, ...(await svc.getStats()) };
+      return {
+        success: true,
+        ...(await svc.getStats()),
+        embedding: svc.embeddingInfo(),
+      };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
