@@ -24,6 +24,8 @@ import { chunkDocument, type ChunkerConfig } from './chunker';
 import { validateIngestFile, stripControlChars, scanForInjection, type IngestGuardOptions } from './security';
 // Phase 11 / P11-A: structural source-code metadata (additive enrichment)
 import { detectLanguage, extractCodeStructure, attachSymbolsToChunks } from './code-structure';
+// Phase 11 / P11-D: format-aware structured chunking (falls back to P9)
+import { structuredChunkDocument } from './structured-chunker';
 
 export interface IngestOptions {
   projectId: string;
@@ -94,27 +96,42 @@ export async function ingestFile(filePath: string, opts: IngestOptions): Promise
   const filename = path.basename(abs);
   const extension = path.extname(filename).toLowerCase().slice(1);
 
-  // 4) Chunk (structure-aware)
-  const chunks = chunkDocument({
-    documentId: opts.documentId || stableDocumentId(opts.projectId, abs),
+  // 4) Chunk — Phase 11 / P11-D: structured strategies first (JSON object/
+  // array boundaries, CSV header+row-groups, code symbol-aligned), falling
+  // back to the Phase 9 chunker for everything else (text/markdown/yaml/
+  // html/xml/docx) and for malformed/unstructured inputs.
+  const documentId = opts.documentId || stableDocumentId(opts.projectId, abs);
+  const language0 = detectLanguage(filename);
+  let structure0: ReturnType<typeof extractCodeStructure> | null = null;
+  if (language0) {
+    try { structure0 = extractCodeStructure(text, language0); } catch { structure0 = null; }
+  }
+  let chunks = structuredChunkDocument({
+    documentId,
     text,
     format,
-    sections: parsed.sections,
+    filename,
     config: opts.chunkerConfig,
+    symbols: structure0?.symbols,
+    language: language0 || undefined,
   });
+  if (!chunks) {
+    chunks = chunkDocument({
+      documentId,
+      text,
+      format,
+      sections: parsed.sections,
+      config: opts.chunkerConfig,
+    });
+  }
 
   // 4.5) Phase 11 / P11-A: structural metadata for source files — language,
   // imports and symbols attached to document + overlapping chunks (citations
   // can then say "calculator.ts → function add → lines 10-18").
-  const language = detectLanguage(filename);
-  let structure: ReturnType<typeof extractCodeStructure> | null = null;
-  if (language) {
-    try {
-      structure = extractCodeStructure(text, language);
-      attachSymbolsToChunks(chunks, structure);
-    } catch {
-      structure = null; // best-effort only — never fail ingestion
-    }
+  const language = language0;
+  const structure = structure0;
+  if (structure) {
+    try { attachSymbolsToChunks(chunks, structure); } catch { /* best-effort */ }
   }
 
   // 5) Injection annotation (data stays data — flag only)

@@ -180,9 +180,12 @@ function extractJsFamily(lines: string[], language: CodeLanguage): CodeStructure
       symbols.push({ kind: 'function', name: ar[1], startLine: i + 1, endLine: closeBrace(lines, i) });
       return;
     }
-    // plain exported const (non-function)
+    // plain exported const (non-function) — TOP-LEVEL ONLY: the raw line
+    // must start at column 0 (indented consts are function/class-body locals,
+    // not document-level symbols — P11-D hardening found via oversized-symbol
+    // tests)
     const pc = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=/.exec(line);
-    if (pc && !ar) {
+    if (pc && !ar && /^\S/.test(raw)) {
       symbols.push({ kind: 'const', name: pc[1], startLine: i + 1 });
     }
     // class methods (inside a class — heuristic: identifier(…) { at line start,

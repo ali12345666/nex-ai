@@ -62,8 +62,9 @@ export function offsetsToLines(text: string, start: number, end: number): LineRa
  * Split a text block into pieces ≤ target size, cutting at the LAST
  * paragraph/sentence/word boundary before the limit, with overlap carried
  * from the tail of the previous piece.
+ * (Exported in Phase 11 / P11-D for the structured chunker — additive.)
  */
-function splitBlock(block: string, cfg: Required<ChunkerConfig>): string[] {
+export function splitBlock(block: string, cfg: Required<ChunkerConfig>): string[] {
   if (block.length <= cfg.maxChars) return [block];
   const pieces: string[] = [];
   let cursor = 0;
