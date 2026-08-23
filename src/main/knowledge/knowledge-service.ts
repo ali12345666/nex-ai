@@ -69,11 +69,14 @@ export class KnowledgeService implements KnowledgeBase {
    */
   embeddingInfo(): { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } {
     const e = this.embedder as any;
+    const safeDim = (): number | undefined => {
+      try { return this.embedder.dimension; } catch { return undefined; } // GGUF embedder: unknown until first embed
+    };
     if (typeof e?.embedSync === 'function') {
-      return { backend: 'hash', dimension: this.embedder.dimension, offline: true };
+      return { backend: 'hash', dimension: safeDim(), offline: true };
     }
     if (typeof e?.dispose === 'function' && typeof e?.opts?.modelPath === 'string') {
-      return { backend: 'llamacpp', dimension: this.embedder.dimension, offline: true, modelPath: e.opts.modelPath };
+      return { backend: 'llamacpp', dimension: safeDim(), offline: true, modelPath: e.opts.modelPath };
     }
     return { backend: 'custom', offline: true };
   }

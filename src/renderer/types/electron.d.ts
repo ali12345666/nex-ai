@@ -113,6 +113,8 @@ export interface NexAPI {
   knowledgePurgeMissing: (projectPath: string) => Promise<{ success: boolean; purged?: string[]; error?: string }>;
   knowledgeRebuild: (projectPath: string) => Promise<{ success: boolean; indexed?: number; skipped?: number; failed?: number; error?: string }>;
   knowledgeClear: (projectPath: string) => Promise<{ success: boolean; error?: string }>;
+  knowledgeEmbeddingGet: () => Promise<{ success: boolean; error?: string; current?: { backend: 'hash' | 'llamacpp'; modelId: string | null; modelPath: string | null; fallbackReason: string | null; offline: boolean }; embeddingModels?: Array<{ id: string; name: string; path: string; category: string; fileExists: boolean }>; otherModels?: Array<{ id: string; name: string; path: string; category: string; fileExists: boolean }> }>;
+  knowledgeEmbeddingSet: (modelId: string | null) => Promise<{ success: boolean; error?: string; backend?: string; needsRebuild?: boolean }>;
   dialogOpenFiles: () => Promise<{ canceled: boolean; paths?: string[] }>;
   dialogOpenFolder: () => Promise<{ canceled: boolean; path?: string }>;
   permissionRespond: (response: any) => Promise<{ success: boolean }>;

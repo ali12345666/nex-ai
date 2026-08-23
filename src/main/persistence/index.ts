@@ -39,6 +39,10 @@ export interface PersistedSettings {
   onlineProvider?: 'glm' | 'openai' | 'claude';
   glmModel?: string;
   glmEndpoint?: string;
+  // Phase 10 / P10-E: LOCAL embedding model selection (Knowledge/RAG).
+  // INDEPENDENT from chat model (activeLocalModelId). null = built-in
+  // offline HashEmbedder.
+  embeddingModelId?: string | null;
   // Phase 4: local engine settings
   localThreads?: number;
   localContextSize?: number;

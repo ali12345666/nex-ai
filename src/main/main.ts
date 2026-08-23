@@ -583,6 +583,8 @@ function setupIPC(): void {
       onlineProvider: 'glm',
       glmModel: 'glm-5.3',
       glmEndpoint: 'https://api.z.ai',
+      // Phase 10 / P10-E: null = built-in offline hash embedder
+      embeddingModelId: null,
       localThreads: 4,
       localContextSize: 2048,
       localTemperature: 0.7,
@@ -730,16 +732,17 @@ function setupIPC(): void {
       // port (initial retrieval) + the service (knowledge_search tool).
       if (request?.projectPath && !request.knowledgePort) {
         try {
-          const { getKnowledgeService } = await import('./knowledge/knowledge-service');
+          const { getKnowledgeService, disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
           const { projectIdFromPath } = await import('./knowledge/project-id');
-          const { createEmbedder } = await import('./knowledge/llama-embedder');
+          const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
           const pid = projectIdFromPath(request.projectPath);
           const svc = getKnowledgeService({
             userDataDir: userDataPath,
             projectId: pid,
-            embedder: await createEmbedder(undefined), // offline hash embedder (GGUF embedder via settings later)
+            embedder: (await createConfiguredEmbedder()).embedder,
             roots: [request.projectPath],
           });
+          void disposeKnowledgeServices;
           request.knowledgePort = {
             available: () => true,
             retrieve: async (query: string, _pp?: string, limit?: number) => {
@@ -837,11 +840,16 @@ function setupIPC(): void {
   async function knowledgeServiceFor(projectPath: string) {
     const { getKnowledgeService } = await import('./knowledge/knowledge-service');
     const { projectIdFromPath } = await import('./knowledge/project-id');
-    const { createEmbedder } = await import('./knowledge/llama-embedder');
+    // Phase 10 / P10-E: settings-driven embedder (hash default / GGUF model)
+    const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+    const resolution = await createConfiguredEmbedder();
+    if (resolution.fallbackReason) {
+      console.warn('[NEX AI Knowledge]', resolution.fallbackReason);
+    }
     return getKnowledgeService({
       userDataDir: userDataPath,
       projectId: projectIdFromPath(projectPath),
-      embedder: await createEmbedder(undefined), // offline default; GGUF embedder pluggable
+      embedder: resolution.embedder,
       roots: [projectPath],
     });
   }
@@ -972,6 +980,62 @@ function setupIPC(): void {
       const svc = await knowledgeServiceFor(projectPath);
       await svc.clearProject();
       return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Phase 10 / P10-D/E: embedding backend selection (LOCAL only)
+  ipcMain.handle('knowledge-embedding-get', async () => {
+    try {
+      const { createConfiguredEmbedder, needsRebuildAfterSwitch } = await import('./knowledge/embedding-select');
+      const resolution = await createConfiguredEmbedder();
+      const models = listModels().map((m: any) => ({
+        id: m.id, name: m.name, path: m.path, category: m.category, fileExists: m.fileExists,
+      }));
+      const embeddingModels = models.filter((m: any) => m.category === 'embedding');
+      const otherModels = models.filter((m: any) => m.category !== 'embedding');
+      return {
+        success: true,
+        current: {
+          backend: resolution.backend,
+          modelId: resolution.modelId ?? null,
+          modelPath: resolution.modelPath ?? null,
+          fallbackReason: resolution.fallbackReason ?? null,
+          offline: true,
+        },
+        // backend switch invalidates stored vectors (dimension change)
+        needsRebuildOnSwitch: needsRebuildAfterSwitch,
+        embeddingModels,
+        otherModels,
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-embedding-set', async (_event, modelId: string | null) => {
+    try {
+      const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+      const before = (await createConfiguredEmbedder()).backend;
+      if (modelId !== null) {
+        const m = getModel(modelId);
+        if (!m) return { success: false, error: 'Model not found in registry' };
+        if (!m.fileExists) return { success: false, error: 'Model file missing on disk' };
+      }
+      // persist selection (non-sensitive → config.json, NOT secrets)
+      persistUpdateSettings({ embeddingModelId: modelId } as any);
+      // invalidate cached per-project services so the next call rebuilds
+      // with the new embedder
+      const { disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
+      disposeKnowledgeServices();
+      const after = (await createConfiguredEmbedder()).backend;
+      return {
+        success: true,
+        backend: after,
+        // hash(256d) ↔ GGUF(other d) → stored vectors incompatible
+        needsRebuild: before !== after,
+      };
     } catch (err: any) {
       return { success: false, error: err.message };
     }

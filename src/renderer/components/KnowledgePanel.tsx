@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, RefreshCw, FileText, Layers, HardDrive, Cpu, ShieldCheck,
   Loader2, AlertCircle, X, ChevronRight, ChevronDown, Wrench,
-  Plus, FolderPlus, Trash2, RotateCw, Search,
+  Plus, FolderPlus, Trash2, RotateCw, Search, Settings2, Check,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
@@ -19,6 +19,9 @@ import { useStore } from '../store/useStore';
  *        re-index single document.
  * P10-C: knowledge search — query → ranked results → score → document →
  *        snippet → citation (file → line range), fully local.
+ * P10-D/E: embedding backend selector — offline Hash (default) or a LOCAL
+ *        GGUF embedding model from the registry (independent from the chat
+ *        model; switching prompts an index rebuild).
  */
 
 interface KnowledgeDoc {
@@ -41,6 +44,22 @@ interface SearchHit {
   section?: string;
   score: number;
   snippet: string;
+}
+
+interface EmbeddingModelEntry {
+  id: string;
+  name: string;
+  fileExists: boolean;
+  category: string;
+}
+
+interface EmbeddingState {
+  backend: 'hash' | 'llamacpp';
+  modelId: string | null;
+  modelPath: string | null;
+  fallbackReason: string | null;
+  embeddingModels: EmbeddingModelEntry[];
+  otherModels: EmbeddingModelEntry[];
 }
 
 function formatBytes(n: number): string {
@@ -143,7 +162,6 @@ export default function KnowledgePanel() {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
-
   const runSearch = async () => {
     const q = query.trim();
     if (!projectPath || !q) return;
@@ -158,8 +176,7 @@ export default function KnowledgePanel() {
 
   const rebuild = async () => {
     if (!projectPath) return;
-    setBusy('rebuild');
-    setError(null);
+    setBusy('rebuild');    setError(null);
     try {
       const res = await window.nexAPI.knowledgeRebuild(projectPath);
       if (!res.success) setError(res.error || 'rebuild failed');
@@ -169,6 +186,41 @@ export default function KnowledgePanel() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // ── P10-D/E: embedding backend state (hash default / local GGUF) ──
+  const [embState, setEmbState] = useState<EmbeddingState | null>(null);
+  const [embOpen, setEmbOpen] = useState(false);
+  const [embBusy, setEmbBusy] = useState(false);
+  const [needsRebuildBanner, setNeedsRebuildBanner] = useState(false);
+
+  const loadEmbedding = useCallback(async () => {
+    try {
+      const res = await window.nexAPI.knowledgeEmbeddingGet();
+      if (res.success && res.current) {
+        setEmbState({
+          backend: res.current.backend,
+          modelId: res.current.modelId,
+          modelPath: res.current.modelPath,
+          fallbackReason: res.current.fallbackReason,
+          embeddingModels: (res.embeddingModels || []) as EmbeddingModelEntry[],
+          otherModels: (res.otherModels || []) as EmbeddingModelEntry[],
+        });
+      }
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => { loadEmbedding(); }, [loadEmbedding]);
+
+  const selectEmbedding = async (modelId: string | null) => {
+    setEmbBusy(true); setError(null);
+    try {
+      const res = await window.nexAPI.knowledgeEmbeddingSet(modelId);
+      if (!res.success) setError(res.error || 'failed to set embedding backend');
+      else if (res.needsRebuild) setNeedsRebuildBanner(true);
+      await loadEmbedding();
+      await refresh();
+    } catch (err: any) { setError(err.message); } finally { setEmbBusy(false); }
   };
 
   const projectName = projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() || projectPath : null;
@@ -228,6 +280,78 @@ export default function KnowledgePanel() {
               }
               title={stats?.embedding?.modelPath}
             />
+          </div>
+
+          {/* Embedding backend selector (P10-D/E) */}
+          <div className="px-3 pb-2.5 border-b border-nex-border/50">
+            <button onClick={() => setEmbOpen(!embOpen)}
+              className="w-full flex items-center gap-1.5 text-[10px] text-nex-text-dim hover:text-nex-text transition-colors">
+              <Settings2 size={10} />
+              <span className="uppercase tracking-wider">Embedding Backend</span>
+              <span className="ml-auto flex items-center gap-1 text-nex-text-muted normal-case">
+                {embBusy && <Loader2 size={9} className="animate-spin" />}
+                {embState ? (embState.backend === 'hash' ? 'Hash (offline)' : 'GGUF model') : '…'}
+                {embOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+              </span>
+            </button>
+            {embOpen && embState && (
+              <div className="mt-1.5 space-y-1">
+                {embState.fallbackReason && (
+                  <div className="text-[9px] text-yellow-400 px-2 py-1 bg-yellow-500/10 border border-yellow-500/20 rounded">
+                    {embState.fallbackReason}
+                  </div>
+                )}
+                <EmbOption
+                  active={embState.modelId === null}
+                  onClick={() => selectEmbedding(null)}
+                  disabled={embBusy}
+                  title="Hash Embedder (built-in)"
+                  desc="Offline · deterministic · zero setup · 256d"
+                />
+                {embState.embeddingModels.length > 0 && (
+                  <div className="text-[9px] uppercase tracking-wider text-nex-text-muted pt-1">Embedding models</div>
+                )}
+                {embState.embeddingModels.map((m) => (
+                  <EmbOption
+                    key={m.id}
+                    active={embState.modelId === m.id}
+                    onClick={() => selectEmbedding(m.id)}
+                    disabled={embBusy || !m.fileExists}
+                    title={m.name + (m.fileExists ? '' : ' (file missing)')}
+                    desc="Local GGUF · via llama.cpp"
+                  />
+                ))}
+                {embState.otherModels.length > 0 && (
+                  <details className="pt-1">
+                    <summary className="text-[9px] uppercase tracking-wider text-nex-text-muted cursor-pointer select-none">
+                      Advanced — any registered GGUF ({embState.otherModels.length})
+                    </summary>
+                    <div className="mt-1 space-y-1">
+                      {embState.otherModels.map((m) => (
+                        <EmbOption
+                          key={m.id}
+                          active={embState.modelId === m.id}
+                          onClick={() => selectEmbedding(m.id)}
+                          disabled={embBusy || !m.fileExists}
+                          title={m.name + (m.fileExists ? '' : ' (file missing)')}
+                          desc={`${m.category} model · usually NOT embedding-capable`}
+                        />
+                      ))}
+                    </div>
+                  </details>
+                )}
+                <p className="text-[9px] text-nex-text-muted pt-0.5">
+                  Independent from the chat model. Switching backends changes vector dimensions → Rebuild Index required.
+                </p>
+              </div>
+            )}
+            {needsRebuildBanner && (
+              <div className="mt-2 px-2 py-1.5 rounded bg-yellow-500/10 border border-yellow-500/25 flex items-center gap-1.5">
+                <AlertCircle size={11} className="text-yellow-400 shrink-0" />
+                <span className="text-[9px] text-yellow-400 flex-1">Backend switched — run Rebuild Index to re-embed all documents.</span>
+                <button onClick={() => { setNeedsRebuildBanner(false); rebuild(); }} className="text-[9px] text-yellow-300 underline shrink-0">Rebuild</button>
+              </div>
+            )}
           </div>
 
           {/* Actions (P10-B) */}
@@ -336,6 +460,23 @@ function ActionBtn({ onClick, busy, icon, label }: { onClick: () => void; busy: 
       className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-nex-card border border-nex-border text-nex-text-dim hover:text-nex-text hover:border-nex-accent/40 transition-colors disabled:opacity-50">
       {busy ? <Loader2 size={10} className="animate-spin" /> : icon}
       {label}
+    </button>
+  );
+}
+
+function EmbOption({ active, onClick, disabled, title, desc }: {
+  active: boolean; onClick: () => void; disabled: boolean; title: string; desc: string;
+}) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`w-full text-left px-2 py-1.5 rounded-md border transition-colors flex items-start gap-1.5 disabled:opacity-40 ${
+        active ? 'border-nex-accent/60 bg-nex-accent/10' : 'border-nex-border bg-nex-card hover:border-nex-border-light'
+      }`}>
+      <span className={`mt-0.5 shrink-0 ${active ? 'text-nex-accent' : 'text-transparent'}`}><Check size={10} /></span>
+      <span className="min-w-0">
+        <span className="block text-[10px] font-medium text-nex-text truncate">{title}</span>
+        <span className="block text-[9px] text-nex-text-muted">{desc}</span>
+      </span>
     </button>
   );
 }
