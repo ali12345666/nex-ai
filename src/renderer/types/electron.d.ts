@@ -72,6 +72,9 @@ export interface NexAPI {
 
   // AI Chat
   aiChat: (config: any, messages: any[]) => Promise<{ success: boolean; content?: string; error?: string; tokens?: number; durationMs?: number; modelId?: string; modelName?: string }>;
+  aiChatStream: (config: any, messages: any[]) => Promise<{ success: boolean; replyId?: string; content?: string; error?: string; tokens?: number; durationMs?: number; modelId?: string; modelName?: string }>;
+  aiChatStreamCancel: () => Promise<{ success: boolean }>;
+  onChatToken: (callback: (ev: { replyId: string; text: string; chars: number; done: boolean; phase?: string }) => void) => () => void;
   aiAbort: () => Promise<{ success: boolean }>;
   aiDefaultConfig: (provider: string) => Promise<any>;
 

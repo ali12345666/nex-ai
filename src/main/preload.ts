@@ -72,6 +72,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // ── AI Chat ──
   aiChat: (config: any, messages: any[]) =>
     ipcRenderer.invoke('ai-chat', config, messages),
+  // Phase 17: streaming chat
+  aiChatStream: (config: any, messages: any[]) => ipcRenderer.invoke('ai-chat-stream', config, messages),
+  aiChatStreamCancel: () => ipcRenderer.invoke('ai-chat-stream-cancel'),
+  onChatToken: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('chat-token', listener);
+    return () => ipcRenderer.removeListener('chat-token', listener);
+  },
   aiAbort: () => ipcRenderer.invoke('ai-abort'),
   aiDefaultConfig: (provider: string) =>
     ipcRenderer.invoke('ai-default-config', provider),

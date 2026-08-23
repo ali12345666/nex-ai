@@ -120,10 +120,26 @@ export default function ChatPanel() {
   const [error, setError] = useState<string | null>(null);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [agentRunning, setAgentRunning] = useState(false);
+  // Phase 17: live chat streaming buffer (chat-token events)
+  const [chatStreamText, setChatStreamText] = useState('');
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const chatStreamBufRef = useRef<string>('');
+
   // Phase 8 / P8-E-1: live streaming buffer (agent_token events)
   const [streamText, setStreamText] = useState('');
   const [streamPhase, setStreamPhase] = useState<string | null>(null);
   const streamBufRef = useRef<string>('');
+
+  // Phase 17: chat-token listener (streaming replies)
+  useEffect(() => {
+    const off = window.nexAPI.onChatToken((ev) => {
+      if (ev.text) {
+        chatStreamBufRef.current += ev.text;
+        setChatStreamText(chatStreamBufRef.current);
+      }
+    });
+    return off;
+  }, []);
 
   // Listen for agent events
   useEffect(() => {
@@ -182,7 +198,12 @@ export default function ChatPanel() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamText]);
+  }, [messages, streamText, chatStreamText]);
+
+  // Phase 17: Stop button cancels an in-flight streamed chat
+  const handleStopChat = useCallback(() => {
+    window.nexAPI.aiChatStreamCancel().catch(() => {});
+  }, []);
 
   const buildContext = useCallback(() => {
     const contextParts: string[] = [];
@@ -232,32 +253,48 @@ export default function ChatPanel() {
       }
     }
 
+    // ── Phase 17: STREAMING-FIRST chat (local + online), non-stream fallback ──
+    chatStreamBufRef.current = '';
+    setChatStreamText('');
+    setChatStreaming(true);
+    let streamed = false;
     try {
-      const result = await window.nexAPI.aiChat(providerConfig, apiMessages);
-
-      if (result.success && result.content) {
+      const stream = await window.nexAPI.aiChatStream(providerConfig, apiMessages);
+      if (stream.success) {
+        streamed = chatStreamBufRef.current.length > 0;
+        const finalText = stream.content || chatStreamBufRef.current;
         addMessage({
           role: 'assistant',
-          content: result.content,
-          tokens: result.tokens,
+          content: finalText,
+          tokens: stream.tokens,
           provider: providerConfig.provider,
         });
+      } else if (stream.error && /No local model|Model file not found/i.test(stream.error)) {
+        // streamer-specific hard errors → surface directly, no fallback retry
+        setError(stream.error);
+        addMessage({ role: 'assistant', content: `⚠️ ${stream.error}`, provider: providerConfig.provider });
       } else {
-        setError(result.error || 'Failed to get AI response');
-        addMessage({
-          role: 'assistant',
-          content: `⚠️ Error: ${result.error || 'Unknown error'}`,
-          provider: providerConfig.provider,
-        });
+        // IPC-level failure → fall back to the proven non-streaming path
+        const result = await window.nexAPI.aiChat(providerConfig, apiMessages);
+        if (result.success && result.content) {
+          addMessage({ role: 'assistant', content: result.content, tokens: result.tokens, provider: providerConfig.provider });
+        } else {
+          setError(result.error || 'Failed to get AI response');
+          addMessage({ role: 'assistant', content: `⚠️ Error: ${result.error || 'Unknown error'}`, provider: providerConfig.provider });
+        }
       }
     } catch (err: any) {
-      setError(err.message);
-      addMessage({
-        role: 'assistant',
-        content: `⚠️ Connection error: ${err.message}`,
-        provider: providerConfig.provider,
-      });
+      if (streamed || chatStreamBufRef.current.length > 0) {
+        // partial stream then failure — keep what we have
+        addMessage({ role: 'assistant', content: chatStreamBufRef.current + '\n\n⚠️ stream interrupted: ' + err.message, provider: providerConfig.provider });
+      } else {
+        setError(err.message);
+        addMessage({ role: 'assistant', content: `⚠️ Connection error: ${err.message}`, provider: providerConfig.provider });
+      }
     } finally {
+      setChatStreaming(false);
+      chatStreamBufRef.current = '';
+      setChatStreamText('');
       setAILoading(false);
     }
   }, [input, isAILoading, messages, settings, aiMode, activeLocalModel, buildContext, addMessage, setAILoading, openFiles, activeFile, projectPath]);
@@ -389,6 +426,21 @@ export default function ChatPanel() {
             )}
           </>
         )}
+        {/* Phase 17: live streaming chat bubble */}
+        {chatStreamText && (
+          <div className="flex gap-2 mb-3">
+            <div className="nex-gradient w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
+              <Bot size={12} className="text-white" />
+            </div>
+            <div className="bg-nex-card border border-nex-border rounded-xl rounded-tl-sm px-3 py-2 max-w-[85%]">
+              <pre className="text-xs text-nex-text-dim font-mono whitespace-pre-wrap break-words">{chatStreamText.slice(-1200)}</pre>
+              <div className="flex items-center gap-1 mt-1 text-[9px] text-nex-accent">
+                <span className="inline-block w-1.5 h-3 bg-nex-accent animate-pulse" />
+                streaming… {chatStreamText.length} chars
+              </div>
+            </div>
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -400,6 +452,16 @@ export default function ChatPanel() {
         streamPhase={streamPhase}
         onStop={handleStopAgent}
       />
+
+      {/* Phase 17: chat streaming stop bar */}
+      {chatStreaming && !agentRunning && (
+        <div className="px-4 pb-1 flex justify-end">
+          <button onClick={handleStopChat}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 text-[10px] transition-colors">
+            ■ Stop generating
+          </button>
+        </div>
+      )}
 
       {/* Input Area */}
       <div className="px-4 pb-4 pt-2 border-t border-nex-border/50 shrink-0">

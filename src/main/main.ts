@@ -681,6 +681,85 @@ function setupIPC(): void {
     return { success: true };
   });
 
+  // ── Phase 17 / P17-A: STREAMING chat ──
+  // Local: llama.cpp token stream via the default runtime. Online:
+  // OnlineRuntime chatStream (emulated line-chunks) behind the SAME
+  // provider abstraction. Chunks are throttled via the P8-E token streamer
+  // and delivered as 'chat-token' events (mirror of agent_token).
+  ipcMain.handle('ai-chat-stream', async (_event, config: any, messages: AIMessage[]) => {
+    const replyId = `chat-${Date.now()}`;
+    try {
+      const { createTokenStreamer } = await import('./agent/stream-emit');
+      let runtime: import('./ai/runtime').AIRuntime | null = null;
+      if (config.provider === 'local') {
+        // resolve model exactly like localChatComplete does, then stream via
+        // the default llama.cpp runtime (loadModel idempotent if same model)
+        const { resolveModel } = await import('./ai/local-engine') as any;
+        const model = resolveModel(config);
+        if (!model) {
+          return { success: false, error: 'No local model configured. Add a .gguf file in Settings > Local AI.' };
+        }
+        if (!model.fileExists) {
+          return { success: false, error: `Model file not found: ${model.path}` };
+        }
+        const { getDefaultRuntime } = await import('./ai/runtime');
+        runtime = getDefaultRuntime();
+        await runtime.loadModel(model, {
+          contextSize: model.contextSize,
+          threads: config.localThreads ?? 4,
+          gpuLayers: model.gpuLayers ?? -1,
+          temperature: config.localTemperature ?? config.temperature ?? 0.7,
+          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+        });
+      } else {
+        const { getRuntime } = await import('./ai/runtime');
+        runtime = getRuntime('online', 'chat-shared');
+      }
+
+      const streamer = createTokenStreamer(replyId, undefined, 'final', (payload) => {
+        mainWindow?.webContents.send('chat-token', { replyId, ...payload });
+      });
+      const result = await runtime.chatStream(
+        messages.map((m) => ({ role: m.role, content: m.content })),
+        (chunk) => { if (chunk.content) streamer.push(chunk.content); },
+        {
+          temperature: config.localTemperature ?? config.temperature ?? 0.7,
+          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+          systemPrompt: getSystemPromptFor(config),
+        }
+      );
+      streamer.end();
+      return {
+        success: true,
+        replyId,
+        content: result.content,
+        tokens: result.tokensGenerated,
+        durationMs: result.durationMs,
+        modelId: result.modelId,
+        modelName: result.modelName,
+      };
+    } catch (err: any) {
+      return { success: false, replyId, error: err.message };
+    }
+  });
+
+  ipcMain.handle('ai-chat-stream-cancel', async () => {
+    try {
+      // abort BOTH paths: local llama instance + online runtime flag
+      localAbort();
+      const { getRuntime } = await import('./ai/runtime');
+      try { getRuntime('llamacpp', 'default').abort(); } catch { /* not loaded */ }
+      try { getRuntime('online', 'chat-shared').abort(); } catch { /* not created */ }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  function getSystemPromptFor(_config: any): string {
+    return getSystemPrompt();
+  }
+
   ipcMain.handle('ai-default-config', (_event, provider: string) => {
     return getDefaultConfig(provider);
   });
