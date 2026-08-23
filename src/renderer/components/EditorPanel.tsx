@@ -26,17 +26,17 @@ function FileTab({
 }) {
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-1.5 text-[13px] cursor-pointer border-r border-nex-border/50 transition-all shrink-0 group ${
+      className={`flex items-center gap-2 px-3 py-1.5 text-[13px] cursor-pointer border-r border-[var(--nex-glass-border)]/50 transition-all shrink-0 group ${
         isActive
-          ? 'bg-nex-bg text-nex-text border-t-2 border-t-nex-accent'
-          : 'text-nex-text-dim hover:bg-nex-card hover:text-nex-text'
+          ? 'bg-[var(--nex-bg)] text-[var(--nex-text)] border-t-2 border-t-nex-accent'
+          : 'text-[var(--nex-text-dim)] hover:bg-white/[0.04] hover:text-[var(--nex-text)]'
       }`}
       onClick={onSelect}
     >
       <FileCode size={13} className="shrink-0 opacity-60" />
       <span className="truncate max-w-[120px]">{file.name}</span>
       {file.modified && (
-        <div className="w-2 h-2 rounded-full bg-nex-accent shrink-0" />
+        <div className="w-2 h-2 rounded-full bg-[var(--nex-accent)] shrink-0" />
       )}
       <button
         onClick={(e) => {
@@ -86,7 +86,7 @@ export default function EditorPanel() {
 
   if (openFiles.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center text-nex-text-muted">
+      <div className="h-full flex items-center justify-center text-[var(--nex-text-muted)]">
         <div className="text-center animate-in">
           <FileCode size={48} className="mx-auto mb-4 opacity-20" />
           <p className="text-sm">Open a file to start editing</p>
@@ -96,9 +96,9 @@ export default function EditorPanel() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-nex-bg">
+    <div className="h-full flex flex-col bg-[var(--nex-bg)]">
       {/* File Tabs */}
-      <div className="flex items-center bg-nex-surface border-b border-nex-border overflow-x-auto">
+      <div className="flex items-center bg-[var(--nex-panel-solid)] border-b border-[var(--nex-glass-border)] overflow-x-auto">
         <div className="flex items-center overflow-x-auto flex-1">
           {openFiles.map((file) => (
             <FileTab
@@ -115,19 +115,19 @@ export default function EditorPanel() {
         <div className="flex items-center gap-0.5 px-2 shrink-0">
           <button
             onClick={handleSave}
-            className="w-7 h-7 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all"
+            className="w-7 h-7 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all"
             title="Save (Ctrl+S)"
           >
             <Save size={14} />
           </button>
           <button
-            className="w-7 h-7 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all"
+            className="w-7 h-7 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all"
             title="Copy"
           >
             <Copy size={14} />
           </button>
           <button
-            className="w-7 h-7 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all"
+            className="w-7 h-7 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all"
             title="Search"
           >
             <Search size={14} />

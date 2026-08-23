@@ -17,7 +17,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   'A': { label: 'Added', color: 'text-green-400' },
   'D': { label: 'Deleted', color: 'text-red-400' },
   'R': { label: 'Renamed', color: 'text-blue-400' },
-  '??': { label: 'Untracked', color: 'text-nex-text-dim' },
+  '??': { label: 'Untracked', color: 'text-[var(--nex-text-dim)]' },
   'AM': { label: 'Added', color: 'text-green-400' },
 };
 
@@ -54,7 +54,7 @@ export default function GitPanel() {
 
   if (!projectPath) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-nex-text-muted p-4">
+      <div className="flex flex-col items-center justify-center h-full text-[var(--nex-text-muted)] p-4">
         <GitBranch size={32} className="mb-3 opacity-30" />
         <p className="text-xs text-center">Open a folder to view source control</p>
       </div>
@@ -64,12 +64,12 @@ export default function GitPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-nex-border/50">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--nex-glass-border)]/50">
         <div className="flex items-center gap-2">
-          <GitBranch size={13} className="text-nex-accent" />
-          <span className="text-xs font-medium text-nex-text-dim">{branch || 'No branch'}</span>
+          <GitBranch size={13} className="text-[var(--nex-accent)]" />
+          <span className="text-xs font-medium text-[var(--nex-text-dim)]">{branch || 'No branch'}</span>
         </div>
-        <button onClick={loadGit} className="w-6 h-6 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all" title="Refresh">
+        <button onClick={loadGit} className="w-6 h-6 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all" title="Refresh">
           <RefreshCw size={11} />
         </button>
       </div>
@@ -79,8 +79,8 @@ export default function GitPanel() {
         {loading ? (
           <div className="flex items-center justify-center h-20"><div className="spinner" /></div>
         ) : error ? (
-          <div className="flex flex-col items-center justify-center h-32 text-nex-text-muted p-4">
-            <AlertCircle size={24} className="mb-2 text-nex-error opacity-50" />
+          <div className="flex flex-col items-center justify-center h-32 text-[var(--nex-text-muted)] p-4">
+            <AlertCircle size={24} className="mb-2 text-[var(--nex-error)] opacity-50" />
             <p className="text-xs text-center">{error}</p>
           </div>
         ) : (
@@ -88,17 +88,17 @@ export default function GitPanel() {
             {/* Changed Files */}
             {files.length > 0 && (
               <div className="px-3 py-1">
-                <span className="text-[10px] uppercase tracking-wider text-nex-text-muted font-semibold">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--nex-text-muted)] font-semibold">
                   Changes ({files.length})
                 </span>
               </div>
             )}
             {files.map((file) => {
-              const info = STATUS_MAP[file.status] || { label: file.status, color: 'text-nex-text-dim' };
+              const info = STATUS_MAP[file.status] || { label: file.status, color: 'text-[var(--nex-text-dim)]' };
               return (
-                <div key={file.path} className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-nex-card cursor-pointer transition-colors">
+                <div key={file.path} className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-white/[0.04] cursor-pointer transition-colors">
                   <span className={`font-mono text-[10px] w-4 ${info.color}`}>{file.status}</span>
-                  <span className="text-nex-text-dim truncate flex-1">{file.path}</span>
+                  <span className="text-[var(--nex-text-dim)] truncate flex-1">{file.path}</span>
                 </div>
               );
             })}
@@ -106,23 +106,23 @@ export default function GitPanel() {
             {/* Recent Commits */}
             {commits.length > 0 && (
               <div className="mt-3 px-3 py-1">
-                <span className="text-[10px] uppercase tracking-wider text-nex-text-muted font-semibold">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--nex-text-muted)] font-semibold">
                   Recent Commits
                 </span>
               </div>
             )}
             {commits.map((commit) => (
-              <div key={commit.hash} className="flex items-start gap-2 px-3 py-1.5 text-[12px] hover:bg-nex-card cursor-pointer transition-colors">
-                <GitCommit size={12} className="text-nex-accent shrink-0 mt-0.5" />
+              <div key={commit.hash} className="flex items-start gap-2 px-3 py-1.5 text-[12px] hover:bg-white/[0.04] cursor-pointer transition-colors">
+                <GitCommit size={12} className="text-[var(--nex-accent)] shrink-0 mt-0.5" />
                 <div className="min-w-0">
-                  <div className="text-nex-text truncate">{commit.message}</div>
-                  <div className="text-[10px] text-nex-text-muted font-mono">{commit.hash}</div>
+                  <div className="text-[var(--nex-text)] truncate">{commit.message}</div>
+                  <div className="text-[10px] text-[var(--nex-text-muted)] font-mono">{commit.hash}</div>
                 </div>
               </div>
             ))}
 
             {files.length === 0 && commits.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-32 text-nex-text-muted">
+              <div className="flex flex-col items-center justify-center h-32 text-[var(--nex-text-muted)]">
                 <GitBranch size={24} className="mb-2 opacity-30" />
                 <p className="text-xs">No changes detected</p>
               </div>

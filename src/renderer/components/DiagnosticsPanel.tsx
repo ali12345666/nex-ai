@@ -69,33 +69,33 @@ export default function DiagnosticsPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-nex-border/50">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--nex-glass-border)]/50">
         <div className="flex items-center gap-2">
-          <AlertTriangle size={13} className="text-nex-warning" />
-          <span className="text-xs font-medium text-nex-text-dim">Problems</span>
+          <AlertTriangle size={13} className="text-[var(--nex-warning)]" />
+          <span className="text-xs font-medium text-[var(--nex-text-dim)]">Problems</span>
           {diagnostics.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nex-card text-nex-text-dim">{diagnostics.length}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--nex-glass-bg)] text-[var(--nex-text-dim)]">{diagnostics.length}</span>
           )}
         </div>
         <button onClick={runDiagnostics} disabled={loading || !projectPath}
-          className="w-6 h-6 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all disabled:opacity-50" title="Run diagnostics">
+          className="w-6 h-6 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all disabled:opacity-50" title="Run diagnostics">
           {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
         </button>
       </div>
       <div className="flex-1 overflow-auto">
         {diagnostics.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-nex-text-muted p-4">
+          <div className="flex flex-col items-center justify-center h-32 text-[var(--nex-text-muted)] p-4">
             <AlertTriangle size={24} className="mb-2 opacity-30" />
             <p className="text-xs text-center">{projectPath ? 'Click refresh to run diagnostics' : 'Open a project first'}</p>
           </div>
         ) : (
           <div className="py-1">
             {diagnostics.map((d, i) => (
-              <div key={i} className="flex items-start gap-2 px-3 py-2 hover:bg-nex-card cursor-pointer transition-colors text-[12px]">
+              <div key={i} className="flex items-start gap-2 px-3 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors text-[12px]">
                 {iconFor(d.severity)}
                 <div className="min-w-0 flex-1">
-                  <div className="text-nex-text truncate">{d.message}</div>
-                  {d.file && <div className="text-[10px] text-nex-text-muted mt-0.5">{d.file}{d.line ? `:${d.line}` : ''}</div>}
+                  <div className="text-[var(--nex-text)] truncate">{d.message}</div>
+                  {d.file && <div className="text-[10px] text-[var(--nex-text-muted)] mt-0.5">{d.file}{d.line ? `:${d.line}` : ''}</div>}
                 </div>
               </div>
             ))}

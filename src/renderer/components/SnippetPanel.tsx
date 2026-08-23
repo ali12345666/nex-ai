@@ -77,36 +77,36 @@ export default function SnippetPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-nex-border/50">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--nex-glass-border)]/50">
         <div className="flex items-center gap-2">
-          <Code2 size={13} className="text-nex-accent" />
-          <span className="text-xs font-medium text-nex-text-dim">Snippets</span>
+          <Code2 size={13} className="text-[var(--nex-accent)]" />
+          <span className="text-xs font-medium text-[var(--nex-text-dim)]">Snippets</span>
         </div>
       </div>
       <div className="flex-1 overflow-auto py-1">
         {SNIPPET_CATEGORIES.map((category) => (
           <div key={category.name}>
             <button onClick={() => setExpandedCategory(expandedCategory === category.name ? null : category.name)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-colors">
+              className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-colors">
               {expandedCategory === category.name ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               <span className="font-medium">{category.name}</span>
-              <span className="text-[10px] text-nex-text-muted">({category.snippets.length})</span>
+              <span className="text-[10px] text-[var(--nex-text-muted)]">({category.snippets.length})</span>
             </button>
             {expandedCategory === category.name && (
               <div className="animate-in">
                 {category.snippets.map((snippet) => {
                   const key = `${snippet.name}-${snippet.language}`;
                   return (
-                    <div key={key} className="group px-4 py-2 hover:bg-nex-card cursor-pointer transition-colors border-l-2 border-transparent hover:border-nex-accent"
+                    <div key={key} className="group px-4 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors border-l-2 border-transparent hover:border-[var(--nex-accent)]"
                       onClick={() => handleInsert(snippet)}>
                       <div className="flex items-center justify-between">
-                        <span className="text-[12px] text-nex-text">{snippet.name}</span>
+                        <span className="text-[12px] text-[var(--nex-text)]">{snippet.name}</span>
                         <button onClick={(e) => { e.stopPropagation(); handleCopy(snippet.code, key); }}
-                          className="opacity-0 group-hover:opacity-100 text-nex-text-dim hover:text-nex-text transition-all">
+                          className="opacity-0 group-hover:opacity-100 text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] transition-all">
                           {copiedIdx === key ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
                         </button>
                       </div>
-                      <div className="text-[10px] text-nex-text-muted mt-0.5">{snippet.description}</div>
+                      <div className="text-[10px] text-[var(--nex-text-muted)] mt-0.5">{snippet.description}</div>
                     </div>
                   );
                 })}
