@@ -106,6 +106,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
   knowledgeStats: (projectPath: string) => ipcRenderer.invoke('knowledge-stats', projectPath),
   // System Monitor (Phase 12)
   systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
+  // Memory (Phase 13)
+  memoryList: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-list', store, projectPath),
+  memoryDelete: (store: string, key: string, projectPath?: string) => ipcRenderer.invoke('memory-delete', store, key, projectPath),
+  memoryClear: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-clear', store, projectPath),
   knowledgeList: (projectPath: string) => ipcRenderer.invoke('knowledge-list', projectPath),
   knowledgeSearch: (projectPath: string, query: string, limit?: number) => ipcRenderer.invoke('knowledge-search', projectPath, query, limit),
   knowledgeIngest: (projectPath: string, filePath: string) => ipcRenderer.invoke('knowledge-ingest', projectPath, filePath),

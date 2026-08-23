@@ -440,6 +440,48 @@ export async function runTask(taskId: string): Promise<AgentTask> {
           verifications: task.verification.length,
         },
       });
+
+    // ── Phase 13 / P13-A: memory consolidation (WRITE path) ──
+    // Distills the finished task into the 5-store memory architecture.
+    // Best-effort: failures are logged, never surfaced into the task result.
+    try {
+      const memory = await import('../memory');
+      const { consolidateTaskMemory } = await import('./memory-consolidator');
+      const filesTouched = [
+        ...new Set(
+          task.toolCalls
+            .flatMap((tc) => (tc.afterState?.files || []).map((f) => f.path))
+        ),
+      ];
+      const consolidation = consolidateTaskMemory(
+        {
+          taskId: task.id,
+          projectId: task.context.projectPath,
+          userRequest: task.userRequest,
+          intent: task.intent,
+          success: true,
+          stepsCompleted: task.plan.filter((st) => st.status === 'completed').length,
+          toolsUsed: task.toolCalls.map((tc) => tc.toolName),
+          filesTouched,
+          // Phase 13: user corrections — step failures caused by permission
+          // denials are recorded in task.errors ('Permission denied for ...').
+          userCorrections: task.errors
+            .filter((e) => e.type === 'permission_denied')
+            .slice(0, 3)
+            .map((e) => `User denied a ${e.type} action${e.stepId ? ` at step ${e.stepId}` : ''}: ${e.message.slice(0, 160)}`),
+        },
+        {
+          set: (store, key, value, o) => memory.setMemory(store as any, key, value, o as any),
+          get: (store, key, projectId) => memory.getMemory(store as any, key, projectId) as any,
+          list: (store, projectId) => memory.listMemory(store as any, projectId) as any,
+        }
+      );
+      if (consolidation.written.length > 0 || consolidation.errors.length > 0) {
+        AgentLogger.debug(`Memory consolidated: ${consolidation.written.length} written, ${consolidation.skippedDuplicates} dup, ${consolidation.errors.length} err`, { taskId });
+      }
+    } catch (memErr: any) {
+      AgentLogger.warn(`Memory consolidation skipped: ${memErr.message}`, { taskId });
+    }
     }
 
     return task;

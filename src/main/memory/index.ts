@@ -31,6 +31,9 @@ import { getUserDataDir } from '../persistence';
 
 export type MemoryStoreType = 'user' | 'project' | 'task' | 'knowledge' | 'session';
 
+/** Runtime list of the five stores (validation for IPC + tests). Phase 13. */
+export const MEMORY_STORES: readonly MemoryStoreType[] = ['user', 'project', 'task', 'knowledge', 'session'];
+
 export interface MemoryEntry {
   id: string;
   key: string;

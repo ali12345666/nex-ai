@@ -1106,6 +1106,55 @@ function setupIPC(): void {
     }
   });
 
+  // ── Memory (Phase 13) — 5-store management via IPC (project-scoped) ──
+  ipcMain.handle('memory-list', async (_event, store: string, projectPath?: string) => {
+    try {
+      const { listMemory, MEMORY_STORES } = await import('./memory');
+      if (!MEMORY_STORES.includes(store as any)) return { success: false, error: `Unknown store: ${store}` };
+      // Project store requires an explicit projectPath (isolation)
+      const pid = store === 'project' ? projectPath : undefined;
+      const entries = listMemory(store as any, pid);
+      // Redact values before they reach the renderer (defense in depth)
+      const { redactObjectDeep } = await import('./agent/logger');
+      return {
+        success: true,
+        store,
+        entries: entries.map((e: any) => ({
+          key: e.key,
+          value: redactObjectDeep(e.value),
+          type: e.type,
+          tags: e.tags || [],
+          updatedAt: e.updatedAt,
+          expiresAt: e.expiresAt,
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('memory-delete', async (_event, store: string, key: string, projectPath?: string) => {
+    try {
+      const { deleteMemory, MEMORY_STORES } = await import('./memory');
+      if (!MEMORY_STORES.includes(store as any)) return { success: false, error: 'Unknown store' };
+      const ok = deleteMemory(store as any, key, store === 'project' ? projectPath : undefined);
+      return { success: ok };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('memory-clear', async (_event, store: string, projectPath?: string) => {
+    try {
+      const { clearMemoryStore, MEMORY_STORES } = await import('./memory');
+      if (!MEMORY_STORES.includes(store as any)) return { success: false, error: 'Unknown store' };
+      const n = clearMemoryStore(store as any, store === 'project' ? projectPath : undefined);
+      return { success: true, removed: n };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // System Monitor (Phase 12) - Renderer->IPC->Service
   ipcMain.handle('system-snapshot', async () => {
     try {
