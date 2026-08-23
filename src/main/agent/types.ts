@@ -43,6 +43,9 @@ export interface AgentTask {
   userRequest: string;
   status: AgentTaskStatus;
   intent?: string;                   // e.g. 'fix-bug', 'refactor', 'explain'
+  // Phase 8 / P8-B: which runtime executes this task
+  backend?: 'local' | 'online';
+  onlineModelName?: string;          // e.g. 'GLM 5.3' (display only)
   plan: AgentStep[];
   currentStepIndex: number;
   context: AgentContext;

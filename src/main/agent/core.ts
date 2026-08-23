@@ -43,6 +43,9 @@ import {
   type PermissionContext,
 } from '../permissions';
 import { selectChatModel, selectCodingModel } from './model-selector';
+// Phase 8 / P8-B: multi-backend routing (local GGUF vs online provider).
+// NOTE: model-router is provider-blind — online details are injected.
+import { routeModel, estimateComplexity, type OnlineEnvironment } from './model-router';
 import { generatePlan } from './planner';
 import { prepareToolCall } from './tool-selector';
 import { verifyToolResult } from './verification';
@@ -99,6 +102,11 @@ export interface CreateTaskRequest {
   limits?: Partial<AgentLimits>;
   // Force a specific model (e.g. for testing)
   modelId?: string;
+  // Phase 8 / P8-B: backend selection. 'auto' routes by complexity
+  // (complex coding → online GLM-class model, simple → local GGUF).
+  backend?: 'auto' | 'local' | 'online';
+  /** Injected by main.ts wiring from settings+secrets. NEVER imported here. */
+  onlineEnvironment?: OnlineEnvironment;
 }
 
 /**
@@ -110,20 +118,35 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
 
   // Pre-load model so we know it's available
   let model: LocalModelInfo | null = null;
+  let backend: 'local' | 'online' = 'local';
+  let onlineModelName: string | undefined;
+
   if (request.modelId) {
     const { getModel } = await import('../ai/model-registry');
     model = getModel(request.modelId);
   } else {
-    // Auto-select based on intent
-    if (request.intent === 'coding' || request.intent === 'fix-bug' || request.intent === 'refactor') {
-      model = selectCodingModel();
-    } else {
-      model = selectChatModel();
-    }
+    // Phase 8 / P8-B: route by complexity through the provider-blind router.
+    const onlineEnv: OnlineEnvironment = request.onlineEnvironment || { available: false };
+    const routing = routeModel(
+      {
+        intent: request.intent,
+        textLength: request.userRequest.length,
+      },
+      onlineEnv,
+      undefined,
+      { preference: request.backend === 'auto' || !request.backend ? 'auto' : `${request.backend}-first` }
+    );
+    backend = routing.backend;
+    model = routing.localModel;
+    onlineModelName = routing.onlineModel?.name;
+    AgentLogger.info(`Routing decision: ${routing.reason}`, { taskId });
   }
 
-  if (!model) {
+  if (!model && backend === 'local') {
     throw new Error('No local model available. Add a .gguf file in Models panel.');
+  }
+  if (backend === 'online' && !onlineModelName) {
+    throw new Error('Online backend requested but no online provider is configured. Add an API key in Settings > Online AI.');
   }
 
   const task: AgentTask = {
@@ -131,6 +154,8 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     userRequest: request.userRequest,
     status: 'pending',
     intent: request.intent,
+    backend,
+    onlineModelName,
     plan: [],
     currentStepIndex: 0,
     context: {
@@ -140,7 +165,7 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
       relevantMemory: [],
       relevantKnowledge: [],
       recentConversation: request.recentConversation || [],
-      maxContextTokens: model.contextSize || 2048,
+      maxContextTokens: (backend === 'online' ? 32768 : model?.contextSize) || 2048,
       estimatedTokensUsed: 0,
     },
     toolCalls: [],
@@ -164,7 +189,7 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     type: 'task_created',
     taskId,
     message: `Task created: "${request.userRequest.slice(0, 80)}${request.userRequest.length > 80 ? '...' : ''}"`,
-    data: { intent: request.intent, modelId: model.id, modelName: model.name },
+    data: { intent: request.intent, modelId: model?.id, modelName: backend === 'online' ? onlineModelName : model?.name, backend },
   });
 
   return task;
@@ -205,20 +230,22 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     emit({
       type: 'planning_started',
       taskId,
-      message: 'Planning task...',
+      message: `Planning task${task.backend === 'online' ? ` (model: ${task.onlineModelName})` : ''}...`,
     });
 
-    const runtime = await getRuntime();
-    const model = await getModelForTask(task);
+    // Phase 8 / P8-B: pick the runtime by task backend — still 100% AIRuntime.
+    const runtime = await getRuntime(task.backend);
+    let model = await getModelForTask(task);
     if (!model) {
       throw new Error('No model available for task');
     }
 
-    // Ensure the model is loaded into the runtime before planning
+    // Ensure the model is loaded into the runtime before planning.
+    // For the online backend `model` is a synthetic descriptor (no GGUF).
     await runtime.loadModel(model, {
       contextSize: model.contextSize,
       threads: 4,
-      gpuLayers: model.gpuLayers ?? -1,
+      gpuLayers: task.backend === 'online' ? 0 : (model.gpuLayers ?? -1),
       temperature: 0.7,
       maxTokens: model.contextSize ? Math.floor(model.contextSize / 2) : 1024,
     });
@@ -772,17 +799,41 @@ export function listPendingDiffs(taskId: string): any[] {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function getRuntime(): Promise<AIRuntime> {
-  const { getDefaultRuntime } = await import('../ai/runtime');
-  return getDefaultRuntime();
+/**
+ * Phase 8 / P8-B: backend-aware runtime resolution.
+ * 'local'  → the default llama.cpp runtime (unchanged Phase 7 behavior).
+ * 'online' → the registered OnlineRuntime (provider abstraction → GLM 5.3).
+ *            Config/secrets are resolved lazily inside the runtime transport.
+ */
+async function getRuntime(backend: 'local' | 'online' = 'local'): Promise<AIRuntime> {
+  if (backend !== 'online') {
+    const { getDefaultRuntime } = await import('../ai/runtime');
+    return getDefaultRuntime();
+  }
+  const { getRuntime: getFromRegistry } = await import('../ai/runtime');
+  return getFromRegistry('online', 'agent-shared');
 }
 
 async function getModelForTask(task: AgentTask): Promise<LocalModelInfo | null> {
+  // Phase 8 / P8-B: online backend gets a synthetic model descriptor —
+  // no GGUF file, no registry entry; the runtime ignores the path.
+  if (task.backend === 'online') {
+    const name = task.onlineModelName || 'Online Model';
+    return {
+      id: `online:${name}`,
+      name,
+      path: '',
+      sizeBytes: 0,
+      contextSize: 32768,
+      gpuLayers: 0,
+      category: 'coding',
+      fileExists: true,
+      addedAt: Date.now(),
+    } as LocalModelInfo;
+  }
   const { listModels, getModel: getModelById } = await import('../ai/model-registry');
   const models = listModels().filter((m) => m.fileExists);
   if (models.length === 0) return null;
-  // For now, use the most recently used model
-  // (Phase 8+ will use ModelSelector more intelligently)
   const sorted = [...models].sort((a, b) => {
     const aT = a.lastUsedAt || a.addedAt;
     const bT = b.lastUsedAt || b.addedAt;

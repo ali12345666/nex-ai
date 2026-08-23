@@ -111,10 +111,13 @@ const agentFiles = fs.readdirSync(agentDir).filter((f) => f.endsWith('.ts'));
 assert("ProviderType includes 'glm'", /export type ProviderType = 'local' \| 'openai' \| 'claude' \| 'glm'/.test(providerSrc));
 assert("routeChat message mentions GLM", /GLM \(Z\.ai\/BigModel\)/.test(providerSrc));
 assert('ARCHITECTURE: agent core has ZERO direct GLM imports', (() => {
+  // Match REAL import syntax only (static + dynamic), not comments mentioning glm.
+  const staticImport = /^\s*import[^;'"]*from\s+['"][^'"]*\/glm['"]/m;
+  const dynamicImport = /import\(\s*['"][^'"]*\/glm['"]\s*\)/;
   let violation = '';
   for (const f of agentFiles) {
     const src = fs.readFileSync(path.join(agentDir, f), 'utf-8');
-    if (/from ['"].*ai\/glm|import.*glm/i.test(src)) { violation = f; break; }
+    if (staticImport.test(src) || dynamicImport.test(src)) { violation = f; break; }
   }
   return violation === '';
 })(), 'agent/ must not import ai/glm directly');

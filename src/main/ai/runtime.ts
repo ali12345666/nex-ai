@@ -30,7 +30,7 @@ import type { LocalModelInfo, ModelCapability } from './model-registry';
 
 // ─── Core Interfaces ────────────────────────────────────────────────────────
 
-export type RuntimeType = 'llamacpp' | 'onnx' | 'mlc' | 'wasm' | 'custom';
+export type RuntimeType = 'llamacpp' | 'onnx' | 'mlc' | 'wasm' | 'online' | 'custom';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -217,3 +217,9 @@ export async function shutdownAllRuntimes(): Promise<void> {
 // ─── Register built-in runtimes ─────────────────────────────────────────────
 
 registerRuntime('llamacpp', () => new LlamaCppRuntime());
+
+// Phase 8 / P8-B: online runtime (provider abstraction → GLM 5.3 by default).
+// online-transport.ts is electron-free at import time (dynamic imports only),
+// so this registration is safe in tests and in the renderer toolchain.
+import { createDefaultOnlineRuntime } from './runtimes/online-transport';
+registerRuntime('online', () => createDefaultOnlineRuntime());
