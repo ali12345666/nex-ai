@@ -1,11 +1,14 @@
 /**
- * NEX AI — Provider Abstraction (Phase 5)
+ * NEX AI — Provider Abstraction (Phase 5, extended in Phase 8 / P8-A)
  *
  * Defines the unified AIProvider interface that all providers implement.
  *
  *  LocalProvider    — runs llama.cpp locally, no network required (DEFAULT)
  *  OpenAIProvider   — calls OpenAI API (optional, online only)
  *  AnthropicProvider — calls Anthropic API (optional, online only)
+ *  GlmProvider      — calls GLM 5.3 via Z.ai/BigModel API (optional, online only,
+ *                     primary online model for Phase 8+ — still routed through
+ *                     this same abstraction; Agent never imports it directly)
  *
  * The ChatPanel/renderer never directly imports any provider — it builds a
  * LocalChatConfig and passes it through IPC. The main process routes to the
@@ -18,7 +21,7 @@
 import type { AIMessage } from '../ai-service';
 import type { LocalChatConfig } from './local-engine';
 
-export type ProviderType = 'local' | 'openai' | 'claude';
+export type ProviderType = 'local' | 'openai' | 'claude' | 'glm';
 
 export interface ProviderConfig {
   provider: ProviderType;
@@ -29,6 +32,8 @@ export interface ProviderConfig {
   apiKey?: string;
   model?: string;
   endpoint?: string;
+  // GLM (Phase 8) — model/endpoint shared with fields above; kept for clarity
+  // GLM's default endpoint is filled by ai/glm.ts when omitted.
   // Local (ignored by online providers)
   localModelId?: string;
   localModelPath?: string;
@@ -75,7 +80,7 @@ export async function routeChat(config: ProviderConfig, messages: AIMessage[]): 
   if (!config.endpoint || !isAllowedAIOrigin(config.endpoint)) {
     return {
       success: false,
-      error: `Blocked: AI endpoint "${config.endpoint || '(missing)'}" is not in the allowed origins list. Only OpenAI and Anthropic are permitted.`,
+      error: `Blocked: AI endpoint "${config.endpoint || '(missing)'}" is not in the allowed origins list. Only OpenAI, Anthropic and GLM (Z.ai/BigModel) are permitted.`,
       provider: config.provider,
     };
   }

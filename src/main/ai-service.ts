@@ -1,4 +1,5 @@
 import { net } from 'electron';
+import { GLM_DEFAULT_MODEL } from './ai/glm';
 
 export interface AIMessage {
   role: 'system' | 'user' | 'assistant';
@@ -6,7 +7,7 @@ export interface AIMessage {
 }
 
 export interface AIConfig {
-  provider: 'openai' | 'claude' | 'custom';
+  provider: 'openai' | 'claude' | 'glm' | 'custom';
   apiKey: string;
   model: string;
   endpoint: string;
@@ -33,6 +34,14 @@ const DEFAULT_CONFIGS: Record<string, Partial<AIConfig>> = {
     maxTokens: 4096,
     temperature: 0.7,
   },
+  // Phase 8 / P8-A: GLM 5.3 — primary development/agent model.
+  // Wire logic lives in ./ai/glm.ts (pure); this is the electron-net binding.
+  glm: {
+    endpoint: 'https://api.z.ai/api/paas/v4/chat/completions',
+    model: GLM_DEFAULT_MODEL,
+    maxTokens: 4096,
+    temperature: 0.7,
+  },
   custom: {
     model: 'gpt-4o',
     maxTokens: 4096,
@@ -56,6 +65,8 @@ export function chatCompletion(
 
     if (config.provider === 'claude') {
       callClaude(config, messages, resolve);
+    } else if (config.provider === 'glm') {
+      callGLM(config, messages, resolve);
     } else {
       callOpenAI(config, messages, resolve);
     }
@@ -173,6 +184,56 @@ function callClaude(
   });
 
   request.write(body);
+  request.end();
+}
+
+// ─── GLM 5.3 (Phase 8 / P8-A) ───────────────────────────────────────────────
+// Uses the pure wire helpers in ./ai/glm.ts; this function only supplies the
+// electron `net` transport. Keep ALL shape logic in glm.ts so it stays testable.
+import { buildGlmRequestForEndpoint, parseGlmResponse } from './ai/glm';
+
+function callGLM(
+  config: AIConfig,
+  messages: AIMessage[],
+  resolve: (result: { success: boolean; content?: string; error?: string; tokens?: number }) => void
+): void {
+  const plan = buildGlmRequestForEndpoint(config.endpoint, config.apiKey, messages, {
+    model: config.model,
+    maxTokens: config.maxTokens,
+    temperature: config.temperature,
+  });
+
+  const request = net.request({
+    method: 'POST',
+    url: plan.url,
+    headers: plan.headers,
+  });
+
+  let responseData = '';
+
+  request.on('response', (response) => {
+    response.on('data', (chunk) => {
+      responseData += chunk.toString();
+    });
+
+    response.on('end', () => {
+      const parsed = parseGlmResponse(responseData);
+      if (!parsed.success && response.statusCode >= 400) {
+        resolve({
+          success: false,
+          error: `GLM HTTP ${response.statusCode}: ${parsed.error || 'request failed'}`,
+        });
+        return;
+      }
+      resolve(parsed);
+    });
+  });
+
+  request.on('error', (err) => {
+    resolve({ success: false, error: `Network error: ${err.message}` });
+  });
+
+  request.write(plan.body);
   request.end();
 }
 

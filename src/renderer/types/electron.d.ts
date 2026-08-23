@@ -63,8 +63,8 @@ export interface NexAPI {
   configGetAll: () => Promise<Record<string, any>>;
 
   // Settings (Phase 2)
-  settingsLoad: () => Promise<{ settings: any; apiKey: string }>;
-  settingsSave: (settings: any, apiKey?: string) => Promise<{ success: boolean; error?: string }>;
+  settingsLoad: () => Promise<{ settings: any; apiKey: string; glmApiKey?: string }>;
+  settingsSave: (settings: any, apiKey?: string, glmApiKey?: string) => Promise<{ success: boolean; error?: string }>;
   settingsSetApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   settingsGetApiKey: () => Promise<string>;
   settingsDeleteApiKey: () => Promise<{ success: boolean }>;

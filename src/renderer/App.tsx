@@ -177,10 +177,14 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const { settings: persisted, apiKey } = await window.nexAPI.settingsLoad();
+        const { settings: persisted, apiKey, glmApiKey } = await window.nexAPI.settingsLoad();
         updateSettings(persisted);
         if (apiKey) {
           updateSettings({ aiApiKey: apiKey });
+        }
+        // Phase 8 / P8-A: GLM API key (encrypted at rest, same secrets store)
+        if (glmApiKey !== undefined && glmApiKey !== null && glmApiKey !== '') {
+          updateSettings({ glmApiKey });
         }
         if (persisted.aiMode) {
           setAIMode(persisted.aiMode);

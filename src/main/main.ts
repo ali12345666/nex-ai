@@ -562,6 +562,10 @@ function setupIPC(): void {
       voiceEnabled: false,
       aiMode: 'local',
       aiEndpoint: 'https://api.openai.com/v1',
+      // Phase 8 / P8-A: GLM 5.3 defaults (primary online provider)
+      onlineProvider: 'glm',
+      glmModel: 'glm-5.3',
+      glmEndpoint: 'https://api.z.ai',
       localThreads: 4,
       localContextSize: 2048,
       localTemperature: 0.7,
@@ -569,18 +573,23 @@ function setupIPC(): void {
       activeLocalModelId: null,
       ...settings,
     };
-    // Return API key separately (loaded from encrypted secrets)
+    // Return API keys separately (loaded from encrypted secrets)
     const apiKey = getSecret('aiApiKey');
-    return { settings: merged, apiKey };
+    const glmApiKey = getSecret('glmApiKey');
+    return { settings: merged, apiKey, glmApiKey };
   });
 
-  ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string) => {
+  ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string, glmApiKey?: string) => {
     try {
       // Save non-sensitive settings to config.json
       persistUpdateSettings(settings);
       // Save API key to encrypted secrets.json (only if provided)
       if (apiKey !== undefined) {
         setSecret('aiApiKey', apiKey);
+      }
+      // Phase 8 / P8-A: GLM API key — always stored encrypted, never in config.json
+      if (glmApiKey !== undefined) {
+        setSecret('glmApiKey', glmApiKey);
       }
       return { success: true };
     } catch (err: any) {

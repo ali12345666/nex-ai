@@ -14,7 +14,11 @@ export type AIMode = 'local' | 'online' | 'auto';
 /**
  * AI Provider Type
  */
-export type AIProviderType = 'local' | 'openai' | 'claude';
+export type AIProviderType = 'local' | 'openai' | 'claude' | 'glm';
+
+/** Phase 8 / P8-A — GLM 5.3 defaults (kept in sync with main/ai/glm.ts) */
+export const GLM_DEFAULT_MODEL = 'glm-5.3';
+export const GLM_DEFAULT_ENDPOINT = 'https://api.z.ai';
 
 export interface OpenFile {
   path: string;
@@ -56,6 +60,11 @@ export interface NexSettings {
   voiceEnabled: boolean;
   // Phase 6: AI mode
   aiMode: AIMode;
+  // Phase 8 / P8-A: GLM 5.3 online provider
+  onlineProvider: 'glm' | 'openai' | 'claude';
+  glmApiKey: string;
+  glmModel: string;
+  glmEndpoint: string;
   // Phase 4: Local model selection
   activeLocalModelId: string | null;
   // Phase 3: Local engine options
@@ -98,7 +107,18 @@ export function getProviderConfig(
       temperature: settings.localTemperature,
     };
   }
-  // Online mode (or Auto with no local model)
+  // Online mode (or Auto with no local model) — route by onlineProvider.
+  // Phase 8 / P8-A: GLM 5.3 is the primary online provider; OpenAI/Claude remain selectable.
+  if (settings.onlineProvider === 'glm') {
+    return {
+      provider: 'glm',
+      apiKey: settings.glmApiKey,
+      model: settings.glmModel || GLM_DEFAULT_MODEL,
+      endpoint: settings.glmEndpoint || GLM_DEFAULT_ENDPOINT,
+      maxTokens: 4096,
+      temperature: 0.7,
+    };
+  }
   const isClaude = settings.aiEndpoint.includes('anthropic');
   return {
     provider: isClaude ? 'claude' : 'openai',
@@ -192,6 +212,11 @@ const DEFAULT_SETTINGS: NexSettings = {
   language: 'en',
   voiceEnabled: false,
   aiMode: 'local',  // ✅ Phase 6: default to Local
+  // ✅ Phase 8 / P8-A: GLM 5.3 defaults
+  onlineProvider: 'glm',
+  glmApiKey: '',
+  glmModel: GLM_DEFAULT_MODEL,
+  glmEndpoint: GLM_DEFAULT_ENDPOINT,
   activeLocalModelId: null,
   localThreads: 4,
   localContextSize: 2048,

@@ -33,6 +33,11 @@ export interface PersistedSettings {
   aiMode?: 'local' | 'online' | 'auto';
   aiEndpoint?: string;
   // NOTE: aiApiKey is NOT here — it's in secrets.json
+  // NOTE: glmApiKey is also NOT here — secrets.json (key: glmApiKey)
+  // Phase 8 / P8-A: GLM 5.3 online provider selection
+  onlineProvider?: 'glm' | 'openai' | 'claude';
+  glmModel?: string;
+  glmEndpoint?: string;
   // Phase 4: local engine settings
   localThreads?: number;
   localContextSize?: number;

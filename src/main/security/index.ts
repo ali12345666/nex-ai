@@ -107,6 +107,9 @@ export function hasShellMetachars(s: string): boolean {
 export const ALLOWED_AI_ORIGINS = new Set([
   'https://api.openai.com',
   'https://api.anthropic.com',
+  // Phase 8 / P8-A: GLM 5.3 (Z.ai international + BigModel CN)
+  'https://api.z.ai',
+  'https://open.bigmodel.cn',
 ]);
 
 export function isAllowedAIOrigin(url: string): boolean {

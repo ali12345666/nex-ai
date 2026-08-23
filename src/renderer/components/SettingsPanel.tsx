@@ -46,11 +46,13 @@ export default function SettingsPanel() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [localSettings, setLocalSettings] = useState({ ...settings });
   const [localApiKey, setLocalApiKey] = useState(settings.aiApiKey);
+  const [localGlmApiKey, setLocalGlmApiKey] = useState(settings.glmApiKey);
   const [persistenceInfo, setPersistenceInfo] = useState<{ userDataPath: string; portable: boolean; secretsAvailable: boolean } | null>(null);
 
   useEffect(() => {
     setLocalSettings({ ...settings });
     setLocalApiKey(settings.aiApiKey);
+    setLocalGlmApiKey(settings.glmApiKey);
   }, [settings]);
 
   // Load persistence info for About section
@@ -65,9 +67,13 @@ export default function SettingsPanel() {
     if (localApiKey !== settings.aiApiKey) {
       updateSettings({ aiApiKey: localApiKey });
     }
+    if (localGlmApiKey !== settings.glmApiKey) {
+      updateSettings({ glmApiKey: localGlmApiKey });
+    }
     // Persist to disk (Phase 2 — survives close/restart/crash)
+    // GLM key (Phase 8) is stored encrypted exactly like the others.
     try {
-      const result = await window.nexAPI.settingsSave(localSettings, localApiKey);
+      const result = await window.nexAPI.settingsSave(localSettings, localApiKey, localGlmApiKey);
       if (result.success) {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
@@ -221,12 +227,12 @@ export default function SettingsPanel() {
             </div>
           )}
 
-          {/* Online AI (OpenAI / Anthropic) */}
+          {/* Online AI (GLM 5.3 / OpenAI / Anthropic) — Phase 8: GLM is primary */}
           {activeSection === 'online' && (
             <div className="space-y-6 animate-in">
               <div>
                 <h2 className="text-lg font-semibold text-nex-text mb-1">Online AI Provider</h2>
-                <p className="text-sm text-nex-text-muted">Optional online AI services (not required for core functionality)</p>
+                <p className="text-sm text-nex-text-muted">GLM 5.3 is the primary model for development and the Agent. OpenAI/Anthropic remain available.</p>
               </div>
 
               <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex items-start gap-2">
@@ -241,46 +247,103 @@ export default function SettingsPanel() {
                 <div>
                   <label className="block text-sm font-medium text-nex-text mb-2">Provider</label>
                   <div className="flex gap-2">
-                    {['openai', 'claude'].map((p) => (
-                      <button key={p} onClick={() => updateLocal('aiEndpoint', p === 'claude' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1')}
+                    {(['glm', 'openai', 'claude'] as const).map((p) => (
+                      <button key={p} onClick={() => {
+                        updateLocal('onlineProvider', p);
+                        if (p !== 'glm') {
+                          updateLocal('aiEndpoint', p === 'claude' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1');
+                        }
+                      }}
                         className={`px-4 py-2 rounded-lg text-sm font-medium transition-all border ${
-                          localSettings.aiEndpoint.includes(p === 'openai' ? 'openai' : 'anthropic')
+                          localSettings.onlineProvider === p
                             ? 'bg-nex-accent/20 border-nex-accent text-nex-accent-light'
                             : 'bg-nex-card border-nex-border text-nex-text-dim hover:text-nex-text'
                         }`}>
-                        {p === 'openai' ? 'OpenAI' : 'Anthropic'}
+                        {p === 'glm' ? 'GLM 5.3 ⭐' : p === 'openai' ? 'OpenAI' : 'Anthropic'}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-nex-text mb-2">API Key</label>
-                  <div className="relative">
-                    <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nex-text-dim" />
-                    <input
-                      type="password"
-                      value={localApiKey}
-                      onChange={(e) => setLocalApiKey(e.target.value)}
-                      placeholder="sk-... or sk-ant-..."
-                      className="w-full bg-nex-card border border-nex-border rounded-lg pl-10 pr-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
-                    />
-                  </div>
-                  <p className="text-[11px] text-nex-text-muted mt-1">
-                    Stored encrypted with OS keychain (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
-                  </p>
-                </div>
+                {/* GLM 5.3 settings (Phase 8 / P8-A) */}
+                {localSettings.onlineProvider === 'glm' && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-nex-text mb-2">GLM API Key</label>
+                      <div className="relative">
+                        <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nex-text-dim" />
+                        <input
+                          type="password"
+                          value={localGlmApiKey}
+                          onChange={(e) => setLocalGlmApiKey(e.target.value)}
+                          placeholder="your-zai-api-key..."
+                          className="w-full bg-nex-card border border-nex-border rounded-lg pl-10 pr-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
+                        />
+                      </div>
+                      <p className="text-[11px] text-nex-text-muted mt-1">
+                        From z.ai (or open.bigmodel.cn). Stored encrypted — never in config files.
+                      </p>
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-nex-text mb-2">Endpoint URL</label>
-                  <input
-                    type="text"
-                    value={localSettings.aiEndpoint}
-                    onChange={(e) => updateLocal('aiEndpoint', e.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                    className="w-full bg-nex-card border border-nex-border rounded-lg px-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
-                  />
-                </div>
+                    <div>
+                      <label className="block text-sm font-medium text-nex-text mb-2">Model</label>
+                      <select
+                        value={localSettings.glmModel || 'glm-5.3'}
+                        onChange={(e) => updateLocal('glmModel', e.target.value)}
+                        className="w-full bg-nex-card border border-nex-border rounded-lg px-4 py-2.5 text-sm text-nex-text outline-none focus:border-nex-accent/50"
+                      >
+                        <option value="glm-5.3">glm-5.3 (recommended — coding & agent)</option>
+                        <option value="glm-5.3-air">glm-5.3-air (balanced)</option>
+                        <option value="glm-5.3-flash">glm-5.3-flash (fast)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-nex-text mb-2">GLM Endpoint</label>
+                      <select
+                        value={localSettings.glmEndpoint || 'https://api.z.ai'}
+                        onChange={(e) => updateLocal('glmEndpoint', e.target.value)}
+                        className="w-full bg-nex-card border border-nex-border rounded-lg px-4 py-2.5 text-sm text-nex-text outline-none focus:border-nex-accent/50"
+                      >
+                        <option value="https://api.z.ai">api.z.ai (international)</option>
+                        <option value="https://open.bigmodel.cn">open.bigmodel.cn (China)</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                {/* OpenAI / Claude settings (unchanged behavior) */}
+                {localSettings.onlineProvider !== 'glm' && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-nex-text mb-2">API Key</label>
+                      <div className="relative">
+                        <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nex-text-dim" />
+                        <input
+                          type="password"
+                          value={localApiKey}
+                          onChange={(e) => setLocalApiKey(e.target.value)}
+                          placeholder="sk-... or sk-ant-..."
+                          className="w-full bg-nex-card border border-nex-border rounded-lg pl-10 pr-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
+                        />
+                      </div>
+                      <p className="text-[11px] text-nex-text-muted mt-1">
+                        Stored encrypted with OS keychain (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-nex-text mb-2">Endpoint URL</label>
+                      <input
+                        type="text"
+                        value={localSettings.aiEndpoint}
+                        onChange={(e) => updateLocal('aiEndpoint', e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        className="w-full bg-nex-card border border-nex-border rounded-lg px-4 py-2.5 text-sm text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50 transition-colors font-mono"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}
