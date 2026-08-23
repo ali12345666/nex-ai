@@ -202,32 +202,11 @@ export function listRuntimeTypes(): RuntimeType[] {
 }
 
 // ─── Phase 12 / P12-B: monitoring-grade stats aggregation ──────────────────
+// Phase 21 / P21-E: state lives in runtime-telemetry.ts (cycle-free import
+// for inference.ts); this module keeps the public API + freshness policy.
 
-/** Last inference telemetry (best-effort, updated by runtimes via noteInferenceStats). */
-let _lastInference: {
-  tokensPerSecond?: number;
-  promptTokens?: number;
-  generatedTokens?: number;
-  durationMs?: number;
-  modelLoadMs?: number;
-  active?: boolean;
-  at: number;
-} | null = null;
-
-/**
- * Runtime hook: record inference telemetry for the System Monitor.
- * Pure bookkeeping — no behavior change for callers.
- */
-export function noteInferenceStats(stats: {
-  tokensPerSecond?: number;
-  promptTokens?: number;
-  generatedTokens?: number;
-  durationMs?: number;
-  modelLoadMs?: number;
-  active?: boolean;
-}): void {
-  _lastInference = { ...stats, at: Date.now() };
-}
+export { noteInferenceStats } from './runtime-telemetry';
+import { getLastInference, getNotedModel, telemetryNoteIsFresh } from './runtime-telemetry';
 
 export interface RuntimeInstanceStats {
   instanceId: string;
@@ -265,9 +244,16 @@ export function getRuntimeMonitorStats(): {
       gpuBackend: s.gpuBackend,
     });
   }
+  // Phase 21 / P21-E: the DIRECT inference path (non-stream local chat)
+  // doesn't create a registry instance — surface its noted model so the
+  // System Monitor reflects reality on every path.
+  const noted = getNotedModel();
+  if (noted && !stats.some((e) => e.loadedModelName === noted)) {
+    stats.push({ instanceId: 'inference-direct', type: 'llamacpp', loaded: true, loadedModelName: noted, gpuBackend: 'cpu' });
+  }
+
   // drop stale inference records (> 5 min old, not active)
-  const fresh = _lastInference && (Date.now() - _lastInference.at < 5 * 60 * 1000 || _lastInference.active)
-    ? { ..._lastInference } : undefined;
+  const fresh = telemetryNoteIsFresh(5 * 60 * 1000) ? getLastInference() ?? undefined : undefined;
   delete (fresh as any)?.at;
   return { defaultRuntimeType: 'llamacpp', stats, lastInference: fresh };
 }

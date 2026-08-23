@@ -31,7 +31,10 @@ const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
 console.log('\nC) IPC + real sources:');
 const runtimeSrc = read('../../src/main/ai/runtime.ts');
 assert('getRuntimeMonitorStats exported', /export function getRuntimeMonitorStats/.test(runtimeSrc));
-assert('noteInferenceStats hook exported', /export function noteInferenceStats/.test(runtimeSrc));
+// TEST BUG (documented, P21-E refactor): noteInferenceStats moved to
+// runtime-telemetry.ts (cycle-free direct-path recording) and is
+// re-exported by runtime.ts — public API unchanged, source moved.
+assert('noteInferenceStats exported (re-export from runtime-telemetry)', /export \{ noteInferenceStats \}/.test(runtimeSrc));
 assert('stale inference dropped (>5min, inactive)', /5 \* 60 \* 1000/.test(runtimeSrc));
 
 const coreSrc = read('../../src/main/agent/core.ts');

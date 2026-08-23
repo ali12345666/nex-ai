@@ -37,6 +37,8 @@
  */
 
 import { touchModel, LocalModelInfo } from './model-registry';
+// Phase 21 / P21-E: direct-path telemetry (cycle-free module)
+import { noteInferenceStats, noteLoadedModel } from './runtime-telemetry';
 
 export interface InferenceOptions {
   contextSize?: number;
@@ -68,6 +70,10 @@ let _loadedModel: any = null;
 let _loadedContext: any = null;
 let _LlamaChatSession: any = null;
 let _currentSession: any = null;
+// Phase 21 / P21-E FIX: single claimed context sequence per loaded model.
+// v3 sessions do NOT release their sequence claim on dispose, so a fresh
+// getSequence() per completion exhausted the pool after one call.
+let _ctxSequence: any = null;
 let _abortFlag: boolean = false;
 
 async function getLlamaInstance() {
@@ -93,6 +99,12 @@ async function getLlamaInstance() {
  * unload it first. Subsequent inferences use this loaded model.
  */
 export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = {}): Promise<void> {
+  // Phase 21 / P21-E FIX: reuse an already-loaded identical model — the
+  // previous behavior unloaded + reloaded the GGUF from disk on EVERY
+  // completion (major perf bug for interactive chat).
+  if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
+    return;
+  }
   if (!model.fileExists) {
     throw new Error(`Model file does not exist: ${model.path}`);
   }
@@ -118,11 +130,13 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
     threads: opts.threads ?? 4,
   });
   _currentSession = null;
+  _ctxSequence = null; // new context → new sequence pool
   _loadedModelId = model.id;
 
   // Mark as last used
   touchModel(model.id);
 
+  noteLoadedModel(model.name);
   console.log(`[NEX AI Local] Model loaded: ${model.name}`);
 }
 
@@ -140,11 +154,13 @@ export async function unloadModel(): Promise<void> {
     try { (_loadedContext as any).dispose?.(); } catch {}
     _loadedContext = null;
   }
+  _ctxSequence = null;
   if (_loadedModel) {
     try { (_loadedModel as any).dispose?.(); } catch {}
     _loadedModel = null;
   }
   _loadedModelId = null;
+  noteLoadedModel(null);
   console.log('[NEX AI Local] Model unloaded');
 }
 
@@ -200,7 +216,7 @@ export async function chatComplete(
   // (node-llama-cpp v3 LlamaChatSession uses a default system prompt)
   await getLlamaInstance();
   const session = new _LlamaChatSession({
-    contextSequence: _loadedContext.getSequence(),
+    contextSequence: getSharedSequence(),
     systemPrompt: opts.systemPrompt,
   });
 
@@ -232,10 +248,25 @@ export async function chatComplete(
     prompt = parts.join('\n\n');
   }
 
-  const response = await session.prompt(prompt, {
-    maxTokens: opts.maxTokens ?? 1024,
-    temperature: opts.temperature ?? 0.7,
-  });
+  let response = '';
+  try {
+    const _t0 = Date.now();
+    response = await session.prompt(prompt, {
+      maxTokens: opts.maxTokens ?? 1024,
+      temperature: opts.temperature ?? 0.7,
+    });
+    noteInferenceStats({
+      tokensPerSecond: estimateTokens(response) / Math.max(0.001, (Date.now() - _t0) / 1000),
+      generatedTokens: estimateTokens(response),
+      durationMs: Date.now() - _t0,
+      active: false,
+    });
+  } finally {
+    // Phase 21 / P21-E FIX: release the context sequence — sessions were
+    // never disposed, exhausting sequences ('No sequences left') for every
+    // subsequent streaming call.
+    try { (session as any).dispose?.(); } catch { /* best-effort */ }
+  }
 
   return {
     content: response,
@@ -265,7 +296,7 @@ export async function chatStream(
 
   await getLlamaInstance();
   const session = new _LlamaChatSession({
-    contextSequence: _loadedContext.getSequence(),
+    contextSequence: getSharedSequence(),
     systemPrompt: opts.systemPrompt,
   });
 
@@ -277,6 +308,7 @@ export async function chatStream(
   _abortFlag = false;
   const start = Date.now();
   let fullResponse = '';
+  noteInferenceStats({ active: true });
 
   let prompt: string;
   if (messages.length === 1) {
@@ -309,6 +341,12 @@ export async function chatStream(
       fullResponse = response;
     }
     onChunk({ content: '', done: true });
+    noteInferenceStats({
+      tokensPerSecond: estimateTokens(fullResponse) / Math.max(0.001, (Date.now() - start) / 1000),
+      generatedTokens: estimateTokens(fullResponse),
+      durationMs: Date.now() - start,
+      active: false,
+    });
     return {
       content: fullResponse,
       tokensGenerated: estimateTokens(fullResponse),
@@ -320,6 +358,9 @@ export async function chatStream(
   } catch (err: any) {
     onChunk({ content: '', done: true, error: err.message });
     throw err;
+  } finally {
+    // Phase 21 / P21-E FIX: release the sequence for the next call
+    try { (session as any).dispose?.(); } catch { /* best-effort */ }
   }
 }
 
@@ -335,6 +376,14 @@ export function abortInference(): void {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Claim (once) and reuse the context sequence for the loaded model. */
+function getSharedSequence(): any {
+  if (!_ctxSequence && _loadedContext) {
+    _ctxSequence = (_loadedContext as any).getSequence();
+  }
+  return _ctxSequence;
+}
 
 function estimateTokens(text: string): number {
   // Rough estimate: 1 token ~= 4 chars in English, ~1 char in Chinese

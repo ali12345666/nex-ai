@@ -276,7 +276,11 @@ export function listConversations(): Array<{ id: string; savedAt: number; messag
 // ─── Path info (for debugging / Settings > About) ────────────────────────────
 
 export function getUserDataDir(): string {
-  return userDataDir;
+  // Phase 21 / P21-G FIX: previously returned the raw (possibly empty)
+  // field — before initPersistence() every consumer (e.g. the memory
+  // stores) wrote to CWD-relative paths. Same policy as config/secrets
+  // (P9-S5): fall back to a per-process temp dir, never the CWD.
+  return effectiveDataDir();
 }
 
 export function isPortable(): boolean {
