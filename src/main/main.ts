@@ -708,6 +708,42 @@ function setupIPC(): void {
   // Create and run an agent task
   ipcMain.handle('agent-create-task', async (_event, request: any) => {
     try {
+      // ── Phase 9 / P9-S5: composition-root knowledge wiring ──
+      // Agent core stays ignorant of the knowledge subsystem; we inject the
+      // port (initial retrieval) + the service (knowledge_search tool).
+      if (request?.projectPath && !request.knowledgePort) {
+        try {
+          const { getKnowledgeService } = await import('./knowledge/knowledge-service');
+          const { projectIdFromPath } = await import('./knowledge/project-id');
+          const { createEmbedder } = await import('./knowledge/llama-embedder');
+          const pid = projectIdFromPath(request.projectPath);
+          const svc = getKnowledgeService({
+            userDataDir: userDataPath,
+            projectId: pid,
+            embedder: await createEmbedder(undefined), // offline hash embedder (GGUF embedder via settings later)
+            roots: [request.projectPath],
+          });
+          request.knowledgePort = {
+            available: () => true,
+            retrieve: async (query: string, _pp?: string, limit?: number) => {
+              const { results } = await svc.retrieveForPrompt(query, limit ?? 3);
+              return results.map((r: any) => ({
+                documentId: r.document.id,
+                documentTitle: r.document.title,
+                chunkId: r.chunk.id,
+                content: r.chunk.content,
+                score: r.score,
+                source: r.document.sourcePath,
+                startLine: r.chunk.metadata?.startLine,
+                endLine: r.chunk.metadata?.endLine,
+              }));
+            },
+          };
+          request.toolContextExtras = { ...(request.toolContextExtras || {}), knowledgeService: svc };
+        } catch (err: any) {
+          console.warn('[NEX AI] Knowledge wiring unavailable for agent task:', err.message);
+        }
+      }
       const task = await createTask(request);
       // Run asynchronously — UI subscribes to events
       runTask(task.id).catch((err) => {
@@ -776,6 +812,131 @@ function setupIPC(): void {
 
   ipcMain.handle('agent-list-pending-diffs', async (_event, taskId: string) => {
     return listPendingDiffs(taskId);
+  });
+
+  // ── Knowledge / Local RAG (Phase 9) ──
+  // All endpoints are project-scoped: projectId derives from projectPath;
+  // isolation is enforced inside KnowledgeService/LocalVectorStore.
+  async function knowledgeServiceFor(projectPath: string) {
+    const { getKnowledgeService } = await import('./knowledge/knowledge-service');
+    const { projectIdFromPath } = await import('./knowledge/project-id');
+    const { createEmbedder } = await import('./knowledge/llama-embedder');
+    return getKnowledgeService({
+      userDataDir: userDataPath,
+      projectId: projectIdFromPath(projectPath),
+      embedder: await createEmbedder(undefined), // offline default; GGUF embedder pluggable
+      roots: [projectPath],
+    });
+  }
+
+  ipcMain.handle('knowledge-ingest', async (_event, projectPath: string, filePath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      const report = await svc.ingestWithReport(filePath);
+      return { success: report.status === 'indexed' || report.status === 'skipped-unchanged', report };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-ingest-many', async (_event, projectPath: string, filePaths: string[]) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      const reports = [];
+      for (const fp of (filePaths || []).slice(0, 500)) {
+        reports.push({ filePath: fp, ...(await svc.ingestWithReport(fp)) });
+      }
+      return { success: true, reports };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-search', async (_event, projectPath: string, query: string, limit?: number) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      const { framed, results } = await svc.retrieveForPrompt(query || '', limit ?? 4);
+      return {
+        success: true,
+        framed,
+        results: results.map((r: any) => ({
+          documentId: r.document.id,
+          title: r.document.title,
+          source: r.document.sourcePath,
+          startLine: r.chunk.metadata?.startLine,
+          endLine: r.chunk.metadata?.endLine,
+          section: r.chunk.sectionTitle,
+          score: Number(r.score.toFixed(4)),
+          snippet: r.chunk.content.slice(0, 200),
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-list', async (_event, projectPath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      const docs = await svc.listDocuments();
+      return {
+        success: true,
+        documents: docs.map((d: any) => ({
+          id: d.id, title: d.title, format: d.format, domain: d.domain,
+          sourcePath: d.sourcePath, chunkCount: d.metadata?.chunkCount ?? 0,
+          sizeBytes: d.metadata?.sizeBytes ?? 0, indexedAt: d.metadata?.indexedAt,
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-remove', async (_event, projectPath: string, documentId: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      await svc.removeDocument(documentId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-purge-missing', async (_event, projectPath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      return { success: true, purged: await svc.purgeMissing() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-rebuild', async (_event, projectPath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      return { success: true, ...(await svc.rebuildIndex()) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-clear', async (_event, projectPath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      await svc.clearProject();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-stats', async (_event, projectPath: string) => {
+    try {
+      const svc = await knowledgeServiceFor(projectPath);
+      return { success: true, ...(await svc.getStats()) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   });
 
   // Permission response (from UI)

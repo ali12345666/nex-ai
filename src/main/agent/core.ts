@@ -118,6 +118,12 @@ export interface CreateTaskRequest {
   knowledgePort?: KnowledgePort;
   /** Phase 9: how many knowledge chunks to inject (default 3). */
   knowledgeLimit?: number;
+  /**
+   * Phase 9 / P9-S5: opaque extras merged into every ToolContext.metadata
+   * by the composition root (e.g. { knowledgeService }) — keeps agent core
+   * ignorant of concrete services (DI at the wiring layer).
+   */
+  toolContextExtras?: Record<string, unknown>;
 }
 
 /**
@@ -193,6 +199,8 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     maxExecutionTimeMs: limits.maxExecutionTimeMs,
     createdAt: Date.now(),
     cancelled: false,
+    // Phase 9 / P9-S5: wiring-layer services for tool contexts (opaque)
+    toolContextExtras: request.toolContextExtras,
   };
 
   _activeTasks.set(taskId, task);
@@ -644,6 +652,9 @@ async function executeStep(
           stepId: step.id,
           // Pass the cancellation token to the tool so it can poll
           cancellationToken: token,
+          // Phase 9 / P9-S5: composition-root services (e.g. knowledgeService)
+          // merged opaquely — agent core never imports their types.
+          ...(task.toolContextExtras || {}),
         },
       };
 

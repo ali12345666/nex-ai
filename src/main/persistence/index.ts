@@ -21,6 +21,7 @@
 
 import { app, safeStorage } from 'electron';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface PersistedSettings {
@@ -99,12 +100,25 @@ export function initPersistence(userDataPath: string): void {
   }
 }
 
+/**
+ * Effective data dir. If initPersistence() has not run (unit tests, embedded
+ * contexts), fall back to a PER-PROCESS temp dir — NEVER the process CWD,
+ * which would silently leak config/secrets into whatever directory the
+ * process happened to start in (found by Phase 9 hermeticity audit).
+ */
+function effectiveDataDir(): string {
+  if (userDataDir) return userDataDir;
+  const fb = path.join(os.tmpdir(), `nex-ai-ud-fallback-${process.pid}`);
+  try { fs.mkdirSync(fb, { recursive: true }); } catch { /* best effort */ }
+  return fb;
+}
+
 function configPath(): string {
-  return path.join(userDataDir, CONFIG_FILE);
+  return path.join(effectiveDataDir(), CONFIG_FILE);
 }
 
 function secretsPath(): string {
-  return path.join(userDataDir, SECRETS_FILE);
+  return path.join(effectiveDataDir(), SECRETS_FILE);
 }
 
 // ─── Plain JSON state (non-sensitive) ────────────────────────────────────────

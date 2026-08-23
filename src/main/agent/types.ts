@@ -65,6 +65,8 @@ export interface AgentTask {
   // Cancellation
   cancelled: boolean;
   cancelReason?: string;
+  // Phase 9 / P9-S5: wiring-layer tool services (opaque to agent core)
+  toolContextExtras?: Record<string, unknown>;
 }
 
 export interface AgentStep {
