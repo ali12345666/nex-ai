@@ -83,9 +83,24 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
     onRespond({ requestId: request.id, decision: 'deny', scope: 'once', reason: denyReason || 'User denied' });
   };
 
+  // Phase 25: keyboard dialog semantics — Escape denies (safe default)
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      handleDeny();
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in">
-      <div className="bg-nex-surface border border-nex-border rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in"
+      onKeyDown={handleKeyDown}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Permission request: ${request.tool} (${request.permission})`}
+        className="bg-nex-surface border border-nex-border rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
         {/* Header */}
         <div className={`px-5 py-3 border-b border-nex-border flex items-center justify-between ${permInfo.bg}`}>
           <div className="flex items-center gap-2">
@@ -162,6 +177,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
 
           <button
             onClick={() => handleAllow('once')}
+                aria-label="Allow once"
             className="px-4 py-2 text-xs font-medium bg-nex-card border border-nex-border text-nex-text hover:border-nex-accent/50 rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow Once
@@ -169,6 +185,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
 
           <button
             onClick={() => handleAllow('session')}
+                aria-label="Allow for this session"
             className="px-4 py-2 text-xs font-medium bg-nex-card border border-nex-border text-nex-text hover:border-nex-accent/50 rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow for Session
@@ -176,6 +193,7 @@ export default function PermissionPrompt({ request, onRespond }: PermissionPromp
 
           <button
             onClick={() => handleAllow('project')}
+                aria-label="Always allow for this project"
             className="px-4 py-2 text-xs font-medium bg-nex-accent text-white hover:bg-nex-accent-light rounded-lg transition-all flex items-center gap-1.5"
           >
             <Check size={12} /> Allow for Project

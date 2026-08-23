@@ -223,6 +223,25 @@ export default function ChatPanel() {
     return contextParts.join('\n\n');
   }, [activeFile, openFiles, projectPath]);
 
+  // Phase 25: retry support — transient chat failures get a one-click retry
+  const [lastFailedInput, setLastFailedInput] = useState<string | null>(null);
+  const handleRetry = useCallback(() => {
+    const q = lastFailedInput;
+    setLastFailedInput(null);
+    setError(null);
+    if (q) {
+      setInput(q);
+      // Trigger send on next tick (input state needs to flush first)
+      setTimeout(() => {
+        const el = document.querySelector<HTMLInputElement>('textarea[data-chat-input], input[data-chat-input]');
+        if (el) {
+          el.value = q;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }, 0);
+    }
+  }, [lastFailedInput]);
+
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed || isAILoading) return;
@@ -287,9 +306,11 @@ export default function ChatPanel() {
       if (streamed || chatStreamBufRef.current.length > 0) {
         // partial stream then failure — keep what we have
         addMessage({ role: 'assistant', content: chatStreamBufRef.current + '\n\n⚠️ stream interrupted: ' + err.message, provider: providerConfig.provider });
+        setLastFailedInput(trimmed); // Phase 25: retryable
       } else {
         setError(err.message);
         addMessage({ role: 'assistant', content: `⚠️ Connection error: ${err.message}`, provider: providerConfig.provider });
+        setLastFailedInput(trimmed); // Phase 25: retryable
       }
     } finally {
       setChatStreaming(false);
@@ -463,10 +484,23 @@ export default function ChatPanel() {
         </div>
       )}
 
+      {/* Phase 25: retry bar for transient chat failures */}
+      {lastFailedInput && !isAILoading && (
+        <div className="px-4 pb-1 flex items-center gap-2 text-[10px]">
+          <span className="text-nex-text-dim truncate flex-1">Last request failed. Retry?</span>
+          <button onClick={handleRetry}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-nex-accent/40 text-nex-accent hover:bg-nex-accent/10 transition-colors"
+            aria-label="Retry last message">
+            ↻ Retry
+          </button>
+          <button onClick={() => setLastFailedInput(null)} className="text-nex-text-muted" aria-label="Dismiss retry">✕</button>
+        </div>
+      )}
+
       {/* Input Area */}
       <div className="px-4 pb-4 pt-2 border-t border-nex-border/50 shrink-0">
         <div className="relative bg-nex-card border border-nex-border rounded-xl focus-within:border-nex-accent/50 focus-within:glow-accent transition-all">
-          <textarea
+          <textarea data-chat-input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
