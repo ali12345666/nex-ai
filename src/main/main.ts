@@ -1106,6 +1106,56 @@ function setupIPC(): void {
     }
   });
 
+  // ── Plugins (Phase 15) — discovery/validation/enable-state ONLY ──
+  // NOTE: plugin CODE is never activated in this phase (loader/sandbox is a
+  // later, dedicated phase). These endpoints expose manifest bookkeeping.
+  let _pluginRegistry: import('./plugins/registry').LocalPluginRegistry | null = null;
+  async function getPluginRegistry() {
+    if (!_pluginRegistry) {
+      const { LocalPluginRegistry } = require('./plugins/registry') as typeof import('./plugins/registry');
+      _pluginRegistry = new LocalPluginRegistry(userDataPath);
+    }
+    return _pluginRegistry;
+  }
+
+  ipcMain.handle('plugins-list', async () => {
+    try {
+      const reg = await getPluginRegistry();
+      const entries = await reg.discover();
+      return {
+        success: true,
+        plugins: entries.map((e) => ({
+          id: e.manifest.id,
+          name: e.manifest.name,
+          version: e.manifest.version,
+          author: e.manifest.author,
+          description: e.manifest.description,
+          permissions: e.manifest.permissions,
+          provides: e.manifest.provides,
+          enabled: e.enabled,
+          installedAt: e.installedAt,
+        })),
+        invalid: reg.invalidDiscoveries().map((d) => ({
+          dir: path.basename(d.dir),
+          reason: d.reason || 'invalid',
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('plugins-set-enabled', async (_event, pluginId: string, enabled: boolean) => {
+    try {
+      const reg = await getPluginRegistry();
+      if (!reg.get(pluginId)) return { success: false, error: 'Unknown plugin' };
+      if (enabled) await reg.enable(pluginId); else await reg.disable(pluginId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Memory (Phase 13) — 5-store management via IPC (project-scoped) ──
   ipcMain.handle('memory-list', async (_event, store: string, projectPath?: string) => {
     try {

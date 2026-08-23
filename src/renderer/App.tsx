@@ -14,6 +14,7 @@ import ModelsPanel from './components/ModelsPanel';
 import KnowledgePanel from './components/KnowledgePanel';
 import HardwareMonitorPanel from './components/HardwareMonitorPanel';
 import MemoryPanel from './components/MemoryPanel';
+import PluginsPanel from './components/PluginsPanel';
 import CommandPalette from './components/CommandPalette';
 import StatusBar from './components/StatusBar';
 import WelcomeScreen from './components/WelcomeScreen';
@@ -34,6 +35,7 @@ function SidebarContent() {
     knowledge: projectPath ? <KnowledgePanel /> : null,
     system: <HardwareMonitorPanel />,  // works without a project too
     memory: <MemoryPanel />,
+    plugins: <PluginsPanel />,
     snippets: <SnippetPanel />,
     diagnostics: projectPath ? <DiagnosticsPanel /> : null,
   };

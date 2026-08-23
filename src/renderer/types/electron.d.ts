@@ -108,6 +108,9 @@ export interface NexAPI {
   systemSnapshot: () => Promise<{ success: boolean; error?: string; snapshot?: import('./electron').SystemMonitorSnapshot }>;
   // Memory (Phase 13)
   memoryList: (store: string, projectPath?: string) => Promise<{ success: boolean; error?: string; store?: string; entries?: Array<{ key: string; value: any; type: string; tags: string[]; updatedAt: number; expiresAt?: number }> }>;
+  // Plugins (Phase 15)
+  pluginsList: () => Promise<{ success: boolean; error?: string; plugins?: Array<{ id: string; name: string; version: string; author: string; description: string; permissions: Array<{ type: string; scope: string; reason: string }>; provides: { tools: string[]; knowledgeDomains: any[]; runtimes: any[]; uiExtensions: string[] }; enabled: boolean; installedAt: number }>; invalid?: Array<{ dir: string; reason: string }> }>;
+  pluginsSetEnabled: (pluginId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }> ;
   memoryDelete: (store: string, key: string, projectPath?: string) => Promise<{ success: boolean; error?: string }>;
   memoryClear: (store: string, projectPath?: string) => Promise<{ success: boolean; removed?: number; error?: string }>;
   knowledgeList: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: Array<{ id: string; title: string; format: string; domain?: string; sourcePath?: string; chunkCount: number; sizeBytes: number; indexedAt?: number }> }>;

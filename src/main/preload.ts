@@ -108,6 +108,9 @@ contextBridge.exposeInMainWorld('nexAPI', {
   systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
   // Memory (Phase 13)
   memoryList: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-list', store, projectPath),
+  // Plugins (Phase 15) — manifests only, no code activation
+  pluginsList: () => ipcRenderer.invoke('plugins-list'),
+  pluginsSetEnabled: (pluginId: string, enabled: boolean) => ipcRenderer.invoke('plugins-set-enabled', pluginId, enabled),
   memoryDelete: (store: string, key: string, projectPath?: string) => ipcRenderer.invoke('memory-delete', store, key, projectPath),
   memoryClear: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-clear', store, projectPath),
   knowledgeList: (projectPath: string) => ipcRenderer.invoke('knowledge-list', projectPath),

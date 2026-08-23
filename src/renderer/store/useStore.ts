@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export type Panel = 'chat' | 'editor' | 'terminal' | 'settings' | 'explorer';
-export type SidebarView = 'files' | 'search' | 'git' | 'extensions' | 'snippets' | 'diagnostics' | 'diff' | 'models' | 'knowledge' | 'system' | 'memory';
+export type SidebarView = 'files' | 'search' | 'git' | 'extensions' | 'snippets' | 'diagnostics' | 'diff' | 'models' | 'knowledge' | 'system' | 'memory' | 'plugins';
 
 /**
  * AI Mode (Phase 6)
