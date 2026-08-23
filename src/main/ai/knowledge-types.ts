@@ -45,6 +45,14 @@ export interface KnowledgeDocument {
     pageCount?: number;
     sizeBytes?: number;
     checksum?: string;
+    // Phase 9 (additive, optional — RAG ingestion bookkeeping; older
+    // documents without these fields remain perfectly valid):
+    projectId?: string;
+    filename?: string;
+    extension?: string;
+    modifiedAt?: number;
+    chunkCount?: number;
+    indexedAt?: number;
   };
 }
 
