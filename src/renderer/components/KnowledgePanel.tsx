@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, RefreshCw, FileText, Layers, HardDrive, Cpu, ShieldCheck,
   Loader2, AlertCircle, X, ChevronRight, ChevronDown, Wrench,
+  Plus, FolderPlus, Trash2, RotateCw,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
@@ -14,7 +15,9 @@ import { useStore } from '../store/useStore';
  *
  * P10-A: live stats (documents/chunks/index/embedding backend/status)
  *        + document list + rebuild/refresh.
- * (P10-B adds add-files/folder/delete/re-index; P10-C adds search.)
+ * P10-B: add files (multi-pick) / add folder (guarded scan) / delete /
+ *        re-index single document.
+ * (P10-C adds search.)
  */
 
 interface KnowledgeDoc {
@@ -76,6 +79,53 @@ export default function KnowledgePanel() {
   }, [projectPath]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // ── P10-B: document management (all via IPC → Main → KnowledgeService) ──
+  const addFiles = async () => {
+    if (!projectPath) return;
+    setBusy('add-files'); setError(null);
+    try {
+      const pick = await window.nexAPI.dialogOpenFiles();
+      if (pick.canceled || !pick.paths?.length) return;
+      const res = await window.nexAPI.knowledgeIngestMany(projectPath, pick.paths);
+      if (!res.success) { setError(res.error || 'ingest failed'); }
+      else {
+        const rs = res.reports || [];
+        const failed = rs.filter((r: any) => r.status === 'rejected' || r.status === 'unsupported');
+        if (failed.length > 0) setError(`${failed.length} of ${rs.length} file(s) not indexed — ${failed[0].reason || failed[0].status}`);
+      }
+      await refresh();
+    } catch (err: any) { setError(err.message); } finally { setBusy(null); }
+  };
+
+  const addFolder = async () => {
+    if (!projectPath) return;
+    setBusy('add-folder'); setError(null);
+    try {
+      const pick = await window.nexAPI.dialogOpenFolder();
+      if (pick.canceled || !pick.path) return;
+      const res = await window.nexAPI.knowledgeIngestFolder(projectPath, pick.path);
+      if (!res.success) { setError(res.error || 'folder ingest failed'); }
+      else if (res.scan && res.scan.rejectedCount > 0) {
+        setError(`${res.scan.rejectedCount} file(s) rejected by security guards`);
+      }
+      await refresh();
+    } catch (err: any) { setError(err.message); } finally { setBusy(null); }
+  };
+
+  const removeDoc = async (id: string) => {
+    if (!projectPath) return;
+    setBusy(`del:${id}`);
+    try { await window.nexAPI.knowledgeRemove(projectPath, id); await refresh(); }
+    catch (err: any) { setError(err.message); } finally { setBusy(null); }
+  };
+
+  const reindexDoc = async (doc: KnowledgeDoc) => {
+    if (!projectPath || !doc.sourcePath) return;
+    setBusy(`re:${doc.id}`);
+    try { await window.nexAPI.knowledgeIngest(projectPath, doc.sourcePath); await refresh(); }
+    catch (err: any) { setError(err.message); } finally { setBusy(null); }
+  };
 
   const rebuild = async () => {
     if (!projectPath) return;
@@ -151,8 +201,10 @@ export default function KnowledgePanel() {
             />
           </div>
 
-          {/* Actions */}
+          {/* Actions (P10-B) */}
           <div className="px-3 pb-2.5 flex flex-wrap gap-1.5">
+            <ActionBtn onClick={addFiles} busy={busy === 'add-files'} icon={<Plus size={11} />} label="Add Files" />
+            <ActionBtn onClick={addFolder} busy={busy === 'add-folder'} icon={<FolderPlus size={11} />} label="Add Folder" />
             <ActionBtn onClick={rebuild} busy={busy === 'rebuild'} icon={<Wrench size={11} />} label="Rebuild Index" />
           </div>
 
@@ -180,7 +232,7 @@ export default function KnowledgePanel() {
               </p>
             )}
             {docs.map((d) => (
-              <DocRow key={d.id} doc={d} />
+              <DocRow key={d.id} doc={d} busy={busy} onReindex={() => reindexDoc(d)} onDelete={() => removeDoc(d.id)} />
             ))}
           </div>
         </div>
@@ -215,7 +267,12 @@ function ActionBtn({ onClick, busy, icon, label }: { onClick: () => void; busy: 
   );
 }
 
-function DocRow({ doc }: { doc: KnowledgeDoc }) {
+function DocRow({ doc, busy, onReindex, onDelete }: {
+  doc: KnowledgeDoc;
+  busy: string | null;
+  onReindex: () => void;
+  onDelete: () => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="mb-0.5 rounded-md border border-transparent hover:border-nex-border/60 hover:bg-nex-card/60 transition-colors">
@@ -227,10 +284,22 @@ function DocRow({ doc }: { doc: KnowledgeDoc }) {
       </button>
       {open && (
         <div className="px-3 pb-1.5 pt-0.5">
-          <div className="text-[9px] text-nex-text-muted space-y-0.5">
+          <div className="text-[9px] text-nex-text-muted space-y-0.5 mb-1.5">
             <div className="truncate" title={doc.sourcePath}>path: {doc.sourcePath || '—'}</div>
             <div>format: {doc.format} · size: {formatBytes(doc.sizeBytes)}</div>
             <div>indexed: {timeAgo(doc.indexedAt)}{doc.domain ? ` · domain: ${doc.domain}` : ''}</div>
+          </div>
+          <div className="flex gap-1">
+            <button onClick={onReindex} disabled={busy === `re:${doc.id}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-nex-accent border border-nex-border hover:border-nex-accent/40 transition-colors disabled:opacity-50">
+              {busy === `re:${doc.id}` ? <Loader2 size={9} className="animate-spin" /> : <RotateCw size={9} />}
+              Re-index
+            </button>
+            <button onClick={onDelete} disabled={busy === `del:${doc.id}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-red-400 border border-nex-border hover:border-red-500/40 transition-colors disabled:opacity-50">
+              {busy === `del:${doc.id}` ? <Loader2 size={9} className="animate-spin" /> : <Trash2 size={9} />}
+              Remove
+            </button>
           </div>
         </div>
       )}

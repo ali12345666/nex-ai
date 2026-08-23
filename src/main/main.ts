@@ -869,6 +869,36 @@ function setupIPC(): void {
     }
   });
 
+  // Phase 10 / P10-B: folder ingestion — scanner + per-file security is in
+  // knowledge/folder-scan.ts (pure); this handler just batches service calls.
+  ipcMain.handle('knowledge-ingest-folder', async (_event, projectPath: string, folderPath: string) => {
+    try {
+      // The folder itself must live inside the project roots (traversal guard)
+      const { assertPathInside } = await import('./security');
+      const guard = assertPathInside(folderPath, [projectPath]);
+      if (!guard.ok) {
+        return { success: false, error: `Blocked: ${guard.reason}` };
+      }
+      const { scanFolderForIngest } = await import('./knowledge/folder-scan');
+      const scan = scanFolderForIngest(folderPath, { roots: [projectPath] });
+      if (scan.files.length === 0) {
+        return { success: false, error: 'No ingestable documents found in folder.', reports: scan.rejected.slice(0, 5) as any };
+      }
+      const svc = await knowledgeServiceFor(projectPath);
+      const reports = [];
+      for (const fp of scan.files) {
+        reports.push({ filePath: fp, ...(await svc.ingestWithReport(fp)) });
+      }
+      return {
+        success: true,
+        reports,
+        scan: { truncated: scan.truncated, skippedByCaps: scan.skippedByCaps, rejectedCount: scan.rejected.length },
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('knowledge-search', async (_event, projectPath: string, query: string, limit?: number) => {
     try {
       const svc = await knowledgeServiceFor(projectPath);

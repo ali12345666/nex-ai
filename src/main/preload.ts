@@ -108,6 +108,7 @@ contextBridge.exposeInMainWorld('nexAPI', {
   knowledgeSearch: (projectPath: string, query: string, limit?: number) => ipcRenderer.invoke('knowledge-search', projectPath, query, limit),
   knowledgeIngest: (projectPath: string, filePath: string) => ipcRenderer.invoke('knowledge-ingest', projectPath, filePath),
   knowledgeIngestMany: (projectPath: string, filePaths: string[]) => ipcRenderer.invoke('knowledge-ingest-many', projectPath, filePaths),
+  knowledgeIngestFolder: (projectPath: string, folderPath: string) => ipcRenderer.invoke('knowledge-ingest-folder', projectPath, folderPath),
   knowledgeRemove: (projectPath: string, documentId: string) => ipcRenderer.invoke('knowledge-remove', projectPath, documentId),
   knowledgePurgeMissing: (projectPath: string) => ipcRenderer.invoke('knowledge-purge-missing', projectPath),
   knowledgeRebuild: (projectPath: string) => ipcRenderer.invoke('knowledge-rebuild', projectPath),

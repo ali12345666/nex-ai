@@ -108,6 +108,7 @@ export interface NexAPI {
   knowledgeSearch: (projectPath: string, query: string, limit?: number) => Promise<{ success: boolean; error?: string; framed?: string; results?: Array<{ documentId: string; title: string; source?: string; startLine?: number; endLine?: number; section?: string; score: number; snippet: string }> }>;
   knowledgeIngest: (projectPath: string, filePath: string) => Promise<{ success: boolean; report?: { status: string; reason?: string; chunkCount?: number }; error?: string }>;
   knowledgeIngestMany: (projectPath: string, filePaths: string[]) => Promise<{ success: boolean; reports?: Array<{ filePath: string; status: string; reason?: string; chunkCount?: number }>; error?: string }>;
+  knowledgeIngestFolder: (projectPath: string, folderPath: string) => Promise<{ success: boolean; reports?: Array<any>; scan?: { truncated: boolean; skippedByCaps: number; rejectedCount: number }; error?: string }>;
   knowledgeRemove: (projectPath: string, documentId: string) => Promise<{ success: boolean; error?: string }>;
   knowledgePurgeMissing: (projectPath: string) => Promise<{ success: boolean; purged?: string[]; error?: string }>;
   knowledgeRebuild: (projectPath: string) => Promise<{ success: boolean; indexed?: number; skipped?: number; failed?: number; error?: string }>;
