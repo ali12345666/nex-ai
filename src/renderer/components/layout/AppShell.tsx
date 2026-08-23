@@ -15,12 +15,16 @@
  * All panels use the token system from styles/tokens.css.
  */
 
-import React, { useState, useCallback, Suspense, lazy } from 'react';
+import React, { useState, useCallback, useEffect, useRef, Suspense, lazy } from 'react';
 import NavigationRail, { type NexView } from './NavigationRail';
 import BottomStatusBar from './BottomStatusBar';
 
 // Lazy-load the orb (heavy Three.js bundle)
 const NexOrb = lazy(() => import('../orb/NexOrb'));
+
+// Phase 30: Voice — connect Orb to voice system (audio reactivity)
+import { voiceController } from '../../services/voice-controller';
+import type { NexOrbState } from '../orb/orb-state';
 
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
 // Phase 29: Real chat panel using NEX token system
@@ -38,9 +42,52 @@ import { useStore } from '../../store/useStore';
 
 export default function AppShell() {
   const [view, setView] = useState<NexView>('home');
+  // Phase 30: Voice state for the Orb (audio level stays in ref, NOT React state)
+  const [orbState, setOrbState] = useState<NexOrbState>('idle');
+  const orbAudioRef = useRef<number>(0);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
+  const orbAudioSubRef = useRef<(() => void) | null>(null);
+  const orbStateSubRef = useRef<(() => void) | null>(null);
   const { projectPath } = useStore();
 
   const navigate = useCallback((v: NexView) => setView(v), []);
+
+  // Phase 30: Voice → Orb wiring (state + audio level via refs, not React state for audio)
+  useEffect(() => {
+    // Subscribe to orb state changes
+    const unsubState = voiceController.subscribeOrbState((state) => {
+      setOrbState(state);
+    });
+    // Subscribe to audio level (stored in ref — Orb reads it via useFrame)
+    const unsubAudio = voiceController.subscribeOrbAudio((level) => {
+      orbAudioRef.current = level;
+    });
+    // Set callbacks for chat integration
+    voiceController.setCallbacks({
+      onPartialTranscript: (text) => setPartialTranscript(text),
+      onFinalTranscript: (text) => {
+        setPartialTranscript(null);
+        // Final transcript goes to chat via a custom event (ChatPanel listens)
+        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text } }));
+      },
+      onVoiceError: () => setPartialTranscript(null),
+    });
+    orbStateSubRef.current = unsubState;
+    orbAudioSubRef.current = unsubAudio;
+    return () => {
+      unsubState();
+      unsubAudio();
+      voiceController.setCallbacks({});
+      orbStateSubRef.current = null;
+      orbAudioSubRef.current = null;
+    };
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { voiceController.dispose(); };
+  }, []);
 
   // Left workspace content based on active view
   const leftPanel = () => {
@@ -114,13 +161,40 @@ export default function AppShell() {
           >
             <Suspense fallback={<OrbLoading />}>
               <NexOrb
-                state="idle"
-                audioLevel={0}
+                state={orbState}
+                audioLevel={orbAudioRef.current}
                 primaryColor="var(--nex-orb-primary)"
                 secondaryColor="var(--nex-orb-secondary)"
                 quality="high"
                 className="w-full h-full"
               />
+              {/* Phase 30: Voice transcript display */}
+              {partialTranscript && (
+                <div
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
+                  style={{ color: 'var(--nex-accent-text)' }}
+                  aria-live="polite"
+                >
+                  "{partialTranscript}"
+                </div>
+              )}
+              {/* Phase 30: Voice toggle (subtle indicator, not a big button) */}
+              <button
+                onClick={() => { voiceController.toggle(); setVoiceActive(!voiceActive); }}
+                className="absolute bottom-4 right-4 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-medium nex-glass nex-click transition-all"
+                style={{
+                  color: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)',
+                  border: voiceActive ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-glass-border)',
+                }}
+                aria-label={voiceActive ? 'Stop voice input' : 'Start voice input'}
+                title={voiceActive ? 'Voice active — click to stop' : 'Click to start voice'}
+              >
+                <span
+                  className={voiceActive ? 'inline-block w-1.5 h-1.5 rounded-full animate-pulse' : 'inline-block w-1.5 h-1.5 rounded-full'}
+                  style={{ background: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
+                />
+                {voiceActive ? 'LISTENING' : 'VOICE'}
+              </button>
             </Suspense>
           </div>
         </div>

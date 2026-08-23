@@ -21,6 +21,8 @@ import {
   type NexMessage, type FileAttachment, MAX_ATTACHMENT_INLINE,
 } from '../../lib/chat-model';
 import MessageBubble from './MessageBubble';
+// Phase 30: Voice → Chat integration (transcripts + thinking state)
+import { voiceController } from '../../services/voice-controller';
 
 const SUPPORTED_EXTENSIONS = new Set([
   'txt', 'md', 'json', 'csv', 'yaml', 'yml', 'js', 'ts', 'tsx', 'jsx',
@@ -40,6 +42,37 @@ export default function NexChatPanel() {
   const streamBufRef = useRef<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Phase 30: Voice transcript listener (final transcripts → sendMessage) ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.text?.trim()) {
+        // Feed into the SAME pipeline as typed input
+        setInput(detail.text.trim());
+        // Trigger send on next tick (input state needs to flush)
+        setTimeout(() => {
+          const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+          if (el) {
+            el.value = detail.text.trim();
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            // Small delay for state flush, then simulate Enter
+            setTimeout(() => {
+              el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            }, 50);
+          }
+        }, 10);
+      }
+    };
+    window.addEventListener('nex:voice-transcript', handler);
+    return () => window.removeEventListener('nex:voice-transcript', handler);
+  }, []);
+
+  // ── Phase 30: Voice thinking state (tell Orb when AI is processing) ──
+  useEffect(() => {
+    voiceController.setThinking(isGenerating);
+    return () => voiceController.setThinking(false);
+  }, [isGenerating]);
 
   // ── Streaming listener ──
   useEffect(() => {
