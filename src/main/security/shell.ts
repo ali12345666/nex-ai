@@ -26,6 +26,47 @@ export interface ExecResult {
   error?: string;
 }
 
+// ─── Windows Command Resolution (Phase 8 / P8-D) ────────────────────────────
+
+/**
+ * Commands that exist as `.cmd` shims on Windows (npm ships npm.cmd, not npm.exe).
+ * execFile() cannot execute .cmd batch files directly — the spawn fails with
+ * ENOENT/EINVAL. We resolve to the .cmd name and keep `shell:false` by using
+ * Node's built-in .cmd handling via `{ shell: true }` ONLY for these whitelisted
+ * shims with a STRICTLY ARGUMENT-ARRAY call surface.
+ */
+const WINDOWS_CMD_SHIMS = new Set(['npm', 'npx', 'yarn', 'pnpm', 'bun']);
+
+/**
+ * Resolve a binary name for the current (or injected) platform.
+ * Pure function — unit-testable without a Windows machine.
+ *
+ * - On win32, whitelisted JS-package-manager shims get '.cmd' appended and
+ *   must be spawned with shell semantics (Node cannot execFile a .cmd).
+ * - Everything else returns the name unchanged.
+ */
+export function resolveCommandForPlatform(
+  bin: string,
+  platform: NodeJS.Platform = process.platform
+): { bin: string; useShell: boolean } {
+  if (platform === 'win32' && WINDOWS_CMD_SHIMS.has(bin.toLowerCase())) {
+    return { bin: `${bin}.cmd`, useShell: true };
+  }
+  return { bin, useShell: false };
+}
+
+/**
+ * cmd.exe metacharacters that enable command injection when args are
+ * stringified for a shell. When useShell is forced (Windows .cmd shims),
+ * ANY argument containing these is rejected outright — no escaping games.
+ * Pure function — unit-testable.
+ */
+const SHELL_META = /[&|<>^%"\r\n]/;
+
+export function isShellSafeArg(arg: string): boolean {
+  return typeof arg === 'string' && !SHELL_META.test(arg);
+}
+
 /**
  * Run a binary with explicit argument array. No shell interpolation.
  *
@@ -40,14 +81,29 @@ export function safeExecFile(
   args: string[],
   opts: ExecOptions = {}
 ): Promise<ExecResult> {
+  // Phase 8 / P8-D: npm/npx/etc are .cmd shims on Windows — resolve first.
+  const resolved = resolveCommandForPlatform(bin);
+  // Injection guard: when a shell is forced (.cmd shims), reject any arg
+  // carrying cmd.exe metacharacters. Plain-argv path stays shell-free.
+  if (resolved.useShell && args.some((a) => !isShellSafeArg(a))) {
+    return Promise.resolve({
+      success: false,
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      error: 'Blocked: argument contains shell metacharacters',
+    });
+  }
   return new Promise((resolve) => {
-    const child = execFile(bin, args, {
+    const child = execFile(resolved.bin, args, {
       cwd: opts.cwd || os.homedir(),
       timeout: opts.timeout || 30000,
       maxBuffer: opts.maxBuffer || 10 * 1024 * 1024,
       env: { ...process.env, ...opts.env } as any,
       encoding: 'utf-8',
-      shell: false, // CRITICAL: never use a shell
+      // CRITICAL: never use a shell — EXCEPT for the whitelisted .cmd shims
+      // above where Node requires it (binary name is ours, args stay an array)
+      shell: resolved.useShell,
       windowsHide: true,
     }, (err, stdout, stderr) => {
       if (err) {
@@ -79,11 +135,20 @@ export function safeSpawn(
   args: string[],
   opts: ExecOptions = {}
 ): ChildProcess {
-  return spawn(bin, args, {
+  // Phase 8 / P8-D: resolve Windows .cmd shims transparently
+  const resolved = resolveCommandForPlatform(bin);
+  if (resolved.useShell && args.some((a) => !isShellSafeArg(a))) {
+    // Emit an immediately-exited child mirroring a spawn failure — callers
+    // already handle non-zero exit/error events.
+    const fake = spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    (fake as any).nexBlocked = 'argument contains shell metacharacters';
+    return fake;
+  }
+  return spawn(resolved.bin, args, {
     cwd: opts.cwd || os.homedir(),
     env: { ...process.env, ...opts.env } as any,
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: false,
+    shell: resolved.useShell,
     windowsHide: false,
   });
 }
