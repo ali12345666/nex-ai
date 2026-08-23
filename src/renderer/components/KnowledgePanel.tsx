@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, RefreshCw, FileText, Layers, HardDrive, Cpu, ShieldCheck,
   Loader2, AlertCircle, X, ChevronRight, ChevronDown, Wrench,
-  Plus, FolderPlus, Trash2, RotateCw,
+  Plus, FolderPlus, Trash2, RotateCw, Search,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
@@ -17,7 +17,8 @@ import { useStore } from '../store/useStore';
  *        + document list + rebuild/refresh.
  * P10-B: add files (multi-pick) / add folder (guarded scan) / delete /
  *        re-index single document.
- * (P10-C adds search.)
+ * P10-C: knowledge search — query → ranked results → score → document →
+ *        snippet → citation (file → line range), fully local.
  */
 
 interface KnowledgeDoc {
@@ -29,6 +30,17 @@ interface KnowledgeDoc {
   chunkCount: number;
   sizeBytes: number;
   indexedAt?: number;
+}
+
+interface SearchHit {
+  documentId: string;
+  title: string;
+  source?: string;
+  startLine?: number;
+  endLine?: number;
+  section?: string;
+  score: number;
+  snippet: string;
 }
 
 function formatBytes(n: number): string {
@@ -127,6 +139,23 @@ export default function KnowledgePanel() {
     catch (err: any) { setError(err.message); } finally { setBusy(null); }
   };
 
+  // ── P10-C: search (IPC → Main → HybridRetriever; fully local) ──
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!projectPath || !q) return;
+    setSearching(true); setError(null);
+    try {
+      const res = await window.nexAPI.knowledgeSearch(projectPath, q, 8);
+      if (res.success) setSearchResults(res.results || []);
+      else setError(res.error || 'search failed');
+    } catch (err: any) { setError(err.message); }
+    finally { setSearching(false); }
+  };
+
   const rebuild = async () => {
     if (!projectPath) return;
     setBusy('rebuild');
@@ -218,6 +247,50 @@ export default function KnowledgePanel() {
               </button>
             </div>
           )}
+
+          {/* Search (P10-C) */}
+          <div className="px-3 pb-2.5 border-b border-nex-border/50">
+            <div className="relative">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-nex-text-dim" />
+              <input
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); if (searchResults) setSearchResults(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+                placeholder="Search knowledge…"
+                className="w-full bg-nex-card border border-nex-border rounded-lg pl-7 pr-2 py-1.5 text-[11px] text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50"
+              />
+              {searching && <Loader2 size={11} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-nex-accent" />}
+            </div>
+
+            {/* Results: score → document → snippet → citation */}
+            {searchResults && (
+              <div className="mt-2">
+                <div className="text-[10px] uppercase tracking-wider text-nex-text-muted mb-1.5">
+                  Results ({searchResults.length})
+                </div>
+                {searchResults.length === 0 && (
+                  <p className="text-[11px] text-nex-text-dim py-1">No matches.</p>
+                )}
+                {searchResults.map((r, i) => (
+                  <div key={`${r.documentId}-${i}`} className="mb-2 p-2 rounded-lg bg-nex-card border border-nex-border/70">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <FileText size={10} className="text-nex-accent/70 shrink-0" />
+                      <span className="text-[11px] font-medium text-nex-text truncate flex-1" title={r.title}>{r.title}</span>
+                      <span className="text-[9px] text-nex-accent font-mono shrink-0" title="relevance score">{r.score.toFixed(3)}</span>
+                    </div>
+                    <p className="text-[10px] text-nex-text-dim leading-snug line-clamp-3 whitespace-pre-wrap">{r.snippet}</p>
+                    <div className="text-[9px] text-nex-text-muted mt-1 truncate" title={r.source}>
+                      {r.source || r.title}
+                      {r.startLine !== undefined
+                        ? ` → lines ${r.startLine}${r.endLine !== undefined ? `-${r.endLine}` : ''}`
+                        : ''}
+                      {r.section ? ` · § ${r.section}` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Document list */}
           <div className="px-3 py-2">
