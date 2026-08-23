@@ -261,8 +261,9 @@ function setupSecurity(win: BrowserWindow): void {
   // Only allow: self, dev server, and the two AI APIs.
   sess.webRequest.onBeforeRequest((details, callback) => {
     const url = details.url;
-    // Allow local dev server
+    // Allow local dev server (HTTP + WebSocket for HMR)
     if (url.startsWith('http://localhost:5173')) return callback({});
+    if (url.startsWith('ws://localhost:5173')) return callback({});
     if (url.startsWith('file://')) return callback({});
     if (url.startsWith('chrome-extension://')) return callback({});
     // Allow Google Fonts (loaded by index.html)
