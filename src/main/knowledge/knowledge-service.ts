@@ -27,6 +27,8 @@ import type {
 import { ingestFile, needsReindex, type IngestOutcome } from './ingester';
 import { LocalVectorStore } from './vector-store';
 import { HybridRetriever } from './retriever';
+// Phase 20: default local quality stage (implements the Reranker interface)
+import { LexicalReranker } from './reranker';
 import { frameDocumentChunk } from './security';
 
 export interface KnowledgeServiceOptions {
@@ -35,6 +37,8 @@ export interface KnowledgeServiceOptions {
   embedder: Embedder;
   /** allowed roots for ingestion (defaults to nothing — caller must set) */
   roots: string[];
+  /** Phase 20: disable the default lexical reranker (A/B testing, tests) */
+  disableReranker?: boolean;
 }
 
 export interface AddDocumentReport {
@@ -56,7 +60,15 @@ export class KnowledgeService implements KnowledgeBase {
     this.embedder = opts.embedder;
     this.roots = opts.roots;
     this.store = new LocalVectorStore(opts.userDataDir, opts.projectId);
-    this.retriever = new HybridRetriever({ store: this.store, embedder: this.embedder });
+    // Phase 20: retrieval quality — the local lexical reranker runs by
+    // default after RRF fusion (failure-tolerant inside the retriever;
+    // disableReranker opts out for A/B comparison and deterministic
+    // baseline tests).
+    this.retriever = new HybridRetriever({
+      store: this.store,
+      embedder: this.embedder,
+      ...(opts.disableReranker ? {} : { reranker: new LexicalReranker() }),
+    });
   }
 
   /** Exposed for the tool layer / IPC stats. */
