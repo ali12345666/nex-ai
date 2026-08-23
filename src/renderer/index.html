@@ -7,6 +7,9 @@
     <!-- This meta tag is a fallback for the initial HTML load -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' https://api.openai.com https://api.anthropic.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-src 'none';" />
     <title>NEX AI</title>
+    <!-- Phase 27/37: NEX design system (loaded as <link> to avoid PostCSS @import ordering warnings) -->
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/glass.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />

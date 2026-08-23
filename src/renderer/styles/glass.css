@@ -148,8 +148,7 @@
   background: var(--nex-accent-glow);
 }
 
-/* ── Font Import (Inter for English) ── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+/* Google Fonts loaded via <link> in index.html (avoids CSS @import warnings) */
 
 /* ── Typography Helpers ── */
 .nex-brand-title {
