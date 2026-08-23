@@ -232,46 +232,7 @@ export function deleteSecret(key: string): void {
   saveSecrets(secrets);
 }
 
-// ─── Conversations persistence (for Phase 19) ────────────────────────────────
-
-export function getConversationsDir(): string {
-  return path.join(userDataDir, CONVERSATIONS_DIR);
-}
-
-export function saveConversation(id: string, messages: any[]): void {
-  const filePath = path.join(getConversationsDir(), `${id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify({ id, savedAt: Date.now(), messages }, null, 2));
-}
-
-export function loadConversation(id: string): any[] {
-  try {
-    const filePath = path.join(getConversationsDir(), `${id}.json`);
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    return data.messages || [];
-  } catch {
-    return [];
-  }
-}
-
-export function listConversations(): Array<{ id: string; savedAt: number; messageCount: number }> {
-  try {
-    const files = fs.readdirSync(getConversationsDir()).filter((f) => f.endsWith('.json'));
-    return files.map((f) => {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(getConversationsDir(), f), 'utf-8'));
-        return {
-          id: data.id || f.replace('.json', ''),
-          savedAt: data.savedAt || 0,
-          messageCount: (data.messages || []).length,
-        };
-      } catch {
-        return { id: f.replace('.json', ''), savedAt: 0, messageCount: 0 };
-      }
-    }).sort((a, b) => b.savedAt - a.savedAt);
-  } catch {
-    return [];
-  }
-}
+// Conversations persistence upgraded below (Phase 32)
 
 // ─── Path info (for debugging / Settings > About) ────────────────────────────
 
@@ -289,4 +250,97 @@ export function isPortable(): boolean {
     : !!process.env.PORTABLE_EXECUTABLE_DIR ||
        path.dirname(process.execPath).includes('data') ||
        fs.existsSync(path.join(path.dirname(process.execPath), 'portable.txt'));
+}
+
+// ─── Conversations (Phase 32) ─────────────────────────────────────────────────
+
+export interface ConversationMetadata {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  workspace?: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+}
+
+export interface ConversationData extends ConversationMetadata {
+  messages: any[];
+}
+
+function conversationsDir(): string {
+  const dir = path.join(effectiveDataDir(), CONVERSATIONS_DIR);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function conversationPath(id: string): string {
+  // Sanitize ID to prevent path traversal
+  const safe = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(conversationsDir(), `${safe}.json`);
+}
+
+export function saveConversation(data: ConversationData): boolean {
+  try {
+    const atomic = conversationPath(data.id) + '.tmp';
+    fs.writeFileSync(atomic, JSON.stringify({ ...data, updatedAt: Date.now() }, null, 2));
+    fs.renameSync(atomic, conversationPath(data.id));
+    return true;
+  } catch { return false; }
+}
+
+export function loadConversation(id: string): ConversationData | null {
+  try {
+    const raw = fs.readFileSync(conversationPath(id), 'utf-8');
+    return JSON.parse(raw) as ConversationData;
+  } catch { return null; }
+}
+
+export function listConversations(): ConversationMetadata[] {
+  const dir = conversationsDir();
+  const results: ConversationMetadata[] = [];
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), 'utf-8');
+        const data = JSON.parse(raw) as ConversationData;
+        results.push({
+          id: data.id, title: data.title || 'Untitled',
+          createdAt: data.createdAt || 0, updatedAt: data.updatedAt || 0,
+          messageCount: data.messages?.length || 0,
+          workspace: data.workspace, provider: data.provider,
+          model: data.model, mode: data.mode,
+        });
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* dir empty */ }
+  return results.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export function deleteConversation(id: string): boolean {
+  try { fs.unlinkSync(conversationPath(id)); return true; } catch { return false; }
+}
+
+export function renameConversation(id: string, newTitle: string): boolean {
+  const conv = loadConversation(id);
+  if (!conv) return false;
+  conv.title = newTitle;
+  return saveConversation(conv);
+}
+
+export function searchConversations(query: string): ConversationMetadata[] {
+  const lower = query.toLowerCase();
+  const all = listConversations();
+  if (!lower) return all;
+  return all.filter((conv) => {
+    if (conv.title.toLowerCase().includes(lower)) return true;
+    const full = loadConversation(conv.id);
+    if (!full) return false;
+    return full.messages.some((m: any) =>
+      typeof m?.content === 'string' && m.content.toLowerCase().includes(lower)
+    );
+  });
 }

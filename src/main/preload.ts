@@ -117,6 +117,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // System Monitor (Phase 12)
   systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
 
+  // ── Phase 32: Conversation Center ──
+  conversationSave: (data: any) => ipcRenderer.invoke('conversation-save', data),
+  conversationLoad: (id: string) => ipcRenderer.invoke('conversation-load', id),
+  conversationList: () => ipcRenderer.invoke('conversation-list'),
+  conversationDelete: (id: string) => ipcRenderer.invoke('conversation-delete', id),
+  conversationRename: (id: string, title: string) => ipcRenderer.invoke('conversation-rename', id, title),
+  conversationSearch: (query: string) => ipcRenderer.invoke('conversation-search', query),
+
   // ── Phase 28: Terminal Sessions ──
   terminalSessionSpawn: (cwd: string) => ipcRenderer.invoke('terminal-session-spawn', cwd),
   terminalSessionWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal-session-write', sessionId, data),

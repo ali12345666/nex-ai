@@ -27,6 +27,8 @@ import { voiceController } from '../../services/voice-controller';
 import type { NexOrbState } from '../orb/orb-state';
 // Phase 31: Theme-aware Orb colors (resolve CSS vars → hex for Three.js)
 import { getOrbColors, getCurrentTheme } from '../../lib/theme-engine';
+// Phase 32: Conversation Center
+const ConversationHistory = lazy(() => import('../chat/ConversationHistory'));
 
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
 // Phase 29: Real chat panel using NEX token system
@@ -50,6 +52,26 @@ export default function AppShell() {
   const [orbColors, setOrbColors] = useState(() => getOrbColors());
   const orbAudioRef = useRef<number>(0);
   const [voiceActive, setVoiceActive] = useState(false);
+  // Phase 32: Conversation state
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  // Phase 32: Conversation events
+  const handleConversationSelect = useCallback((id: string) => {
+    setActiveConversationId(id);
+    window.dispatchEvent(new CustomEvent('nex:load-conversation', { detail: { id } }));
+  }, []);
+  const handleConversationNew = useCallback(() => {
+    setActiveConversationId(null);
+    window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+  }, []);
+  const handleConversationDelete = useCallback(async (id: string) => {
+    await window.nexAPI.conversationDelete(id).catch(() => {});
+    if (id === activeConversationId) handleConversationNew();
+  }, [activeConversationId, handleConversationNew]);
+  const handleConversationRename = useCallback(async (id: string, title: string) => {
+    await window.nexAPI.conversationRename(id, title).catch(() => {});
+  }, []);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const orbAudioSubRef = useRef<(() => void) | null>(null);
   const orbStateSubRef = useRef<(() => void) | null>(null);
@@ -235,7 +257,32 @@ export default function AppShell() {
             <span className="text-xs font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
               NEX AI CHAT
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-2 relative">
+              {/* Phase 32: History button */}
+              <button
+                onClick={() => setHistoryOpen(!historyOpen)}
+                className="p-1 rounded transition-colors hover:bg-white/[0.06]"
+                style={{ color: historyOpen ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
+                title="Conversation history"
+                aria-label="Conversation history"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 8v4l3 3"/>
+                  <circle cx="12" cy="12" r="10"/>
+                </svg>
+              </button>
+              {historyOpen && (
+                <Suspense fallback={null}>
+                  <ConversationHistory
+                    activeId={activeConversationId}
+                    onSelect={handleConversationSelect}
+                    onNew={handleConversationNew}
+                    onDelete={handleConversationDelete}
+                    onRename={handleConversationRename}
+                    onClose={() => setHistoryOpen(false)}
+                  />
+                </Suspense>
+              )}
               <span
                 className="inline-block w-1.5 h-1.5 rounded-full nex-animate-pulse"
                 style={{ background: 'var(--nex-success)' }}

@@ -109,6 +109,14 @@ export interface NexAPI {
   knowledgeStats: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: number; chunks?: number; domains?: Record<string, number>; embedding?: { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } }>;
   // System Monitor (Phase 12)
   systemSnapshot: () => Promise<{ success: boolean; error?: string; snapshot?: import('./electron').SystemMonitorSnapshot }>;
+  // Phase 32: Conversation Center
+  conversationSave: (data: any) => Promise<{ success: boolean; error?: string }>;
+  conversationLoad: (id: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+  conversationList: () => Promise<{ success: boolean; conversations?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; messageCount: number; workspace?: string; provider?: string; model?: string; mode?: string }>; error?: string }>;
+  conversationDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
+  conversationRename: (id: string, title: string) => Promise<{ success: boolean; error?: string }>;
+  conversationSearch: (query: string) => Promise<{ success: boolean; results?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; messageCount: number }>; error?: string }>;
+
   // ── Phase 28: Terminal Sessions ──
   terminalSessionSpawn: (cwd: string) => Promise<{ success: boolean; sessionId?: string; state?: string; error?: string }>;
   terminalSessionWrite: (sessionId: string, data: string) => Promise<{ success: boolean }>;

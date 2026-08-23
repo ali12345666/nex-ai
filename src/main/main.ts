@@ -45,6 +45,12 @@ import { onAgentEvent as onAgentEventLogger } from './agent/logger';
 // Phase 28: Terminal + Filesystem services
 import { terminalService } from './services/terminal-service';
 import { filesystemService } from './services/filesystem-service';
+// Phase 32: Conversation persistence
+import {
+  saveConversation, loadConversation, listConversations,
+  deleteConversation, renameConversation, searchConversations,
+  type ConversationData,
+} from './persistence';
 
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
@@ -1378,6 +1384,37 @@ function setupIPC(): void {
 
   ipcMain.handle('fs-service-search', async (_event, query: string) => {
     return { results: filesystemService.search(query) };
+  });
+
+  // ── Phase 32: Conversation Center IPC ──
+  ipcMain.handle('conversation-save', async (_event, data: any) => {
+    try { return { success: saveConversation(data as ConversationData) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('conversation-load', async (_event, id: string) => {
+    try { return { success: true, data: loadConversation(id) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('conversation-list', async () => {
+    try { return { success: true, conversations: listConversations() }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('conversation-delete', async (_event, id: string) => {
+    try { return { success: deleteConversation(id) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('conversation-rename', async (_event, id: string, title: string) => {
+    try { return { success: renameConversation(id, title) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('conversation-search', async (_event, query: string) => {
+    try { return { success: true, results: searchConversations(query) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
   });
 
   // System Monitor (Phase 12) - Renderer->IPC->Service
