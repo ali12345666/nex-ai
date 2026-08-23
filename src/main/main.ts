@@ -84,6 +84,21 @@ function getUserDataPath(): string {
 const isPortable = isPortableMode();
 const userDataPath = getUserDataPath();
 
+// Phase 12: System Monitor singleton (lazy wiring to REAL sources)
+let _systemMonitor: import('./system-monitor/service').SystemMonitorService | null = null;
+function getSystemMonitor(): import('./system-monitor/service').SystemMonitorService {
+  if (!_systemMonitor) {
+    const { SystemMonitorService } = require('./system-monitor/service') as typeof import('./system-monitor/service');
+    const { getRuntimeMonitorStats } = require('./ai/runtime') as typeof import('./ai/runtime');
+    const { getAgentMonitorState } = require('./agent/core') as typeof import('./agent/core');
+    _systemMonitor = new SystemMonitorService({
+      runtimeStats: () => getRuntimeMonitorStats(),
+      agentState: () => getAgentMonitorState(),
+    });
+  }
+  return _systemMonitor;
+}
+
 // ─── Path Access Policy ─────────────────────────────────────────────────────
 /**
  * For fs operations, we don't restrict to project root — the user picks files
@@ -1085,6 +1100,30 @@ function setupIPC(): void {
         backend: after,
         // hash(256d) ↔ GGUF(other d) → stored vectors incompatible
         needsRebuild: before !== after,
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // System Monitor (Phase 12) - Renderer->IPC->Service
+  ipcMain.handle('system-snapshot', async () => {
+    try {
+      const svc = getSystemMonitor();
+      const snap = await svc.snapshot();
+      const extras = svc.lastAgentRuntimeExtras;
+      return {
+        success: true,
+        snapshot: {
+          ...snap,
+          aiRuntime: {
+            ...snap.aiRuntime,
+            inferenceActive: snap.aiRuntime.inferenceActive || !!extras.inferenceActive,
+            contextUsedTokens: extras.contextUsedTokens ?? snap.aiRuntime.contextUsedTokens,
+            contextMaxTokens: extras.contextMaxTokens ?? snap.aiRuntime.contextMaxTokens,
+            backend: snap.aiRuntime.backend !== 'none' ? snap.aiRuntime.backend : (extras.backend ?? 'none'),
+          },
+        },
       };
     } catch (err: any) {
       return { success: false, error: err.message };

@@ -12,6 +12,7 @@ import SnippetPanel from './components/SnippetPanel';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
 import ModelsPanel from './components/ModelsPanel';
 import KnowledgePanel from './components/KnowledgePanel';
+import HardwareMonitorPanel from './components/HardwareMonitorPanel';
 import CommandPalette from './components/CommandPalette';
 import StatusBar from './components/StatusBar';
 import WelcomeScreen from './components/WelcomeScreen';
@@ -30,6 +31,7 @@ function SidebarContent() {
     git: projectPath ? <GitPanel /> : null,
     models: <ModelsPanel />,
     knowledge: projectPath ? <KnowledgePanel /> : null,
+    system: <HardwareMonitorPanel />,  // works without a project too
     snippets: <SnippetPanel />,
     diagnostics: projectPath ? <DiagnosticsPanel /> : null,
   };

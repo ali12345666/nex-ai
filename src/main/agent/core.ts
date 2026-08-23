@@ -900,6 +900,59 @@ export function listPendingDiffs(taskId: string): any[] {
   return listPendingChanges(taskId).filter((c) => c.status === 'pending');
 }
 
+// ─── Phase 12 / P12-B: read-only agent state for the System Monitor ────────
+
+export interface AgentMonitorState {
+  currentTask?: string;
+  currentStep?: string;
+  stepProgress?: { current: number; total: number };
+  activeTool?: string;
+  toolDurationMs?: number;
+  queueState: 'idle' | 'running' | 'waiting-permission' | 'queued' | 'unknown';
+  cancelled: boolean;
+  inferenceActive?: boolean;
+  contextUsedTokens?: number;
+  contextMaxTokens?: number;
+  backend?: 'local' | 'online' | 'none';
+}
+
+/** Derived monitor view over _activeTasks — no mutation, no events. */
+export function getAgentMonitorState(): AgentMonitorState {
+  const tasks = [..._activeTasks.values()];
+  const active =
+    tasks.find((t) => ['running', 'planning', 'executing', 'awaiting_permission'].includes(t.status)) ||
+    tasks.find((t) => t.status === 'pending'); // queued work still visible
+  if (!active) {
+    return { queueState: 'idle', cancelled: false };
+  }
+  if (active.status === 'pending') {
+    // queued: rich preview without pretending it's executing
+    return {
+      currentTask: active.userRequest.slice(0, 120),
+      queueState: 'queued',
+      cancelled: active.cancelled,
+      contextMaxTokens: active.context.maxContextTokens || undefined,
+      backend: active.backend || 'local',
+    };
+  }
+  const step = active.plan[active.currentStepIndex];
+  const lastTool = active.toolCalls[active.toolCalls.length - 1];
+  const toolRunning = lastTool && lastTool.completedAt === undefined;
+  return {
+    currentTask: active.userRequest.slice(0, 120),
+    currentStep: step ? `step ${active.currentStepIndex + 1}: ${step.description}`.slice(0, 140) : undefined,
+    stepProgress: active.plan.length > 0 ? { current: active.currentStepIndex + 1, total: active.plan.length } : undefined,
+    activeTool: toolRunning ? lastTool!.toolName : undefined,
+    toolDurationMs: toolRunning && lastTool!.startedAt ? Date.now() - lastTool!.startedAt : lastTool?.durationMs,
+    queueState: active.status === 'awaiting_permission' ? 'waiting-permission' : 'running',
+    cancelled: active.cancelled,
+    inferenceActive: active.status === 'planning',
+    contextUsedTokens: active.context.estimatedTokensUsed || undefined,
+    contextMaxTokens: active.context.maxContextTokens || undefined,
+    backend: active.backend || 'local',
+  };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**

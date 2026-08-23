@@ -104,6 +104,8 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // Renderer NEVER touches the filesystem directly for knowledge: every
   // operation flows through Main → KnowledgeService (project-isolated).
   knowledgeStats: (projectPath: string) => ipcRenderer.invoke('knowledge-stats', projectPath),
+  // System Monitor (Phase 12)
+  systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
   knowledgeList: (projectPath: string) => ipcRenderer.invoke('knowledge-list', projectPath),
   knowledgeSearch: (projectPath: string, query: string, limit?: number) => ipcRenderer.invoke('knowledge-search', projectPath, query, limit),
   knowledgeIngest: (projectPath: string, filePath: string) => ipcRenderer.invoke('knowledge-ingest', projectPath, filePath),

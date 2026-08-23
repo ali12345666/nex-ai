@@ -201,6 +201,77 @@ export function listRuntimeTypes(): RuntimeType[] {
   return Array.from(_factories.keys());
 }
 
+// ─── Phase 12 / P12-B: monitoring-grade stats aggregation ──────────────────
+
+/** Last inference telemetry (best-effort, updated by runtimes via noteInferenceStats). */
+let _lastInference: {
+  tokensPerSecond?: number;
+  promptTokens?: number;
+  generatedTokens?: number;
+  durationMs?: number;
+  modelLoadMs?: number;
+  active?: boolean;
+  at: number;
+} | null = null;
+
+/**
+ * Runtime hook: record inference telemetry for the System Monitor.
+ * Pure bookkeeping — no behavior change for callers.
+ */
+export function noteInferenceStats(stats: {
+  tokensPerSecond?: number;
+  promptTokens?: number;
+  generatedTokens?: number;
+  durationMs?: number;
+  modelLoadMs?: number;
+  active?: boolean;
+}): void {
+  _lastInference = { ...stats, at: Date.now() };
+}
+
+export interface RuntimeInstanceStats {
+  instanceId: string;
+  type: RuntimeType;
+  loaded: boolean;
+  loadedModelName: string | null;
+  gpuBackend?: string;
+}
+
+/**
+ * Monitoring snapshot of every live runtime instance + last inference.
+ * (System Monitor consumes this — the SAME registry the agent uses.)
+ */
+export function getRuntimeMonitorStats(): {
+  defaultRuntimeType: RuntimeType;
+  stats: RuntimeInstanceStats[];
+  lastInference?: {
+    tokensPerSecond?: number;
+    promptTokens?: number;
+    generatedTokens?: number;
+    durationMs?: number;
+    modelLoadMs?: number;
+    active?: boolean;
+  };
+} {
+  const stats: RuntimeInstanceStats[] = [];
+  for (const [key, inst] of _instances) {
+    const s = inst.getStats();
+    const instanceId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
+    stats.push({
+      instanceId,
+      type: inst.type,
+      loaded: s.loaded,
+      loadedModelName: s.loadedModelName,
+      gpuBackend: s.gpuBackend,
+    });
+  }
+  // drop stale inference records (> 5 min old, not active)
+  const fresh = _lastInference && (Date.now() - _lastInference.at < 5 * 60 * 1000 || _lastInference.active)
+    ? { ..._lastInference } : undefined;
+  delete (fresh as any)?.at;
+  return { defaultRuntimeType: 'llamacpp', stats, lastInference: fresh };
+}
+
 /**
  * Shut down ALL runtime instances. Called on app exit.
  */

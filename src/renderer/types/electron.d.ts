@@ -104,6 +104,8 @@ export interface NexAPI {
   agentListPendingDiffs: (taskId: string) => Promise<any[]>;
   // ── Knowledge / Local RAG (Phase 9 services / Phase 10 bridge) ──
   knowledgeStats: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: number; chunks?: number; domains?: Record<string, number>; embedding?: { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } }>;
+  // System Monitor (Phase 12)
+  systemSnapshot: () => Promise<{ success: boolean; error?: string; snapshot?: import('./electron').SystemMonitorSnapshot }>;
   knowledgeList: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: Array<{ id: string; title: string; format: string; domain?: string; sourcePath?: string; chunkCount: number; sizeBytes: number; indexedAt?: number }> }>;
   knowledgeSearch: (projectPath: string, query: string, limit?: number) => Promise<{ success: boolean; error?: string; framed?: string; results?: Array<{ documentId: string; title: string; source?: string; startLine?: number; endLine?: number; section?: string; symbols?: string[]; jsonPath?: string; rowRange?: string; score: number; snippet: string; citation?: string }> }>;
   knowledgeChunks: (projectPath: string, documentId: string) => Promise<{ success: boolean; error?: string; document?: { id: string; title: string; format: string; domain?: string; sourcePath?: string; language?: string; imports?: string[]; symbolCount?: number; chunkCount?: number; sizeBytes?: number; indexedAt?: number }; embedding?: { backend: string; dimension?: number; offline: boolean; modelPath?: string }; chunks?: Array<{ id: string; index: number; startLine?: number; endLine?: number; sectionTitle?: string; symbols?: string[]; jsonPath?: string; rowRange?: string; language?: string; suspectedInjection: boolean; preview: string; chars: number }> }>;
@@ -150,3 +152,15 @@ declare global {
 }
 
 export {};
+
+/** Phase 12: System Monitor snapshot (mirror of main/system-monitor/types). */
+export interface SystemMonitorSnapshot {
+  timestamp: number;
+  platform: string;
+  cpu: { model: string; cores: number; threads: number; usagePercent?: number; perCore?: number[]; frequencyMHz?: number; temperatureC?: number };
+  memory: { totalBytes: number; usedBytes: number; freeBytes: number; usagePercent: number };
+  gpus: Array<{ name: string; vendor: string; utilizationPercent?: number; vramTotalBytes?: number; vramUsedBytes?: number; vramPercent?: number; temperatureC?: number; powerWatts?: number; driverVersion?: string; source: string }>;
+  aiRuntime: { backend: 'local' | 'online' | 'none'; runtimeType: string; activeModelName?: string; modelLoaded: boolean; inferenceActive: boolean; lastTokensPerSecond?: number; lastPromptTokens?: number; lastGeneratedTokens?: number; lastInferenceDurationMs?: number; lastModelLoadMs?: number; contextUsedTokens?: number; contextMaxTokens?: number; gpuBackend?: string };
+  agent: { currentTask?: string; currentStep?: string; stepProgress?: { current: number; total: number }; activeTool?: string; toolDurationMs?: number; queueState: 'idle' | 'running' | 'waiting-permission' | 'queued' | 'unknown'; cancelled: boolean };
+  degradedSources: string[];
+}
