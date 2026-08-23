@@ -24,8 +24,9 @@ const NexOrb = lazy(() => import('../orb/NexOrb'));
 
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
 const ChatPanel = lazy(() => import('../ChatPanel'));
-const TerminalPanel = lazy(() => import('../TerminalPanel'));
-const FileExplorer = lazy(() => import('../FileExplorer'));
+// Phase 28: Real terminal + workspace explorer
+const TerminalSessionPanel = lazy(() => import('./TerminalSessionPanel'));
+const WorkspaceExplorer = lazy(() => import('./WorkspaceExplorer'));
 const KnowledgePanel = lazy(() => import('../KnowledgePanel'));
 const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const PluginsPanel = lazy(() => import('../PluginsPanel'));
@@ -46,9 +47,9 @@ export default function AppShell() {
       return <NoProject />;
     }
     switch (view) {
-      case 'terminal': return <Suspense fallback={<PanelLoading />}><TerminalPanel /></Suspense>;
+      case 'terminal': return <Suspense fallback={<PanelLoading />}><TerminalSessionPanel /></Suspense>;
       case 'files':
-      case 'code': return <Suspense fallback={<PanelLoading />}><FileExplorer /></Suspense>;
+      case 'code': return <Suspense fallback={<PanelLoading />}><WorkspaceExplorer /></Suspense>;
       case 'knowledge': return <Suspense fallback={<PanelLoading />}><KnowledgePanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'plugins': return <Suspense fallback={<PanelLoading />}><PluginsPanel /></Suspense>;

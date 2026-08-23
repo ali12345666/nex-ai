@@ -116,6 +116,35 @@ contextBridge.exposeInMainWorld('nexAPI', {
   knowledgeStats: (projectPath: string) => ipcRenderer.invoke('knowledge-stats', projectPath),
   // System Monitor (Phase 12)
   systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
+
+  // ── Phase 28: Terminal Sessions ──
+  terminalSessionSpawn: (cwd: string) => ipcRenderer.invoke('terminal-session-spawn', cwd),
+  terminalSessionWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal-session-write', sessionId, data),
+  terminalSessionSignal: (sessionId: string, signal: string) => ipcRenderer.invoke('terminal-session-signal', sessionId, signal),
+  terminalSessionKill: (sessionId: string) => ipcRenderer.invoke('terminal-session-kill', sessionId),
+  terminalSessionList: () => ipcRenderer.invoke('terminal-session-list'),
+  onTerminalSessionOutput: (sessionId: string, callback: (data: string) => void) => {
+    const channel = `terminal-output:${sessionId}`;
+    const listener = (_e: any, data: string) => callback(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
+  onTerminalSessionExit: (sessionId: string, callback: (code: number | null) => void) => {
+    const channel = `terminal-exit:${sessionId}`;
+    const listener = (_e: any, code: number | null) => callback(code);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
+
+  // ── Phase 28: Filesystem Service (workspace-jailed) ──
+  fsSetWorkspace: (rootPath: string) => ipcRenderer.invoke('fs-set-workspace', rootPath),
+  fsServiceReaddir: (dirPath: string, showHidden?: boolean) => ipcRenderer.invoke('fs-service-readdir', dirPath, showHidden),
+  fsServiceReadfile: (filePath: string) => ipcRenderer.invoke('fs-service-readfile', filePath),
+  fsServiceWritefile: (filePath: string, content: string) => ipcRenderer.invoke('fs-service-writefile', filePath, content),
+  fsServiceCreate: (parentPath: string, name: string, isDir: boolean) => ipcRenderer.invoke('fs-service-create', parentPath, name, isDir),
+  fsServiceRename: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs-service-rename', oldPath, newPath),
+  fsServiceDelete: (targetPath: string) => ipcRenderer.invoke('fs-service-delete', targetPath),
+  fsServiceSearch: (query: string) => ipcRenderer.invoke('fs-service-search', query),
   // Memory (Phase 13)
   memoryList: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-list', store, projectPath),
   // Plugins (Phase 15) — manifests only, no code activation

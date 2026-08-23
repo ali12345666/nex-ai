@@ -109,6 +109,23 @@ export interface NexAPI {
   knowledgeStats: (projectPath: string) => Promise<{ success: boolean; error?: string; documents?: number; chunks?: number; domains?: Record<string, number>; embedding?: { backend: 'hash' | 'llamacpp' | 'custom'; dimension?: number; offline: boolean; modelPath?: string } }>;
   // System Monitor (Phase 12)
   systemSnapshot: () => Promise<{ success: boolean; error?: string; snapshot?: import('./electron').SystemMonitorSnapshot }>;
+  // ── Phase 28: Terminal Sessions ──
+  terminalSessionSpawn: (cwd: string) => Promise<{ success: boolean; sessionId?: string; state?: string; error?: string }>;
+  terminalSessionWrite: (sessionId: string, data: string) => Promise<{ success: boolean }>;
+  terminalSessionSignal: (sessionId: string, signal: string) => Promise<{ success: boolean }>;
+  terminalSessionKill: (sessionId: string) => Promise<{ success: boolean }>;
+  terminalSessionList: () => Promise<Array<{ id: string; state: string; cwd: string; exitCode: number | null; createdAt: number }>>;
+  onTerminalSessionOutput: (sessionId: string, callback: (data: string) => void) => () => void;
+  onTerminalSessionExit: (sessionId: string, callback: (code: number | null) => void) => () => void;
+  // ── Phase 28: Filesystem Service ──
+  fsSetWorkspace: (rootPath: string) => Promise<{ success: boolean; root?: string }>;
+  fsServiceReaddir: (dirPath: string, showHidden?: boolean) => Promise<{ path: string; entries: Array<{ name: string; path: string; isDirectory: boolean; isFile: boolean; size: number; extension: string; modifiedAt: number }>; error?: string }>;
+  fsServiceReadfile: (filePath: string) => Promise<{ ok: boolean; content?: string; error?: string; size?: number }>;
+  fsServiceWritefile: (filePath: string, content: string) => Promise<{ ok: boolean; error?: string }>;
+  fsServiceCreate: (parentPath: string, name: string, isDir: boolean) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  fsServiceRename: (oldPath: string, newPath: string) => Promise<{ ok: boolean; error?: string }>;
+  fsServiceDelete: (targetPath: string) => Promise<{ ok: boolean; error?: string }>;
+  fsServiceSearch: (query: string) => Promise<{ results: Array<{ name: string; path: string; isDirectory: boolean; isFile: boolean; size: number; extension: string; modifiedAt: number }> }>;
   // Memory (Phase 13)
   memoryList: (store: string, projectPath?: string) => Promise<{ success: boolean; error?: string; store?: string; entries?: Array<{ key: string; value: any; type: string; tags: string[]; updatedAt: number; expiresAt?: number }> }>;
   // Plugins (Phase 15)

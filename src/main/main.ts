@@ -42,6 +42,10 @@ import {
 import { setPermissionRequestHandler, respondToPermissionRequest } from './permissions';
 import { onAgentEvent as onAgentEventLogger } from './agent/logger';
 
+// Phase 28: Terminal + Filesystem services
+import { terminalService } from './services/terminal-service';
+import { filesystemService } from './services/filesystem-service';
+
 // ─── Security ───────────────────────────────────────────────────────────────
 const BLOCKED_PERMISSIONS = new Set([
   'media',
@@ -1301,6 +1305,81 @@ function setupIPC(): void {
     }
   });
 
+  // ── Phase 28: Terminal Session IPC ──
+  ipcMain.handle('terminal-session-spawn', async (_event, cwd: string) => {
+    try {
+      const session = terminalService.spawnSession(cwd);
+      terminalService.onOutput(session.id, (data) => {
+        mainWindow?.webContents.send(`terminal-output:${session.id}`, data);
+      });
+      terminalService.onExit(session.id, (code) => {
+        mainWindow?.webContents.send(`terminal-exit:${session.id}`, code);
+      });
+      return { success: true, sessionId: session.id, state: session.state };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('terminal-session-write', async (_event, sessionId: string, data: string) => {
+    if (typeof sessionId !== 'string' || typeof data !== 'string') {
+      return { success: false, error: 'Invalid payload' };
+    }
+    return { success: terminalService.write(sessionId, data) };
+  });
+
+  ipcMain.handle('terminal-session-signal', async (_event, sessionId: string, signal: string) => {
+    const validSignals = ['SIGINT', 'SIGTERM', 'SIGKILL'];
+    if (!validSignals.includes(signal)) return { success: false, error: 'Invalid signal' };
+    return { success: terminalService.sendSignal(sessionId, signal as any) };
+  });
+
+  ipcMain.handle('terminal-session-kill', async (_event, sessionId: string) => {
+    return { success: terminalService.killSession(sessionId) };
+  });
+
+  ipcMain.handle('terminal-session-list', async () => {
+    return terminalService.listSessions().map((s) => ({
+      id: s.id, state: s.state, cwd: s.cwd, exitCode: s.exitCode, createdAt: s.createdAt,
+    }));
+  });
+
+  // ── Phase 28: Filesystem Service IPC (workspace-jailed) ──
+  ipcMain.handle('fs-set-workspace', async (_event, rootPath: string) => {
+    filesystemService.setWorkspace(rootPath);
+    return { success: true, root: filesystemService.getWorkspace() };
+  });
+
+  ipcMain.handle('fs-service-readdir', async (_event, dirPath: string, showHidden?: boolean) => {
+    return filesystemService.readDirectory(dirPath, showHidden);
+  });
+
+  ipcMain.handle('fs-service-readfile', async (_event, filePath: string) => {
+    return filesystemService.readFile(filePath);
+  });
+
+  ipcMain.handle('fs-service-writefile', async (_event, filePath: string, content: string) => {
+    return filesystemService.writeFile(filePath, content);
+  });
+
+  ipcMain.handle('fs-service-create', async (_event, parentPath: string, name: string, isDir: boolean) => {
+    return isDir
+      ? filesystemService.createDirectory(parentPath, name)
+      : filesystemService.createFile(parentPath, name);
+  });
+
+  ipcMain.handle('fs-service-rename', async (_event, oldPath: string, newPath: string) => {
+    return filesystemService.rename(oldPath, newPath);
+  });
+
+  ipcMain.handle('fs-service-delete', async (_event, targetPath: string) => {
+    return filesystemService.delete(targetPath);
+  });
+
+  ipcMain.handle('fs-service-search', async (_event, query: string) => {
+    return { results: filesystemService.search(query) };
+  });
+
   // System Monitor (Phase 12) - Renderer->IPC->Service
   ipcMain.handle('system-snapshot', async () => {
     try {
@@ -1447,6 +1526,11 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+app.on('before-quit', () => {
+  // Phase 28: kill all terminal sessions on app exit (no orphans)
+  terminalService.killAll();
 });
 
 app.on('window-all-closed', () => {
