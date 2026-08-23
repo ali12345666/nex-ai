@@ -27,6 +27,8 @@ import { KeywordIndex } from './keyword-index';
 export interface HybridRetrieverDeps {
   store: LocalVectorStore;
   embedder: Embedder;
+  /** Phase 18: optional local reranker applied AFTER RRF fusion. */
+  reranker?: import('../ai/knowledge-types').Reranker;
 }
 
 /** RRF constants (standard k=60). */
@@ -44,12 +46,14 @@ const SEMANTIC_ONLY_FLOOR = 0.08;
 export class HybridRetriever {
   private store: LocalVectorStore;
   private embedder: Embedder;
+  private reranker?: import('../ai/knowledge-types').Reranker;
   private keywordIndex: KeywordIndex | null = null;
   private indexChunkCount = -1;
 
   constructor(deps: HybridRetrieverDeps) {
     this.store = deps.store;
     this.embedder = deps.embedder;
+    this.reranker = deps.reranker; // Phase 18: optional quality stage
   }
 
   /** Rebuild the keyword index when the chunk set changed (cheap check). */
@@ -118,10 +122,25 @@ export class HybridRetriever {
       fused.set(h.chunk.id, e);
     });
 
-    // ── assemble results with citations metadata ──
-    const ranked = [...fused.values()]
+    // ── Phase 18: optional local reranker refines the fused ranking ──
+    let ranked = [...fused.values()]
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
+    if (this.reranker && ranked.length > 1) {
+      try {
+        const reranked = await this.reranker.rerank(
+          query.query,
+          ranked.map((r) => r.chunk),
+          limit
+        );
+        if (reranked.length > 0) {
+          ranked = reranked.map((r) => {
+            const prev = fused.get(r.chunk.id);
+            return { chunk: r.chunk, score: r.score, semRank: prev?.semRank, kwRank: prev?.kwRank };
+          });
+        }
+      } catch { /* reranker failure → keep RRF order (enrichment only) */ }
+    }
 
     return ranked.map((e) => {
       const doc = this.store.getDocument(e.chunk.documentId);
