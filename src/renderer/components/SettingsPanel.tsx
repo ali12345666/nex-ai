@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
+// Phase 31: Theme selector
+import ThemeSelector from './settings/ThemeSelector';
 import {
   Key,
   Palette,
@@ -355,6 +357,9 @@ export default function SettingsPanel() {
                 <h2 className="text-lg font-semibold text-nex-text mb-1">Appearance</h2>
                 <p className="text-sm text-nex-text-muted">Customize the look and feel</p>
               </div>
+
+              {/* Phase 31: NEX Theme Engine (16 themes) */}
+              <ThemeSelector />
 
               <div className="space-y-4">
                 <div>

@@ -53,19 +53,16 @@ function ParticleSphere({ state, audioLevel, primaryColor, secondaryColor, parti
     return arr;
   }, [particleCount]);
 
+  // Phase 31: particle colors are set ONCE (random mix); shader uniforms
+  // handle live color changes without touching vertex buffers.
   const colors = useMemo(() => {
-    const c1 = new THREE.Color(primaryColor);
-    const c2 = new THREE.Color(secondaryColor);
     const arr = new Float32Array(particleCount * 3);
+    // Fill with neutral values — shader colors come from uniforms
     for (let i = 0; i < particleCount; i++) {
-      const mix = Math.random();
-      const c = c1.clone().lerp(c2, mix);
-      arr[i * 3] = c.r;
-      arr[i * 3 + 1] = c.g;
-      arr[i * 3 + 2] = c.b;
+      arr[i * 3] = 1.0; arr[i * 3 + 1] = 1.0; arr[i * 3 + 2] = 1.0;
     }
     return arr;
-  }, [particleCount, primaryColor, secondaryColor]);
+  }, [particleCount]);
 
   const uniforms = useMemo(() => ({
     uTime: { value: 0 },
@@ -75,7 +72,14 @@ function ParticleSphere({ state, audioLevel, primaryColor, secondaryColor, parti
     uPrimary: { value: new THREE.Color(primaryColor) },
     uSecondary: { value: new THREE.Color(secondaryColor) },
     uAudio: { value: 0 },
-  }), [primaryColor, secondaryColor]);
+  }), []); // create once — colors updated via useEffect below
+
+  // Phase 31: Update uniform colors on theme change WITHOUT recreating
+  // geometry or particle buffers (performance requirement).
+  useEffect(() => {
+    uniforms.uPrimary.value.set(primaryColor);
+    uniforms.uSecondary.value.set(secondaryColor);
+  }, [primaryColor, secondaryColor, uniforms]);
 
   const vertexShader = useMemo(() => `
     attribute float phase;

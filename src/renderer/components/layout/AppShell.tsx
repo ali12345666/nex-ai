@@ -25,6 +25,8 @@ const NexOrb = lazy(() => import('../orb/NexOrb'));
 // Phase 30: Voice — connect Orb to voice system (audio reactivity)
 import { voiceController } from '../../services/voice-controller';
 import type { NexOrbState } from '../orb/orb-state';
+// Phase 31: Theme-aware Orb colors (resolve CSS vars → hex for Three.js)
+import { getOrbColors, getCurrentTheme } from '../../lib/theme-engine';
 
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
 // Phase 29: Real chat panel using NEX token system
@@ -44,6 +46,8 @@ export default function AppShell() {
   const [view, setView] = useState<NexView>('home');
   // Phase 30: Voice state for the Orb (audio level stays in ref, NOT React state)
   const [orbState, setOrbState] = useState<NexOrbState>('idle');
+  // Phase 31: theme-aware orb colors (re-resolved on theme change)
+  const [orbColors, setOrbColors] = useState(() => getOrbColors());
   const orbAudioRef = useRef<number>(0);
   const [voiceActive, setVoiceActive] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
@@ -52,6 +56,18 @@ export default function AppShell() {
   const { projectPath } = useStore();
 
   const navigate = useCallback((v: NexView) => setView(v), []);
+
+  // Phase 31: Watch for theme changes → re-resolve orb colors
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setOrbColors(getOrbColors());
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   // Phase 30: Voice → Orb wiring (state + audio level via refs, not React state for audio)
   useEffect(() => {
@@ -163,8 +179,8 @@ export default function AppShell() {
               <NexOrb
                 state={orbState}
                 audioLevel={orbAudioRef.current}
-                primaryColor="var(--nex-orb-primary)"
-                secondaryColor="var(--nex-orb-secondary)"
+                primaryColor={orbColors.primary}
+                secondaryColor={orbColors.secondary}
                 quality="high"
                 className="w-full h-full"
               />
