@@ -204,9 +204,14 @@ export default function NexChatPanel() {
     };
   }, [projectPath, aiMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Phase 34: guard against double-send from edit/regenerate DOM event hack
+  const isResendingRef = useRef(false);
+
   // ── Phase 33: Edit user message ──
   const handleEditMessage = useCallback(async (messageId: string, newContent: string) => {
-    if (isGenerating) return;
+    if (isGenerating || isResendingRef.current) return;
+    isResendingRef.current = true;
+    setTimeout(() => { isResendingRef.current = false; }, 1000);
     setEditingMessageId(null);
 
     const msgIndex = messages.findIndex((m) => m.id === messageId);
@@ -238,7 +243,9 @@ export default function NexChatPanel() {
 
   // ── Phase 33: Regenerate last assistant response ──
   const handleRegenerate = useCallback(async () => {
-    if (isGenerating) return;
+    if (isGenerating || isResendingRef.current) return;
+    isResendingRef.current = true;
+    setTimeout(() => { isResendingRef.current = false; }, 1000);
 
     // Find last assistant message
     const lastAssistantIdx = messages.findIndex((m) => m.role === 'assistant' && m === [...messages].reverse().find((r) => r.role === 'assistant'));
@@ -392,6 +399,7 @@ export default function NexChatPanel() {
 
   // ── Send message ──
   const handleSend = useCallback(async () => {
+    if (editingMessageId) return; // Phase 34: block send while editing
     const trimmed = input.trim();
     if ((!trimmed && attachments.length === 0) || isGenerating) return;
 

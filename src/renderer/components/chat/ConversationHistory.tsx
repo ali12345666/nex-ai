@@ -39,21 +39,43 @@ export default function ConversationHistory({ activeId, onSelect, onNew, onDelet
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
     try {
       const r = await window.nexAPI.conversationList();
-      if (r.success) setConversations(r.conversations || []);
-    } catch { /* offline */ }
+      if (r.success) {
+        setConversations(r.conversations || []);
+      } else {
+        setLoadError(r.error || 'Failed to load conversations');
+      }
+    } catch (err: any) {
+      setLoadError(err.message || 'Failed to load');
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   // Focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
+
+  // Phase 34: Ctrl+K → focus search (even when already open)
+  useEffect(() => {
+    const handler = () => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    };
+    window.addEventListener('nex:focus-history-search', handler);
+    return () => window.removeEventListener('nex:focus-history-search', handler);
+  }, []);
 
   // Escape to close
   useEffect(() => {
@@ -158,11 +180,40 @@ export default function ConversationHistory({ activeId, onSelect, onNew, onDelet
 
       {/* List */}
       <div className="max-h-64 overflow-y-auto nex-scroll px-1 pb-2" role="listbox" aria-label="Saved conversations">
-        {groups.length === 0 && (
+        {/* Loading state */}
+        {isLoading && (
           <div className="flex items-center justify-center py-6 gap-2 text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>
-            <Clock size={12} /> No conversations yet
+            <span className="inline-block w-3 h-3 rounded-full border-2 border-transparent animate-spin" style={{ borderTopColor: 'var(--nex-accent)', borderRightColor: 'var(--nex-accent-dim)' }} />
+            Loading conversations…
           </div>
         )}
+        {/* Error state */}
+        {!isLoading && loadError && (
+          <div className="flex flex-col items-center justify-center py-6 gap-2">
+            <span className="text-[10px] text-red-400">{loadError}</span>
+            <button onClick={load} className="px-2 py-1 rounded text-[9px] font-medium" style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }} aria-label="Retry loading conversations">
+              Retry
+            </button>
+          </div>
+        )}
+        {/* Empty state (no conversations at all) */}
+        {!isLoading && !loadError && conversations.length === 0 && !searchQuery && (
+          <div className="flex flex-col items-center justify-center py-6 gap-2">
+            <Clock size={14} style={{ color: 'var(--nex-text-muted)' }} />
+            <span className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>No conversations yet</span>
+            <span className="text-[9px]" style={{ color: 'var(--nex-text-muted)' }}>Start chatting to create one</span>
+          </div>
+        )}
+        {/* No search results */}
+        {!isLoading && !loadError && searchQuery && searchResults !== null && searchResults.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-6 gap-2">
+            <Search size={14} style={{ color: 'var(--nex-text-muted)' }} />
+            <span className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>No results for "{searchQuery}"</span>
+          </div>
+        )}
+        {/* Normal list */}
+        {!isLoading && !loadError && groups.length > 0 && (
+          <>
         {groups.map(([label, items]) => (
           <div key={label}>
             <div className="px-3 py-1 text-[8px] font-semibold tracking-wider" style={{ color: 'var(--nex-text-muted)' }}>{label.toUpperCase()}</div>
@@ -213,6 +264,8 @@ export default function ConversationHistory({ activeId, onSelect, onNew, onDelet
             })}
           </div>
         ))}
+          </>
+        )}
       </div>
     </div>
   );

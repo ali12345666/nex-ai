@@ -79,6 +79,17 @@ export default function AppShell() {
 
   const navigate = useCallback((v: NexView) => setView(v), []);
 
+  // Phase 34: Ctrl+K → open history + focus search
+  useEffect(() => {
+    const handler = () => {
+      setHistoryOpen(true);
+      // ConversationHistory listens for this to focus its search input
+      window.dispatchEvent(new CustomEvent('nex:focus-history-search'));
+    };
+    window.addEventListener('nex:open-history-search', handler);
+    return () => window.removeEventListener('nex:open-history-search', handler);
+  }, []);
+
   // Phase 31: Watch for theme changes → re-resolve orb colors
   useEffect(() => {
     const observer = new MutationObserver(() => {

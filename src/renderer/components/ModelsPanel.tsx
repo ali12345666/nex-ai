@@ -137,24 +137,24 @@ export default function ModelsPanel() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-nex-surface">
+    <div className="h-full flex flex-col bg-[var(--nex-panel-solid)]">
       {/* Header */}
-      <div className="h-10 flex items-center justify-between px-3 border-b border-nex-border shrink-0">
+      <div className="h-10 flex items-center justify-between px-3 border-b border-[var(--nex-glass-border)] shrink-0">
         <div className="flex items-center gap-2">
-          <Cpu size={14} className="text-nex-accent" />
-          <span className="text-xs font-semibold text-nex-text-dim uppercase tracking-wider">Local Models</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nex-card text-nex-text-muted">
+          <Cpu size={14} className="text-[var(--nex-accent)]" />
+          <span className="text-xs font-semibold text-[var(--nex-text-dim)] uppercase tracking-wider">Local Models</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--nex-glass-bg)] text-[var(--nex-text-muted)]">
             {localModels.length}
           </span>
         </div>
         <div className="flex items-center gap-1">
           <button onClick={refreshModels} disabled={loading}
-            className="w-6 h-6 rounded flex items-center justify-center text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-all disabled:opacity-50"
+            className="w-6 h-6 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-all disabled:opacity-50"
             title="Refresh">
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           </button>
           <button onClick={handleAddModel} disabled={addingModel}
-            className="w-6 h-6 rounded flex items-center justify-center text-nex-accent hover:bg-nex-accent/20 transition-all disabled:opacity-50"
+            className="w-6 h-6 rounded flex items-center justify-center text-[var(--nex-accent)] hover:bg-[var(--nex-accent-dim)] transition-all disabled:opacity-50"
             title="Add model (.gguf)">
             {addingModel ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
           </button>
@@ -174,20 +174,20 @@ export default function ModelsPanel() {
       {localModels.length === 0 && !loading && (
         <div className="flex-1 flex items-center justify-center p-6">
           <div className="text-center">
-            <div className="w-14 h-14 rounded-2xl bg-nex-card border border-nex-border flex items-center justify-center mx-auto mb-3">
-              <Cpu size={24} className="text-nex-text-dim" />
+            <div className="w-14 h-14 rounded-2xl bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] flex items-center justify-center mx-auto mb-3">
+              <Cpu size={24} className="text-[var(--nex-text-dim)]" />
             </div>
-            <h3 className="text-sm font-medium text-nex-text mb-1">No local models</h3>
-            <p className="text-xs text-nex-text-muted mb-4 max-w-xs">
-              Add a <code className="text-nex-accent">.gguf</code> model file to start using NEX AI locally.
+            <h3 className="text-sm font-medium text-[var(--nex-text)] mb-1">No local models</h3>
+            <p className="text-xs text-[var(--nex-text-muted)] mb-4 max-w-xs">
+              Add a <code className="text-[var(--nex-accent)]">.gguf</code> model file to start using NEX AI locally.
               Models run entirely on your machine — no internet needed.
             </p>
             <button onClick={handleAddModel} disabled={addingModel}
-              className="px-4 py-2 bg-nex-accent text-white rounded-lg text-xs font-medium hover:bg-nex-accent-light transition-all flex items-center gap-2 mx-auto disabled:opacity-50">
+              className="px-4 py-2 bg-[var(--nex-accent)] text-[var(--nex-bg)] rounded-lg text-xs font-medium hover:opacity-90 transition-all flex items-center gap-2 mx-auto disabled:opacity-50">
               {addingModel ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
               Add Model File
             </button>
-            <p className="text-[10px] text-nex-text-muted mt-3">
+            <p className="text-[10px] text-[var(--nex-text-muted)] mt-3">
               Recommended: Qwen2.5-Coder-1.5B (~1GB) for fast iteration, or
               Qwen2.5-7B-Instruct (~4.5GB) for better quality.
             </p>
@@ -204,23 +204,23 @@ export default function ModelsPanel() {
               <div key={model.id}
                 className={`mx-2 mb-1 rounded-lg border transition-all cursor-pointer ${
                   isActive
-                    ? 'bg-nex-accent/10 border-nex-accent'
-                    : 'bg-nex-card border-nex-border hover:border-nex-border-light'
+                    ? 'bg-[var(--nex-accent-dim)] border-[var(--nex-accent)]'
+                    : 'bg-[var(--nex-glass-bg)] border-[var(--nex-glass-border)] hover:border-[var(--nex-panel-border-hover)]'
                 }`}
                 onClick={() => handleSelectModel(model.id)}>
                 <div className="p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        {isActive && <Check size={12} className="text-nex-accent shrink-0" />}
-                        <span className="text-sm font-medium text-nex-text truncate">{model.name}</span>
+                        {isActive && <Check size={12} className="text-[var(--nex-accent)] shrink-0" />}
+                        <span className="text-sm font-medium text-[var(--nex-text)] truncate">{model.name}</span>
                       </div>
-                      <div className="text-[10px] text-nex-text-muted mt-0.5 truncate font-mono" title={model.path}>
+                      <div className="text-[10px] text-[var(--nex-text-muted)] mt-0.5 truncate font-mono" title={model.path}>
                         {model.path}
                       </div>
                     </div>
                     <button onClick={(e) => { e.stopPropagation(); handleRemoveModel(model.id); }}
-                      className="w-6 h-6 rounded flex items-center justify-center text-nex-text-dim hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0"
+                      className="w-6 h-6 rounded flex items-center justify-center text-[var(--nex-text-dim)] hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0"
                       title="Remove from registry">
                       <Trash2 size={11} />
                     </button>
@@ -231,16 +231,16 @@ export default function ModelsPanel() {
                       model.category === 'coding' ? 'bg-blue-500/15 text-blue-400' :
                       model.category === 'reasoning' ? 'bg-purple-500/15 text-purple-400' :
                       model.category === 'fast' ? 'bg-green-500/15 text-green-400' :
-                      'bg-nex-surface text-nex-text-dim'
+                      'bg-[var(--nex-panel-solid)] text-[var(--nex-text-dim)]'
                     }`}>
                       {categoryIcon(model.category)}
                       {model.category}
                     </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nex-surface text-nex-text-dim flex items-center gap-1">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--nex-panel-solid)] text-[var(--nex-text-dim)] flex items-center gap-1">
                       <HardDrive size={10} />
                       {formatBytes(model.sizeBytes)}
                     </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nex-surface text-nex-text-dim flex items-center gap-1">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--nex-panel-solid)] text-[var(--nex-text-dim)] flex items-center gap-1">
                       <Clock size={10} />
                       {model.contextSize} ctx
                     </span>
@@ -259,12 +259,12 @@ export default function ModelsPanel() {
       )}
 
       {/* Footer */}
-      <div className="p-3 border-t border-nex-border shrink-0">
-        <p className="text-[10px] text-nex-text-muted leading-relaxed">
+      <div className="p-3 border-t border-[var(--nex-glass-border)] shrink-0">
+        <p className="text-[10px] text-[var(--nex-text-muted)] leading-relaxed">
           Models are NEVER shipped with NEX AI — you bring your own.
           Download from{' '}
           <a href="#" onClick={(e) => { e.preventDefault(); window.nexAPI.openExternal('https://huggingface.co/Qwen'); }}
-            className="text-nex-accent hover:underline">HuggingFace</a>.
+            className="text-[var(--nex-accent)] hover:underline">HuggingFace</a>.
         </p>
       </div>
     </div>

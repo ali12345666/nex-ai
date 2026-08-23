@@ -285,13 +285,13 @@ export default function KnowledgePanel() {
   const projectName = projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() || projectPath : null;
 
   return (
-    <div className="w-full h-full flex flex-col bg-nex-surface">
+    <div className="w-full h-full flex flex-col bg-[var(--nex-panel-solid)]">
       {/* Header */}
-      <div className="px-3 py-2.5 border-b border-nex-border flex items-center gap-2">
-        <BookOpen size={15} className="text-nex-accent" />
-        <span className="text-sm font-semibold text-nex-text">Knowledge Base</span>
+      <div className="px-3 py-2.5 border-b border-[var(--nex-glass-border)] flex items-center gap-2">
+        <BookOpen size={15} className="text-[var(--nex-accent)]" />
+        <span className="text-sm font-semibold text-[var(--nex-text)]">Knowledge Base</span>
         <button onClick={refresh} disabled={loading}
-          className="ml-auto p-1 rounded text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-colors"
+          className="ml-auto p-1 rounded text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-colors"
           title="Refresh">
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -300,23 +300,23 @@ export default function KnowledgePanel() {
       {/* No project */}
       {!projectPath && (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
-          <BookOpen size={28} className="text-nex-text-muted" />
-          <p className="text-xs text-nex-text-dim">Open a project to use its local knowledge base.</p>
+          <BookOpen size={28} className="text-[var(--nex-text-muted)]" />
+          <p className="text-xs text-[var(--nex-text-dim)]">Open a project to use its local knowledge base.</p>
         </div>
       )}
 
       {projectPath && (
         <div className="flex-1 overflow-y-auto">
           {/* Project + Status */}
-          <div className="px-3 py-2 border-b border-nex-border/50">
-            <div className="flex items-center gap-1.5 text-[11px] text-nex-text-dim">
-              <span className="text-nex-text-muted">Project:</span>
-              <span className="truncate font-medium text-nex-text">{projectName}</span>
+          <div className="px-3 py-2 border-b border-[var(--nex-glass-border)]/50">
+            <div className="flex items-center gap-1.5 text-[11px] text-[var(--nex-text-dim)]">
+              <span className="text-[var(--nex-text-muted)]">Project:</span>
+              <span className="truncate font-medium text-[var(--nex-text)]">{projectName}</span>
             </div>
             <div className="flex items-center gap-1.5 text-[11px] mt-1">
               <ShieldCheck size={11} className="text-emerald-400" />
               <span className="text-emerald-400">Offline Ready</span>
-              <span className="text-nex-text-muted">· fully local</span>
+              <span className="text-[var(--nex-text-muted)]">· fully local</span>
             </div>
           </div>
 
@@ -342,12 +342,12 @@ export default function KnowledgePanel() {
           </div>
 
           {/* Embedding backend selector (P10-D/E) */}
-          <div className="px-3 pb-2.5 border-b border-nex-border/50">
+          <div className="px-3 pb-2.5 border-b border-[var(--nex-glass-border)]/50">
             <button onClick={() => setEmbOpen(!embOpen)}
-              className="w-full flex items-center gap-1.5 text-[10px] text-nex-text-dim hover:text-nex-text transition-colors">
+              className="w-full flex items-center gap-1.5 text-[10px] text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] transition-colors">
               <Settings2 size={10} />
               <span className="uppercase tracking-wider">Embedding Backend</span>
-              <span className="ml-auto flex items-center gap-1 text-nex-text-muted normal-case">
+              <span className="ml-auto flex items-center gap-1 text-[var(--nex-text-muted)] normal-case">
                 {embBusy && <Loader2 size={9} className="animate-spin" />}
                 {embState ? (embState.backend === 'hash' ? 'Hash (offline)' : 'GGUF model') : '…'}
                 {embOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
@@ -368,7 +368,7 @@ export default function KnowledgePanel() {
                   desc="Offline · deterministic · zero setup · 256d"
                 />
                 {embState.embeddingModels.length > 0 && (
-                  <div className="text-[9px] uppercase tracking-wider text-nex-text-muted pt-1">Embedding models</div>
+                  <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] pt-1">Embedding models</div>
                 )}
                 {embState.embeddingModels.map((m) => (
                   <EmbOption
@@ -382,7 +382,7 @@ export default function KnowledgePanel() {
                 ))}
                 {embState.otherModels.length > 0 && (
                   <details className="pt-1">
-                    <summary className="text-[9px] uppercase tracking-wider text-nex-text-muted cursor-pointer select-none">
+                    <summary className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] cursor-pointer select-none">
                       Advanced — any registered GGUF ({embState.otherModels.length})
                     </summary>
                     <div className="mt-1 space-y-1">
@@ -399,7 +399,7 @@ export default function KnowledgePanel() {
                     </div>
                   </details>
                 )}
-                <p className="text-[9px] text-nex-text-muted pt-0.5">
+                <p className="text-[9px] text-[var(--nex-text-muted)] pt-0.5">
                   Independent from the chat model. Switching backends changes vector dimensions → Rebuild Index required.
                 </p>
               </div>
@@ -421,7 +421,7 @@ export default function KnowledgePanel() {
             <ActionBtn onClick={purgeMissing} busy={busy === 'purge'} icon={<Wind size={11} />} label="Purge Deleted" title="Remove index entries for files that no longer exist" />
             {docs.length > 0 && !confirmClear ? (
               <button onClick={() => setConfirmClear(true)}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-nex-card border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors">
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-[var(--nex-glass-bg)] border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors">
                 <Eraser size={11} /> Clear All…
               </button>
             ) : null}
@@ -433,7 +433,7 @@ export default function KnowledgePanel() {
                 className="px-2 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-300 disabled:opacity-50">
                 {busy === 'clear' ? 'Clearing…' : 'Clear Everything'}
               </button>
-              <button onClick={() => setConfirmClear(false)} className="text-nex-text-dim">Cancel</button>
+              <button onClick={() => setConfirmClear(false)} className="text-[var(--nex-text-dim)]">Cancel</button>
             </div>
           )}
 
@@ -449,37 +449,37 @@ export default function KnowledgePanel() {
           )}
 
           {/* Search (P10-C) */}
-          <div className="px-3 pb-2.5 border-b border-nex-border/50">
+          <div className="px-3 pb-2.5 border-b border-[var(--nex-glass-border)]/50">
             <div className="relative">
-              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-nex-text-dim" />
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--nex-text-dim)]" />
               <input
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); if (searchResults) setSearchResults(null); }}
                 onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
                 placeholder="Search knowledge…"
-                className="w-full bg-nex-card border border-nex-border rounded-lg pl-7 pr-2 py-1.5 text-[11px] text-nex-text placeholder-nex-text-muted outline-none focus:border-nex-accent/50"
+                className="w-full bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] rounded-lg pl-7 pr-2 py-1.5 text-[11px] text-[var(--nex-text)] placeholder-[var(--nex-text-muted)] outline-none focus:border-[var(--nex-accent)]/50"
               />
-              {searching && <Loader2 size={11} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-nex-accent" />}
+              {searching && <Loader2 size={11} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-[var(--nex-accent)]" />}
             </div>
 
             {/* Results: score → document → snippet → citation */}
             {searchResults && (
               <div className="mt-2">
-                <div className="text-[10px] uppercase tracking-wider text-nex-text-muted mb-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1.5">
                   Results ({searchResults.length})
                 </div>
                 {searchResults.length === 0 && (
-                  <p className="text-[11px] text-nex-text-dim py-1">No matches.</p>
+                  <p className="text-[11px] text-[var(--nex-text-dim)] py-1">No matches.</p>
                 )}
                 {searchResults.map((r, i) => (
-                  <div key={`${r.documentId}-${i}`} className="mb-2 p-2 rounded-lg bg-nex-card border border-nex-border/70">
+                  <div key={`${r.documentId}-${i}`} className="mb-2 p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70">
                     <div className="flex items-center gap-1.5 mb-1">
-                      <FileText size={10} className="text-nex-accent/70 shrink-0" />
-                      <span className="text-[11px] font-medium text-nex-text truncate flex-1" title={r.title}>{r.title}</span>
-                      <span className="text-[9px] text-nex-accent font-mono shrink-0" title="relevance score">{r.score.toFixed(3)}</span>
+                      <FileText size={10} className="text-[var(--nex-accent)]/70 shrink-0" />
+                      <span className="text-[11px] font-medium text-[var(--nex-text)] truncate flex-1" title={r.title}>{r.title}</span>
+                      <span className="text-[9px] text-[var(--nex-accent)] font-mono shrink-0" title="relevance score">{r.score.toFixed(3)}</span>
                     </div>
-                    <p className="text-[10px] text-nex-text-dim leading-snug line-clamp-3 whitespace-pre-wrap">{r.snippet}</p>
-                    <div className="text-[9px] text-nex-text-muted mt-1 truncate" title={r.source}>
+                    <p className="text-[10px] text-[var(--nex-text-dim)] leading-snug line-clamp-3 whitespace-pre-wrap">{r.snippet}</p>
+                    <div className="text-[9px] text-[var(--nex-text-muted)] mt-1 truncate" title={r.source}>
                       {r.source || r.title}
                       {r.startLine !== undefined
                         ? ` → lines ${r.startLine}${r.endLine !== undefined ? `-${r.endLine}` : ''}`
@@ -488,7 +488,7 @@ export default function KnowledgePanel() {
                       {r.citation ? '' : ''}
                     </div>
                     {r.citation && (
-                      <div className="text-[9px] text-nex-accent/80 mt-0.5 truncate font-mono" title="citation">
+                      <div className="text-[9px] text-[var(--nex-accent)]/80 mt-0.5 truncate font-mono" title="citation">
                         {r.citation}
                       </div>
                     )}
@@ -500,15 +500,15 @@ export default function KnowledgePanel() {
 
           {/* Knowledge Viewer (P11-F) */}
           {viewDoc && (
-            <div className="px-3 py-2 border-b border-nex-border/50 bg-nex-bg/30">
+            <div className="px-3 py-2 border-b border-[var(--nex-glass-border)]/50 bg-[var(--nex-bg)]/30">
               <div className="flex items-center gap-1.5 mb-1.5">
-                <Eye size={11} className="text-nex-accent shrink-0" />
-                <span className="text-[11px] font-medium text-nex-text truncate flex-1">{viewDoc.document.title}</span>
-                <button onClick={() => setViewDoc(null)} className="text-nex-text-dim hover:text-nex-text shrink-0" title="Close viewer">
+                <Eye size={11} className="text-[var(--nex-accent)] shrink-0" />
+                <span className="text-[11px] font-medium text-[var(--nex-text)] truncate flex-1">{viewDoc.document.title}</span>
+                <button onClick={() => setViewDoc(null)} className="text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] shrink-0" title="Close viewer">
                   <X size={11} />
                 </button>
               </div>
-              <div className="text-[9px] text-nex-text-muted space-y-0.5 mb-1.5">
+              <div className="text-[9px] text-[var(--nex-text-muted)] space-y-0.5 mb-1.5">
                 <div className="truncate" title={viewDoc.document.sourcePath}>path: {viewDoc.document.sourcePath || '—'}</div>
                 <div>
                   format: {viewDoc.document.format}
@@ -528,25 +528,25 @@ export default function KnowledgePanel() {
                   </div>
                 )}
               </div>
-              <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1">Chunks ({viewDoc.chunks.length})</div>
+              <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1">Chunks ({viewDoc.chunks.length})</div>
               <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
                 {viewDoc.chunks.map((c) => (
-                  <div key={c.id} className={`p-1.5 rounded border ${c.suspectedInjection ? 'border-yellow-500/40 bg-yellow-500/5' : 'border-nex-border/60 bg-nex-card/60'}`}>
+                  <div key={c.id} className={`p-1.5 rounded border ${c.suspectedInjection ? 'border-yellow-500/40 bg-yellow-500/5' : 'border-[var(--nex-glass-border)]/60 bg-[var(--nex-glass-bg)]/60'}`}>
                     <div className="flex items-center gap-1 text-[9px]">
-                      <span className="text-nex-text-muted font-mono">#{c.index}</span>
+                      <span className="text-[var(--nex-text-muted)] font-mono">#{c.index}</span>
                       {c.startLine !== undefined && (
-                        <span className="text-nex-text-dim font-mono">
+                        <span className="text-[var(--nex-text-dim)] font-mono">
                           {c.jsonPath ? c.jsonPath : c.rowRange ? c.rowRange : `L${c.startLine}${c.endLine !== undefined ? `-${c.endLine}` : ''}`}
                         </span>
                       )}
-                      {c.sectionTitle && <span className="text-nex-accent/70 truncate">§ {c.sectionTitle}</span>}
+                      {c.sectionTitle && <span className="text-[var(--nex-accent)]/70 truncate">§ {c.sectionTitle}</span>}
                       {c.symbols && c.symbols.length > 0 && (
-                        <span className="text-nex-accent/80 truncate flex-1" title={c.symbols.join(', ')}>{c.symbols.slice(0, 2).join(' + ')}</span>
+                        <span className="text-[var(--nex-accent)]/80 truncate flex-1" title={c.symbols.join(', ')}>{c.symbols.slice(0, 2).join(' + ')}</span>
                       )}
-                      <span className="text-nex-text-muted ml-auto shrink-0">{c.chars}c</span>
+                      <span className="text-[var(--nex-text-muted)] ml-auto shrink-0">{c.chars}c</span>
                     </div>
                     {c.suspectedInjection && <div className="text-[8px] text-yellow-400 mt-0.5">⚠ injection-suspected (stored as data)</div>}
-                    <p className="text-[9px] text-nex-text-dim mt-0.5 line-clamp-2 whitespace-pre-wrap">{c.preview}</p>
+                    <p className="text-[9px] text-[var(--nex-text-dim)] mt-0.5 line-clamp-2 whitespace-pre-wrap">{c.preview}</p>
                   </div>
                 ))}
               </div>
@@ -556,12 +556,12 @@ export default function KnowledgePanel() {
           {/* Document list */}
           <div className="px-3 py-2">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] uppercase tracking-wider text-nex-text-muted">
+              <span className="text-[10px] uppercase tracking-wider text-[var(--nex-text-muted)]">
                 Documents ({docs.length})
               </span>
             </div>
             {docs.length === 0 && !loading && (
-              <p className="text-[11px] text-nex-text-dim py-2 text-center">
+              <p className="text-[11px] text-[var(--nex-text-dim)] py-2 text-center">
                 No documents indexed yet.
               </p>
             )}
@@ -579,12 +579,12 @@ export default function KnowledgePanel() {
 
 function Stat({ icon, label, value, title }: { icon: React.ReactNode; label: string; value: string; title?: string }) {
   return (
-    <div className="p-2 rounded-lg bg-nex-card border border-nex-border/70" title={title}>
-      <div className="flex items-center gap-1 text-nex-text-muted mb-0.5">
+    <div className="p-2 rounded-lg bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)]/70" title={title}>
+      <div className="flex items-center gap-1 text-[var(--nex-text-muted)] mb-0.5">
         {icon}
         <span className="text-[9px] uppercase tracking-wider">{label}</span>
       </div>
-      <div className="text-[12px] font-medium text-nex-text truncate">{value}</div>
+      <div className="text-[12px] font-medium text-[var(--nex-text)] truncate">{value}</div>
     </div>
   );
 }
@@ -595,7 +595,7 @@ function ActionBtn({ onClick, busy, icon, label, title }: { onClick: () => void;
       onClick={onClick}
       disabled={busy}
       title={title}
-      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-nex-card border border-nex-border text-nex-text-dim hover:text-nex-text hover:border-nex-accent/40 transition-colors disabled:opacity-50">
+      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-[var(--nex-glass-bg)] border border-[var(--nex-glass-border)] text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:border-[var(--nex-accent)]/40 transition-colors disabled:opacity-50">
       {busy ? <Loader2 size={10} className="animate-spin" /> : icon}
       {label}
     </button>
@@ -608,12 +608,12 @@ function EmbOption({ active, onClick, disabled, title, desc }: {
   return (
     <button onClick={onClick} disabled={disabled}
       className={`w-full text-left px-2 py-1.5 rounded-md border transition-colors flex items-start gap-1.5 disabled:opacity-40 ${
-        active ? 'border-nex-accent/60 bg-nex-accent/10' : 'border-nex-border bg-nex-card hover:border-nex-border-light'
+        active ? 'border-[var(--nex-accent)]/60 bg-[var(--nex-accent-dim)]' : 'border-[var(--nex-glass-border)] bg-[var(--nex-glass-bg)] hover:border-[var(--nex-panel-border-hover)]'
       }`}>
-      <span className={`mt-0.5 shrink-0 ${active ? 'text-nex-accent' : 'text-transparent'}`}><Check size={10} /></span>
+      <span className={`mt-0.5 shrink-0 ${active ? 'text-[var(--nex-accent)]' : 'text-transparent'}`}><Check size={10} /></span>
       <span className="min-w-0">
-        <span className="block text-[10px] font-medium text-nex-text truncate">{title}</span>
-        <span className="block text-[9px] text-nex-text-muted">{desc}</span>
+        <span className="block text-[10px] font-medium text-[var(--nex-text)] truncate">{title}</span>
+        <span className="block text-[9px] text-[var(--nex-text-muted)]">{desc}</span>
       </span>
     </button>
   );
@@ -629,33 +629,33 @@ function DocRow({ doc, busy, onReindex, onDelete, onView, viewBusy }: {
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="mb-0.5 rounded-md border border-transparent hover:border-nex-border/60 hover:bg-nex-card/60 transition-colors">
+    <div className="mb-0.5 rounded-md border border-transparent hover:border-[var(--nex-glass-border)]/60 hover:bg-white/[0.04]/60 transition-colors">
       <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-1 px-1.5 py-1 text-left">
-        {open ? <ChevronDown size={10} className="text-nex-text-muted shrink-0" /> : <ChevronRight size={10} className="text-nex-text-muted shrink-0" />}
-        <FileText size={10} className="text-nex-accent/70 shrink-0" />
-        <span className="text-[11px] text-nex-text truncate flex-1">{doc.title}</span>
-        <span className="text-[9px] text-nex-text-muted shrink-0">{doc.chunkCount} chunks</span>
+        {open ? <ChevronDown size={10} className="text-[var(--nex-text-muted)] shrink-0" /> : <ChevronRight size={10} className="text-[var(--nex-text-muted)] shrink-0" />}
+        <FileText size={10} className="text-[var(--nex-accent)]/70 shrink-0" />
+        <span className="text-[11px] text-[var(--nex-text)] truncate flex-1">{doc.title}</span>
+        <span className="text-[9px] text-[var(--nex-text-muted)] shrink-0">{doc.chunkCount} chunks</span>
       </button>
       {open && (
         <div className="px-3 pb-1.5 pt-0.5">
-          <div className="text-[9px] text-nex-text-muted space-y-0.5 mb-1.5">
+          <div className="text-[9px] text-[var(--nex-text-muted)] space-y-0.5 mb-1.5">
             <div className="truncate" title={doc.sourcePath}>path: {doc.sourcePath || '—'}</div>
             <div>format: {doc.format} · size: {formatBytes(doc.sizeBytes)}</div>
             <div>indexed: {timeAgo(doc.indexedAt)}{doc.domain ? ` · domain: ${doc.domain}` : ''}</div>
           </div>
           <div className="flex gap-1">
             <button onClick={onView} disabled={viewBusy}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-nex-accent border border-nex-border hover:border-nex-accent/40 transition-colors disabled:opacity-50">
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-[var(--nex-text-dim)] hover:text-[var(--nex-accent)] border border-[var(--nex-glass-border)] hover:border-[var(--nex-accent)]/40 transition-colors disabled:opacity-50">
               <Eye size={9} />
               View
             </button>
             <button onClick={onReindex} disabled={busy === `re:${doc.id}`}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-nex-accent border border-nex-border hover:border-nex-accent/40 transition-colors disabled:opacity-50">
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-[var(--nex-text-dim)] hover:text-[var(--nex-accent)] border border-[var(--nex-glass-border)] hover:border-[var(--nex-accent)]/40 transition-colors disabled:opacity-50">
               {busy === `re:${doc.id}` ? <Loader2 size={9} className="animate-spin" /> : <RotateCw size={9} />}
               Re-index
             </button>
             <button onClick={onDelete} disabled={busy === `del:${doc.id}`}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-nex-text-dim hover:text-red-400 border border-nex-border hover:border-red-500/40 transition-colors disabled:opacity-50">
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-[var(--nex-text-dim)] hover:text-red-400 border border-[var(--nex-glass-border)] hover:border-red-500/40 transition-colors disabled:opacity-50">
               {busy === `del:${doc.id}` ? <Loader2 size={9} className="animate-spin" /> : <Trash2 size={9} />}
               Remove
             </button>

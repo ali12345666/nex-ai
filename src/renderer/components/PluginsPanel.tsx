@@ -55,18 +55,18 @@ export default function PluginsPanel() {
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-nex-surface">
-      <div className="px-3 py-2.5 border-b border-nex-border flex items-center gap-2">
-        <Puzzle size={15} className="text-nex-accent" />
-        <span className="text-sm font-semibold text-nex-text">Plugins</span>
-        <span className="text-[9px] text-nex-text-muted">({plugins.length})</span>
+    <div className="w-full h-full flex flex-col bg-[var(--nex-panel-solid)]">
+      <div className="px-3 py-2.5 border-b border-[var(--nex-glass-border)] flex items-center gap-2">
+        <Puzzle size={15} className="text-[var(--nex-accent)]" />
+        <span className="text-sm font-semibold text-[var(--nex-text)]">Plugins</span>
+        <span className="text-[9px] text-[var(--nex-text-muted)]">({plugins.length})</span>
         <button onClick={load} disabled={loading}
-          className="ml-auto p-1 rounded text-nex-text-dim hover:text-nex-text hover:bg-nex-card transition-colors" title="Rescan">
+          className="ml-auto p-1 rounded text-[var(--nex-text-dim)] hover:text-[var(--nex-text)] hover:bg-white/[0.04] transition-colors" title="Rescan">
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      <div className="px-3 py-1.5 border-b border-nex-border/50 text-[9px] text-nex-text-muted">
+      <div className="px-3 py-1.5 border-b border-[var(--nex-glass-border)]/50 text-[9px] text-[var(--nex-text-muted)]">
         Manifest-level management. Place plugin folders under <span className="font-mono">userData/plugins/</span>. Code activation ships with the loader/sandbox phase.
       </div>
 
@@ -80,24 +80,24 @@ export default function PluginsPanel() {
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {plugins.length === 0 && !loading && (
           <div className="text-center py-8">
-            <Package size={26} className="text-nex-text-muted mx-auto mb-2" />
-            <p className="text-[11px] text-nex-text-dim">No plugins discovered.</p>
+            <Package size={26} className="text-[var(--nex-text-muted)] mx-auto mb-2" />
+            <p className="text-[11px] text-[var(--nex-text-dim)]">No plugins discovered.</p>
           </div>
         )}
         {plugins.map((p) => (
-          <div key={p.id} className={`p-2 rounded-lg border transition-colors ${p.enabled ? 'border-nex-accent/30 bg-nex-accent/5' : 'border-nex-border bg-nex-card'}`}>
+          <div key={p.id} className={`p-2 rounded-lg border transition-colors ${p.enabled ? 'border-[var(--nex-accent)]/30 bg-[var(--nex-accent-dim)]' : 'border-[var(--nex-glass-border)] bg-[var(--nex-glass-bg)]'}`}>
             <div className="flex items-center gap-2">
-              <Puzzle size={13} className={p.enabled ? 'text-nex-accent' : 'text-nex-text-muted'} />
-              <span className="text-[11px] font-medium text-nex-text truncate flex-1">{p.name}</span>
-              <span className="text-[9px] font-mono text-nex-text-muted">v{p.version}</span>
+              <Puzzle size={13} className={p.enabled ? 'text-[var(--nex-accent)]' : 'text-[var(--nex-text-muted)]'} />
+              <span className="text-[11px] font-medium text-[var(--nex-text)] truncate flex-1">{p.name}</span>
+              <span className="text-[9px] font-mono text-[var(--nex-text-muted)]">v{p.version}</span>
               <button onClick={() => toggle(p.id, !p.enabled)} disabled={busy === p.id}
-                className={`shrink-0 transition-colors ${p.enabled ? 'text-nex-accent' : 'text-nex-text-muted hover:text-nex-text'}`}
+                className={`shrink-0 transition-colors ${p.enabled ? 'text-[var(--nex-accent)]' : 'text-[var(--nex-text-muted)] hover:text-[var(--nex-text)]'}`}
                 title={p.enabled ? 'Disable (bookkeeping — code loads only after the loader phase)' : 'Enable'}>
                 {busy === p.id ? <Loader2 size={14} className="animate-spin" /> : p.enabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
               </button>
             </div>
-            <div className="text-[9px] text-nex-text-muted mt-0.5 truncate" title={p.id}>{p.id} · {p.author}</div>
-            <p className="text-[10px] text-nex-text-dim mt-1 line-clamp-2">{p.description}</p>
+            <div className="text-[9px] text-[var(--nex-text-muted)] mt-0.5 truncate" title={p.id}>{p.id} · {p.author}</div>
+            <p className="text-[10px] text-[var(--nex-text-dim)] mt-1 line-clamp-2">{p.description}</p>
             {p.permissions.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1.5">
                 {p.permissions.map((perm, i) => (
@@ -109,17 +109,17 @@ export default function PluginsPanel() {
               </div>
             )}
             {p.provides.tools.length > 0 && (
-              <div className="text-[9px] text-nex-text-muted mt-1">provides tools: {p.provides.tools.join(', ')}</div>
+              <div className="text-[9px] text-[var(--nex-text-muted)] mt-1">provides tools: {p.provides.tools.join(', ')}</div>
             )}
           </div>
         ))}
 
         {invalid.length > 0 && (
           <div className="mt-2">
-            <div className="text-[9px] uppercase tracking-wider text-nex-text-muted mb-1">Invalid discoveries</div>
+            <div className="text-[9px] uppercase tracking-wider text-[var(--nex-text-muted)] mb-1">Invalid discoveries</div>
             {invalid.map((d, i) => (
               <div key={i} className="px-2 py-1 rounded border border-red-500/20 bg-red-500/5 mb-1">
-                <div className="text-[9px] font-mono text-nex-text-dim truncate">{d.dir}</div>
+                <div className="text-[9px] font-mono text-[var(--nex-text-dim)] truncate">{d.dir}</div>
                 <div className="text-[9px] text-red-400">{d.reason}</div>
               </div>
             ))}
