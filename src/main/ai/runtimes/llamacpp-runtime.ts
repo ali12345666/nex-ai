@@ -22,6 +22,7 @@ import {
   getLoadedModelInfo as _getLoadedModelInfo,
   shutdownLlama as _shutdownLlama,
 } from '../inference';
+import { noteInferenceStats } from '../runtime';
 
 export class LlamaCppRuntime implements AIRuntime {
   readonly type: RuntimeType = 'llamacpp';
@@ -52,7 +53,16 @@ export class LlamaCppRuntime implements AIRuntime {
     if (!this._loadedModel) {
       throw new Error('No model loaded. Call loadModel() first.');
     }
-    return _chatComplete(this._loadedModel, messages, opts || {});
+    const result = await _chatComplete(this._loadedModel, messages, opts || {});
+    // Phase 19 / P19-A: feed the System Monitor telemetry hook (P12)
+    noteInferenceStats({
+      tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
+      promptTokens: (result as any).promptTokens,
+      generatedTokens: ((result as any).completionTokens ?? result.tokensGenerated),
+      durationMs: result.durationMs,
+      active: false,
+    });
+    return result;
   }
 
   async chatStream(
@@ -63,7 +73,21 @@ export class LlamaCppRuntime implements AIRuntime {
     if (!this._loadedModel) {
       throw new Error('No model loaded. Call loadModel() first.');
     }
-    return _chatStream(this._loadedModel, messages, onChunk, opts || {});
+    noteInferenceStats({ active: true }); // Phase 19: live inference flag
+    try {
+      const result = await _chatStream(this._loadedModel, messages, onChunk, opts || {});
+      noteInferenceStats({
+        tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
+        promptTokens: (result as any).promptTokens,
+        generatedTokens: ((result as any).completionTokens ?? result.tokensGenerated),
+        durationMs: result.durationMs,
+        active: false,
+      });
+      return result;
+    } catch (err) {
+      noteInferenceStats({ active: false });
+      throw err;
+    }
   }
 
   abort(): void {

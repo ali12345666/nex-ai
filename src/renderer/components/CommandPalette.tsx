@@ -12,6 +12,10 @@ import {
   Moon,
   Type,
   X,
+  BookOpen,
+  Brain,
+  Activity,
+  Puzzle,
 } from 'lucide-react';
 
 interface Command {
@@ -27,6 +31,7 @@ export default function CommandPalette() {
   const {
     toggleCommandPalette,
     setActivePanel,
+    setSidebarView,
     setTerminalVisible,
     toggleTerminal,
     saveFile,
@@ -94,6 +99,55 @@ export default function CommandPalette() {
       category: 'Preferences',
       action: () => {
         setActivePanel('settings');
+        toggleCommandPalette();
+      },
+    },
+    // Phase 19 / P19-B: new panels in the palette
+    {
+      id: 'view-knowledge',
+      label: 'Knowledge Base',
+      description: 'Open the local knowledge/RAG panel',
+      icon: <BookOpen size={16} />,
+      category: 'View',
+      action: () => {
+        setSidebarView('knowledge');
+        setActivePanel('editor');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-memory',
+      label: 'Memory',
+      description: 'Browse the 5-store agent memory',
+      icon: <Brain size={16} />,
+      category: 'View',
+      action: () => {
+        setSidebarView('memory');
+        setActivePanel('editor');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-system-monitor',
+      label: 'System Monitor',
+      description: 'Live CPU / RAM / GPU / AI telemetry',
+      icon: <Activity size={16} />,
+      category: 'View',
+      action: () => {
+        setSidebarView('system');
+        setActivePanel('editor');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-plugins',
+      label: 'Plugins',
+      description: 'Manage local plugins',
+      icon: <Puzzle size={16} />,
+      category: 'View',
+      action: () => {
+        setSidebarView('plugins');
+        setActivePanel('editor');
         toggleCommandPalette();
       },
     },

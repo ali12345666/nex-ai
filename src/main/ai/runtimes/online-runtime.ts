@@ -21,6 +21,7 @@ import type {
   StreamChunk, RuntimeStats, RuntimeType,
 } from '../runtime';
 import type { LocalModelInfo, ModelCapability } from '../model-registry';
+import { noteInferenceStats } from '../runtime';
 
 /**
  * A transport performs one full (non-streamed) chat round-trip.
@@ -80,14 +81,25 @@ export class OnlineRuntime implements AIRuntime {
       throw new Error('OnlineRuntime: no model loaded. Call loadModel() first.');
     }
     this._aborted = false;
+    noteInferenceStats({ active: true }); // Phase 19: live inference flag
     this._inFlight = this._opts.transport(messages, opts);
     try {
       const result = await this._inFlight;
+      noteInferenceStats({
+        tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
+        promptTokens: result.promptTokens,
+        generatedTokens: result.completionTokens ?? result.tokensGenerated,
+        durationMs: result.durationMs,
+        active: false,
+      });
       return {
         ...result,
         stopped: this._aborted ? false : result.stopped,
         finishReason: this._aborted ? 'aborted' : result.finishReason,
       };
+    } catch (err) {
+      noteInferenceStats({ active: false });
+      throw err;
     } finally {
       this._inFlight = null;
     }
