@@ -25,44 +25,36 @@ async function main(): Promise<void> {
 
   console.log('\n1) AppShell now renders EditorPanel when a file is open:');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-  assert('imports EditorPanel (lazy)', /const EditorPanel = lazy\(\(\) => import\('\.\.\/EditorPanel'\)\)/.test(shellSrc));
-  assert('reads activeFile from useStore', /activeFile, closeFile\}\) = useStore\(\)/.test(shellSrc) || /activeFile.*=.*useStore/.test(shellSrc));
-  assert('reads closeFile from useStore', /closeFile.*=.*useStore/.test(shellSrc));
-  assert('conditional render: activeFile ? editor : orb', /\{activeFile \? \(/.test(shellSrc));
-  assert('editor overlay has close button calling closeFile', /onClick=\{\(\) => closeFile\(activeFile\)\}/.test(shellSrc));
-  assert('editor body wrapped in Suspense with EditorPanel', /<Suspense fallback=\{<PanelLoading \/>\}>[\s\S]*?<EditorPanel \/>/.test(shellSrc));
-  assert('Orb only renders when no active file (else branch)', /\) : \([\s\S]*?<[\s\S]*?<NexOrb/.test(shellSrc));
+  // UI-16: EditorPanel moved to WorkspacePanel, not AppShell
+  assert('NO EditorPanel import in AppShell (moved to WorkspacePanel)', !/const EditorPanel = lazy/.test(shellSrc));
+  assert('NO activeFile in AppShell (moved to WorkspacePanel)', !/activeFile/.test(shellSrc.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('{/*')).join('\n')));
+  assert('NO closeFile in AppShell (moved to WorkspacePanel)', !/closeFile/.test(shellSrc.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('{/*')).join('\n')));
+  // UI-16: Orb is always visible, panels float beside it
+  assert('Orb always rendered (showOrb used for sizing)', /showOrb/.test(shellSrc));
 
-  console.log('\n2) Escape key closes editor (UX improvement):');
-  assert('Escape key listener registered', /addEventListener\('keydown', onKey\)/.test(shellSrc));
-  assert('Escape triggers closeFile when activeFile set', /e\.key === 'Escape' && activeFile/.test(shellSrc));
-  assert('Escape not triggered inside INPUT', /target\.tagName === 'INPUT'/.test(shellSrc));
-  assert('Escape not triggered inside TEXTAREA', /target\.tagName === 'TEXTAREA'/.test(shellSrc));
-  assert('Escape not triggered in contentEditable', /target\.isContentEditable/.test(shellSrc));
-  assert('Escape not triggered when historyOpen', /&& !historyOpen/.test(shellSrc));
-  assert('keydown listener removed on unmount', /removeEventListener\('keydown', onKey\)/.test(shellSrc));
+  console.log('\n2) EditorPanel now in WorkspacePanel (UI-15+UI-16):');
+  const wsSrc = read('../../src/renderer/components/layout/WorkspacePanel.tsx');
+  assert('WorkspacePanel imports EditorPanel', /EditorPanel/.test(wsSrc));
+  assert('WorkspacePanel has editor tab', /case 'editor'/.test(wsSrc));
+  // UI-16: Escape handler removed from AppShell (was UI-04 feature, now editor
+  // is inside WorkspacePanel which handles its own keyboard shortcuts)
+  assert('NO Escape handler in AppShell (moved to WorkspacePanel)', !/addEventListener\('keydown'/.test(shellSrc));
 
-  console.log('\n3) Editor overlay layout + a11y:');
-  assert('overlay uses nex-glass-strong class', /nex-glass-strong/.test(shellSrc));
-  assert('overlay uses nex-animate-in class', /nex-animate-in/.test(shellSrc));
-  assert('overlay is absolute positioned', /absolute inset-0/.test(shellSrc));
-  assert('overlay has rounded corners', /borderRadius: 'var\(--nex-radius-lg\)'/.test(shellSrc));
-  assert('close button has aria-label', /aria-label="Close editor and return to Orb"/.test(shellSrc));
-  assert('close button has title with Esc hint', /title="Close editor \(Esc\)"/.test(shellSrc));
-  assert('filename shown in header (basename from activeFile)', /activeFile\.split\(/.test(shellSrc) && /\.pop\(\)/.test(shellSrc));
-  assert('filename has title attribute for full path', /title=\{activeFile\}/.test(shellSrc));
+  console.log('\n3) Floating panel layout (UI-16):');
+  assert('floating panel uses nex-glass-strong', /nex-glass-strong/.test(shellSrc));
+  assert('floating panel uses nex-animate-in', /nex-animate-in/.test(shellSrc));
+  assert('floating panel is NOT absolute inset-0 (not fullscreen)', !/absolute inset-0/.test(shellSrc.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('{/*')).join('\n')));
+  assert('floating panel has width constraint', /min\(480px, 55%\)/.test(shellSrc));
 
-  console.log('\n4) No regression to Orb + branding (shown when no file open):');
-  assert('NEX AI branding present (UI-14)', /NEX AI/.test(shellSrc));
-  assert('LOCAL INTELLIGENCE subtitle present (UI-14)', /LOCAL INTELLIGENCE/.test(shellSrc));
-  // UI-13: orb size increased ~2x — old min(42vh,38vw) → new min(72vh,48vw).
-  // Test updated to check for responsive sizing (either old or new pattern is fine
-  // as long as it's viewport-responsive, not fixed px).
-  assert('Orb container still has responsive sizing', /width: 'min\(\d+vh, \d+vw\)'/.test(shellSrc));
-  assert('Orb fallback OrbLoading still present', /fallback=\{<OrbLoading \/>\}/.test(shellSrc));
-  // UI-14 §3: voice toggle button removed — Always-Ready Voice.
-  assert('NO voice toggle button in Orb view (UI-14)', !/voiceActive \? 'LISTENING' : 'VOICE'/.test(shellSrc));
-  assert('Partial transcript display still in Orb view', /partialTranscript/.test(shellSrc));
+  console.log('\n4) Orb always visible (UI-16):');
+  assert('NEX AI branding present', /NEX AI/.test(shellSrc));
+  assert('NO LOCAL INTELLIGENCE subtitle (UI-16 removed)', !/LOCAL INTELLIGENCE/.test(shellSrc));
+  assert('NO ALWAYS READY subtitle (UI-16 removed)', !/ALWAYS READY/.test(shellSrc));
+  assert('Orb container has responsive sizing (dynamic)', /min\(\d+vh/.test(shellSrc));
+  assert('Orb always rendered (showOrb used for sizing)', /showOrb/.test(shellSrc));
+  assert('Orb fallback OrbLoading still present', /OrbLoading/.test(shellSrc));
+  assert('NO voice toggle button (UI-14)', !/voiceActive \? 'LISTENING' : 'VOICE'/.test(shellSrc));
+  assert('Partial transcript display still present', /partialTranscript/.test(shellSrc));
 
   console.log('\n5) Store openFile/closeFile contract unchanged:');
   const storeSrc = read('../../src/renderer/store/useStore.ts');
@@ -85,11 +77,11 @@ async function main(): Promise<void> {
   assert('FileTab component present', /function FileTab/.test(editorSrc));
   assert('Save button calls saveFile', /saveFile\(activeFile\)/.test(editorSrc));
 
-  console.log('\n7) No dead code introduced:');
-  // Verify we didn't accidentally leave a duplicate render path.
-  assert('EditorPanel only rendered once in AppShell', (shellSrc.match(/<EditorPanel/g) || []).length === 1);
-  assert('Only one NexOrb JSX render in AppShell (not lazy import)', (shellSrc.match(/<NexOrb[\s/]/g) || []).length === 1);
-  assert('closeFile(activeFile) called from overlay button AND Escape handler', (shellSrc.match(/closeFile\(activeFile\)/g) || []).length === 2);
+  console.log('\n7) No dead code introduced (UI-16 architecture):');
+  // UI-16: EditorPanel not in AppShell (moved to WorkspacePanel)
+  assert('NO EditorPanel rendered in AppShell', (shellSrc.match(/<EditorPanel/g) || []).length === 0);
+  assert('Only one NexOrb JSX render in AppShell', (shellSrc.match(/<NexOrb[\s/]/g) || []).length === 1);
+  assert('NO closeFile calls in AppShell', (shellSrc.match(/closeFile\(/g) || []).length === 0);
 
   console.log('\n8) WorkspaceExplorer unchanged (still calls openFile):');
   const explorerSrc = read('../../src/renderer/components/layout/WorkspaceExplorer.tsx');

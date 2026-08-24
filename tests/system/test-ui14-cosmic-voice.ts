@@ -42,11 +42,12 @@ async function main(): Promise<void> {
   assert('NO text-4xl in branding (code, not comments)', !/text-4xl/.test(shellNoComments));
   assert('NO text-5xl in branding (code, not comments)', !/text-5xl/.test(shellNoComments));
   assert('NO text-6xl in branding (code, not comments)', !/text-6xl/.test(shellNoComments));
-  assert('compact text-base/sm used', /text-base sm:text-lg/.test(shellSrc));
+  // UI-16: simplified to text-sm
+assert('compact text-sm used', /text-sm/.test(shellSrc));
   assert('mb-8 reduced to mb-2 (code, not comments)', !/mb-8/.test(shellNoComments) && /mb-2/.test(shellSrc));
-  assert('subtitle is small text-[9px]', /text-\[9px\]/.test(shellSrc));
-  assert('subtitle says LOCAL INTELLIGENCE', /LOCAL INTELLIGENCE/.test(shellSrc));
-  assert('subtitle says ALWAYS READY', /ALWAYS READY/.test(shellSrc));
+  assert('NO subtitle text (UI-16 removed)', !/LOCAL INTELLIGENCE/.test(shellSrc));
+  assert('NO subtitle (UI-16 minimal)', !/ALWAYS READY/.test(shellSrc));
+  assert('NO ALWAYS READY subtitle (UI-16 minimal)', !/ALWAYS READY/.test(shellSrc));
   assert('title says NEX AI (not N E X)', /NEX AI/.test(shellSrc) && !/>N E X</.test(shellSrc));
 
   console.log('\n2) §3 Voice toggle button removed:');

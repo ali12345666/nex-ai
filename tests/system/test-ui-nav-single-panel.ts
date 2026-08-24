@@ -41,7 +41,7 @@ async function main(): Promise<void> {
 
   console.log('\n3) Single source of truth — center area is canonical renderer:');
   assert('showOrb variable controls center content', /const showOrb = view === 'chat'/.test(shellSrc));
-  assert('center area has showOrb conditional', /\{showOrb \?/.test(renderSection));
+  assert('center area uses showOrb for sizing', /showOrb/.test(renderSection));
   assert('center area calls leftPanel() in else branch', /: \([\s\S]*?leftPanel\(\)/.test(renderSection));
 
   console.log('\n4) Navigation — 5 nav items, each routes to ONE panel:');

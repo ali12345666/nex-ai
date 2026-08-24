@@ -108,8 +108,9 @@ async function main(): Promise<void> {
   assert('AppShell still renders NavigationRail', /<NavigationRail/.test(shellSrc));
   assert('AppShell still renders BottomStatusBar', /<BottomStatusBar/.test(shellSrc));
   assert('NEX AI branding present (UI-14)', /NEX AI/.test(shellSrc));
-  assert('LOCAL INTELLIGENCE subtitle present (UI-14)', /LOCAL INTELLIGENCE/.test(shellSrc));
-  assert('orb container has responsive sizing', /min\(42vh, 38vw\)/.test(shellSrc));
+  // UI-16: subtitle removed, just 'NEX AI'
+assert('NO LOCAL INTELLIGENCE subtitle (UI-16 removed)', !/LOCAL INTELLIGENCE/.test(shellSrc));
+  assert('orb container has responsive sizing', /min\(\d+vh,/.test(shellSrc));
 
   console.log('\n6) Orb has required visual layers + states (on main):');
   const orbSrc = read('../../src/renderer/components/orb/NexOrb.tsx');

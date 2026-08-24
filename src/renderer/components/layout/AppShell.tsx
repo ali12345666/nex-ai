@@ -216,84 +216,75 @@ export default function AppShell() {
           the center area renders either the Orb (chat view) or the active panel
           (non-chat views). No duplicate rendering. */}
 
-        {/* Center: Orb (when chat view) OR panel content (when other views).
-            UI-15 §2: Orb is the visual heart when in Chat mode. When user
-            navigates to Workspace/Memory/Knowledge/Settings, the panel fills
-            the center area. Chat panel stays on the right always. */}
+        {/* Center: Orb (ALWAYS visible) + floating panel overlay (when non-chat view).
+            UI-16: Orb is persistent — panels float as overlays, never cover Orb fully.
+            Layout: [ floating panel | ORB ] within center area. */}
         <div
-          className="flex-1 flex flex-col items-center justify-center relative"
+          className="flex-1 flex items-center justify-center relative overflow-hidden"
           style={{ minWidth: 0 }}
         >
-          {showOrb ? (
-            <>
-              {/* UI-14 §2: Compact header — was text-4xl/5xl/6xl + mb-8 (huge).
-                  Now text-base/sm + mb-2 (minimal). Subtitle is subtle one-liner.
-                  "NEX AI / Local Intelligence • Always Ready" per directive. */}
-              <div className="flex flex-col items-center gap-0.5 mb-2 select-none pointer-events-none">
-                <div className="nex-brand-title text-base sm:text-lg font-medium tracking-[0.3em]" aria-label="NEX AI" style={{ color: 'var(--nex-text)' }}>
+          {/* Orb is ALWAYS rendered — persistent center visual.
+              When a panel is open, Orb shrinks to make room but stays visible. */}
+          <div
+            className="flex flex-col items-center justify-center relative shrink-0"
+            style={{
+              width: showOrb ? 'min(72vh, 48vw)' : 'min(42vh, 28vw)',
+              height: showOrb ? 'min(72vh, 48vw)' : 'min(42vh, 28vw)',
+              minHeight: showOrb ? 280 : 200,
+              minWidth: showOrb ? 280 : 200,
+              transition: 'width 0.3s ease, height 0.3s ease',
+            }}
+          >
+            {/* UI-16 §13: Orb header — ONLY "NEX AI", minimal, no subtitle */}
+            {showOrb && (
+              <div className="mb-2 select-none pointer-events-none">
+                <div
+                  className="text-sm font-medium tracking-[0.3em]"
+                  style={{ color: 'var(--nex-text)' }}
+                  aria-label="NEX AI"
+                >
                   NEX AI
                 </div>
-                <div className="nex-brand-subtitle text-[9px] sm:text-[10px] tracking-wider opacity-60" aria-label="Local Intelligence, Always Ready">
-                  LOCAL INTELLIGENCE • ALWAYS READY
-                </div>
               </div>
+            )}
 
-              {/* Orb container
-                  UI-13: orb size increased ~2x (was min(42vh, 38vw) → now min(72vh, 48vw)).
-                  UI-14: mb reduced from 8 to 2 (header is now compact, more room for orb).
-                  Responsive: on 1080p → ~778px, 1440p → ~1037px, 1280x720 → ~518px.
-                  Caps ensure it never overflows horizontally (48vw < available center
-                  width on standard layouts) and stays within viewport height (72vh
-                  leaves room for branding + status bar). */}
-              <div
-                className="relative"
-                style={{
-                  width: 'min(72vh, 48vw)',
-                  height: 'min(72vh, 48vw)',
-                  minHeight: 280,
-                  minWidth: 280,
-                }}
-              >
-                <Suspense fallback={<OrbLoading />}>
-                  <NexOrb
-                    state={orbState}
-                    audioLevelRef={orbAudioRef}
-                    primaryColor={orbColors.primary}
-                    secondaryColor={orbColors.secondary}
-                    quality="high"
-                    className="w-full h-full"
-                  />
-                  {partialTranscript && (
-                    <div
-                      className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
-                      style={{ color: 'var(--nex-accent-text)' }}
-                      aria-live="polite"
-                    >
-                      "{partialTranscript}"
-                    </div>
-                  )}
-                  {/* UI-14 §3: Voice toggle button REMOVED.
-                      Voice is now Always-Ready — auto-starts on app boot,
-                      auto-restarts after each command, and supports interruption.
-                      See AppShell useEffect for voiceController.start() call. */}
-                </Suspense>
-              </div>
-            </>
-          ) : (
-            /* UI-15: Non-chat views render their panel in the center (full width).
-               The left workspace panel is hidden when not in chat mode — center
-               fills the available space for Memory/Knowledge/Settings panels. */
+            <Suspense fallback={<OrbLoading />}>
+              <NexOrb
+                state={orbState}
+                audioLevelRef={orbAudioRef}
+                primaryColor={orbColors.primary}
+                secondaryColor={orbColors.secondary}
+                quality="high"
+                className="w-full h-full"
+              />
+              {partialTranscript && (
+                <div
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
+                  style={{ color: 'var(--nex-accent-text)' }}
+                  aria-live="polite"
+                >
+                  "{partialTranscript}"
+                </div>
+              )}
+            </Suspense>
+          </div>
+
+          {/* UI-16: Floating panel overlay — when non-chat view, panel renders
+              as a floating panel BESIDE the Orb (not covering it).
+              Panel takes ~55% of center width, Orb takes ~45%. */}
+          {!showOrb && leftPanel() && (
             <div
-              className="absolute inset-0 nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
+              className="nex-glass-strong flex flex-col overflow-hidden nex-animate-in shrink-0"
               style={{
+                width: 'min(480px, 55%)',
+                maxWidth: '55%',
+                height: 'calc(100% - 16px)',
                 borderRadius: 'var(--nex-radius-lg)',
-                margin: '8px 4px',
+                margin: '8px',
                 border: '1px solid var(--nex-panel-border)',
               }}
             >
-              <div className="flex-1 overflow-hidden">
-                {leftPanel()}
-              </div>
+              {leftPanel()}
             </div>
           )}
         </div>

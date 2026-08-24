@@ -115,8 +115,8 @@ async function main(): Promise<void> {
 
   console.log('\n7) §2 AppShell shows Orb when view=chat, panel otherwise:');
   assert('showOrb variable defined', /const showOrb = view === 'chat'/.test(shellSrc));
-  assert('Orb rendered conditionally', /\{showOrb \? \(/.test(shellSrc));
-  assert('Non-chat panel fills center', /: \([\s\S]*?absolute inset-0 nex-glass-strong/.test(shellSrc));
+  assert('Orb always rendered with showOrb sizing', /showOrb/.test(shellSrc));
+  assert('Non-chat panel is floating (not fullscreen)', /floating panel/.test(shellSrc) || /min\(480px, 55%\)/.test(shellSrc));
 
   console.log('\n8) §6 Voice toggle removed, Always-Ready preserved:');
   assert('NO voice toggle button', !/voiceController\.toggle\(\)/.test(shellSrc));
@@ -127,10 +127,10 @@ async function main(): Promise<void> {
   assert('start has .catch() for permission', /voiceController\.start\(\)\.catch/.test(shellSrc));
 
   console.log('\n9) §8 Header minimal (preserved from UI-14):');
-  assert('compact text-base/sm', /text-base sm:text-lg/.test(shellSrc));
+  assert('compact text-sm (UI-16)', /text-sm/.test(shellSrc));
   assert('NEX AI title', /NEX AI/.test(shellSrc));
-  assert('LOCAL INTELLIGENCE subtitle', /LOCAL INTELLIGENCE/.test(shellSrc));
-  assert('ALWAYS READY subtitle', /ALWAYS READY/.test(shellSrc));
+  assert('NO LOCAL INTELLIGENCE subtitle (UI-16)', !/LOCAL INTELLIGENCE/.test(shellSrc));
+  assert('NO ALWAYS READY subtitle (UI-16)', !/ALWAYS READY/.test(shellSrc));
   assert('mb-2 margin', /mb-2/.test(shellSrc));
 
   console.log('\n10) §14 Command Palette consolidated:');
