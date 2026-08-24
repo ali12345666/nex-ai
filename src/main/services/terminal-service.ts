@@ -1,5 +1,5 @@
 /**
- * NEX AI — Terminal Service (Phase 28)
+ * NEX AI — Terminal Service (Phase 28 + Windows Spawn Fix)
  *
  * Session-based terminal management with proper process lifecycle.
  * Uses safeSpawn (Phase 1 security — no shell, argv arrays only).
@@ -16,6 +16,9 @@
 
 import { safeSpawn, type ExecOptions } from '../security/shell';
 import type { ChildProcess } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 export type TerminalState = 'starting' | 'running' | 'exited' | 'error' | 'killed';
 
@@ -24,9 +27,109 @@ export interface TerminalSession {
   process: ChildProcess | null;
   state: TerminalState;
   cwd: string;
+  shellName: string;
+  shellPath: string;
   exitCode: number | null;
   createdAt: number;
   exitedAt?: number;
+}
+
+/**
+ * Windows shell resolution — resolves FULL PATH to executable.
+ *
+ * ROOT CAUSE of ENOENT: spawn('powershell.exe', ..., { shell: false }) does NOT
+ * search PATH on Windows. It requires the exact executable path. 'powershell.exe'
+ * alone is not a valid path when shell:false.
+ *
+ * Resolution order:
+ *   1. PowerShell 5.1 at ${SystemRoot}\System32\WindowsPowerShell\v1.0\powershell.exe
+ *   2. PowerShell 7 (pwsh.exe) — search common install paths
+ *   3. cmd.exe at process.env.ComSpec
+ *   4. Fallback: C:\Windows\System32\cmd.exe
+ *
+ * On Linux/macOS: uses process.env.SHELL || /bin/bash
+ */
+function resolveShell(): { bin: string; args: string[]; name: string } {
+  const platform = process.platform;
+
+  if (platform === 'win32') {
+    // 1. Try PowerShell 5.1 at standard Windows path
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const ps51Path = path.join(
+      systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+    );
+    if (fs.existsSync(ps51Path)) {
+      return {
+        bin: ps51Path,
+        args: ['-NoLogo', '-NoProfile'],
+        name: 'PowerShell 5.1',
+      };
+    }
+
+    // 2. Try PowerShell 7 (pwsh.exe) — common install locations
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const pwshPaths = [
+      path.join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
+      path.join(systemRoot, 'System32', 'pwsh.exe'),
+    ];
+    for (const p of pwshPaths) {
+      if (fs.existsSync(p)) {
+        return {
+          bin: p,
+          args: ['-NoLogo', '-NoProfile'],
+          name: 'PowerShell 7',
+        };
+      }
+    }
+
+    // 3. Try cmd.exe from ComSpec
+    const comSpec = process.env.ComSpec;
+    if (comSpec && fs.existsSync(comSpec)) {
+      return {
+        bin: comSpec,
+        args: ['/K'], // keep interactive
+        name: 'Command Prompt',
+      };
+    }
+
+    // 4. Hard fallback to standard cmd.exe
+    const cmdPath = path.join(systemRoot, 'System32', 'cmd.exe');
+    if (fs.existsSync(cmdPath)) {
+      return {
+        bin: cmdPath,
+        args: ['/K'],
+        name: 'Command Prompt',
+      };
+    }
+
+    // Last resort — let safeSpawn try bare name (may fail with ENOENT)
+    return {
+      bin: 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile'],
+      name: 'PowerShell (bare)',
+    };
+  }
+
+  // Linux/macOS: use $SHELL, fallback to /bin/bash
+  const shellEnv = process.env.SHELL || '/bin/bash';
+  return {
+    bin: shellEnv,
+    args: ['-i'], // interactive mode
+    name: path.basename(shellEnv),
+  };
+}
+
+/**
+ * Validate and resolve CWD before spawning.
+ * Falls back to os.homedir() if the provided path doesn't exist.
+ */
+function resolveCwd(cwd: string): string {
+  try {
+    if (cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) {
+      return cwd;
+    }
+  } catch { /* path invalid */ }
+  return os.homedir();
 }
 
 export class TerminalService {
@@ -38,42 +141,31 @@ export class TerminalService {
   /**
    * Spawn an interactive shell session in the given directory.
    */
-  spawnSession(cwd: string, shell?: string): TerminalSession {
+  spawnSession(cwd: string, shellOverride?: string): TerminalSession {
     const id = `term-${Date.now()}-${this.nextId++}`;
+    const resolvedCwd = resolveCwd(cwd);
+    const { bin: shellBin, args: shellArgs, name: shellName } = resolveShell();
+
+    // Allow explicit override (for testing or user preference)
+    const finalBin = shellOverride || shellBin;
+    const finalArgs = shellOverride ? [] : shellArgs;
+
     const session: TerminalSession = {
       id,
       process: null,
       state: 'starting',
-      cwd,
+      cwd: resolvedCwd,
+      shellName,
+      shellPath: finalBin,
       exitCode: null,
       createdAt: Date.now(),
     };
 
-    // Determine shell per platform
-    // FIX: Use process.env.SHELL on Linux/macOS instead of hardcoded 'bash'.
-    // Windows: PowerShell with cmd.exe fallback.
-    const platform = process.platform;
-    let shellBin: string;
-    let shellArgs: string[];
-    if (shell) {
-      shellBin = shell;
-      shellArgs = [];
-    } else if (platform === 'win32') {
-      // Windows: PowerShell first, cmd.exe fallback handled by safeSpawn
-      shellBin = 'powershell.exe';
-      shellArgs = ['-NoLogo', '-NoProfile'];
-    } else {
-      // Linux/macOS: use $SHELL env var, fallback to /bin/bash then /bin/sh
-      shellBin = process.env.SHELL || '/bin/bash';
-      shellArgs = ['-i']; // interactive mode
-    }
-
-    const child = safeSpawn(shellBin, shellArgs, { cwd });
+    const child = safeSpawn(finalBin, finalArgs, { cwd: resolvedCwd });
     session.process = child;
     session.state = 'running';
 
-    // FIX: Set encoding to utf-8 so stdout/stderr emit strings (not Buffers).
-    // This ensures proper text handling across all platforms.
+    // Set encoding to utf-8 so stdout/stderr emit strings (not Buffers).
     if (child.stdout) {
       child.stdout.setEncoding('utf-8');
       child.stdout.on('data', (data: string) => {
@@ -158,7 +250,10 @@ export class TerminalService {
 
   /** List active sessions. */
   listSessions(): TerminalSession[] {
-    return [...this.sessions.values()];
+    return [...this.sessions.values()].map(s => ({
+      ...s,
+      process: null, // don't expose ChildProcess to IPC
+    }));
   }
 
   /** Kill ALL sessions (app exit, workspace switch). */

@@ -1398,7 +1398,14 @@ function setupIPC(): void {
       terminalService.onExit(session.id, (code) => {
         mainWindow?.webContents.send(`terminal-exit:${session.id}`, code);
       });
-      return { success: true, sessionId: session.id, state: session.state };
+      return {
+        success: true,
+        sessionId: session.id,
+        state: session.state,
+        shellName: session.shellName,
+        shellPath: session.shellPath,
+        cwd: session.cwd,
+      };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
