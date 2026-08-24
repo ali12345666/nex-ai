@@ -144,6 +144,17 @@ export class PluginLoader {
     this.loaded.clear();
   }
 
+  /**
+   * UI-11: deactivate + unload a single plugin by ID (best-effort).
+   * Called when the user disables a plugin via the UI toggle.
+   */
+  async unload(pluginId: string): Promise<void> {
+    const lp = this.loaded.get(pluginId);
+    if (!lp) return; // not loaded — nothing to do
+    try { await withTimeout(lp.instance.deactivate?.(), 2000, 'deactivate timeout'); } catch { /* best-effort */ }
+    this.loaded.delete(pluginId);
+  }
+
   listLoaded(): LoadedPlugin[] {
     return [...this.loaded.values()];
   }

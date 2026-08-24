@@ -1225,6 +1225,37 @@ function setupIPC(): void {
     return _pluginRegistry;
   }
 
+  // UI-11: PluginLoader bridge — was built (Phase 16) but never instantiated
+  // in main.ts. Plugins-set-enabled handler only flipped a boolean flag;
+  // actual code activation (sandbox + activate + tool registration) never ran.
+  // Now we wire the loader so enabling a plugin actually loads its code.
+  let _pluginLoader: import('./plugins/loader').PluginLoader | null = null;
+  function getPluginLoader(): import('./plugins/loader').PluginLoader {
+    if (!_pluginLoader) {
+      const { PluginLoader } = require('./plugins/loader') as typeof import('./plugins/loader');
+      // Tool registration sink — registers plugin-provided tools into the
+      // shared tool registry so the agent can invoke them.
+      const toolSink = {
+        registerTool: (tool: any) => {
+          try {
+            const { registerTool } = require('./ai/tool-registry') as typeof import('./ai/tool-registry');
+            registerTool(tool);
+          } catch (err) {
+            console.warn(`[NEX AI Plugin] Failed to register tool ${tool?.name}:`, err);
+          }
+        },
+      };
+      _pluginLoader = new PluginLoader({
+        toolRegistry: toolSink,
+        onEvent: (e) => {
+          // Forward sandbox events to the renderer for audit/debugging.
+          mainWindow?.webContents.send('plugin-event', e);
+        },
+      });
+    }
+    return _pluginLoader;
+  }
+
   ipcMain.handle('plugins-list', async () => {
     try {
       const reg = await getPluginRegistry();
@@ -1255,9 +1286,30 @@ function setupIPC(): void {
   ipcMain.handle('plugins-set-enabled', async (_event, pluginId: string, enabled: boolean) => {
     try {
       const reg = await getPluginRegistry();
-      if (!reg.get(pluginId)) return { success: false, error: 'Unknown plugin' };
-      if (enabled) await reg.enable(pluginId); else await reg.disable(pluginId);
-      return { success: true };
+      const entry = reg.get(pluginId);
+      if (!entry) return { success: false, error: 'Unknown plugin' };
+
+      if (enabled) {
+        // UI-11: actually LOAD + ACTIVATE the plugin code (was previously
+        // just flipping a boolean flag — no code ever ran). On failure, the
+        // loader disables the plugin for the session and returns a report;
+        // we propagate the failure reason to the UI.
+        await reg.enable(pluginId);
+        const loader = getPluginLoader();
+        const report = await loader.load(entry);
+        if (report.status === 'failed') {
+          // Auto-disable on activation failure so UI reflects real state.
+          await reg.disable(pluginId);
+          return { success: false, error: `Plugin activation failed: ${report.reason || 'unknown error'}` };
+        }
+        return { success: true, tools: report.tools, events: report.events };
+      } else {
+        // UI-11: deactivate the plugin (best-effort) + flip flag.
+        const loader = getPluginLoader();
+        try { await loader.unload(pluginId); } catch { /* best-effort */ }
+        await reg.disable(pluginId);
+        return { success: true };
+      }
     } catch (err: any) {
       return { success: false, error: err.message };
     }
