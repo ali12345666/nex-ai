@@ -83,9 +83,12 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('\n4) Main branch UNCHANGED (no merges):');
-  // Main should still be at c76936b (the pre-UI-ERA baseline).
-  assert('main at c76936b (pre-UI-ERA baseline)', mainSha.startsWith('c76936b'));
+  console.log('\n4) Main branch updated with UI ERA (merged):');
+  // PERMANENT DIRECTIVE: main must contain all verified UI ERA changes.
+  // Main was ff-merged from ui/release-v1.2.0 integration branch.
+  // The old baseline c76936b is preserved in backup/ui-baseline-v1.1.0 tag.
+  assert('main has advanced past c76936b (UI ERA merged)', !mainSha.startsWith('c76936b'));
+  assert('main is at integration commit e70389a', mainSha.startsWith('e70389a'));
 
   console.log('\n5) Core architecture intact (no Phase 27-37 regressions):');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
