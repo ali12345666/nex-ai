@@ -25,8 +25,9 @@ assert('ChatPanel.tsx still present (fallback)', exists('../../src/renderer/comp
 assert('StatusBar.tsx still present (fallback)', exists('../../src/renderer/components/StatusBar.tsx'));
 assert('WelcomeScreen.tsx still present (fallback)', exists('../../src/renderer/components/WelcomeScreen.tsx'));
 
-console.log('\n2. Active Legacy Token Migration (5 panels):');
-const activePanels = ['GitPanel', 'SearchPanel', 'SnippetPanel', 'DiagnosticsPanel', 'EditorPanel'];
+console.log('\n2. Active Legacy Token Migration (4 panels — SnippetPanel removed UI-09):');
+// UI-09: SnippetPanel deleted (fake data + __monacoEditor global hack + unreachable).
+const activePanels = ['GitPanel', 'SearchPanel', 'DiagnosticsPanel', 'EditorPanel'];
 const legacyPattern = /bg-nex-|text-nex-|border-nex-|placeholder-nex-/;
 for (const name of activePanels) {
   const src = read(`../../src/renderer/components/${name}.tsx`);
@@ -37,9 +38,10 @@ for (const name of activePanels) {
 }
 
 console.log('\n3. All Migrated Panels Summary:');
+// UI-09: SnippetPanel removed from list (file deleted).
 const allMigrated = ['ModelsPanel', 'SettingsPanel', 'KnowledgePanel', 'MemoryPanel', 'PluginsPanel',
   'HardwareMonitorPanel', 'AgentDiffViewer', 'AgentStateDisplay', 'PermissionPrompt', 'CommandPalette',
-  'GitPanel', 'SearchPanel', 'SnippetPanel', 'DiagnosticsPanel', 'EditorPanel'];
+  'GitPanel', 'SearchPanel', 'DiagnosticsPanel', 'EditorPanel'];
 for (const name of allMigrated) {
   const p = name.startsWith('Agent') || name.startsWith('Permission')
     ? `../../src/renderer/components/agent/${name}.tsx`
