@@ -65,12 +65,30 @@ export interface AIProvider {
 import { localChatComplete } from './local-engine';
 import { chatCompletion } from '../ai-service';
 import { isAllowedAIOrigin } from '../security';
+import { enforceAiMode, getCurrentAiMode, type AIMode } from './ai-mode';
 
 /**
  * Route a chat request to the appropriate provider based on config.provider.
  * This is the single entry point used by the `ai-chat` IPC handler.
+ *
+ * UI-02: Server-side aiMode enforcement. The persisted `aiMode` setting is
+ * read from disk and enforced BEFORE origin/apiKey validation. If
+ * `aiMode='local'` and `config.provider` is online, the request is blocked
+ * regardless of what the renderer claimed. Callers may also pass an
+ * explicit `aiModeOverride` (used by tests).
  */
-export async function routeChat(config: ProviderConfig, messages: AIMessage[]): Promise<ProviderResult> {
+export async function routeChat(
+  config: ProviderConfig,
+  messages: AIMessage[],
+  aiModeOverride?: AIMode,
+): Promise<ProviderResult> {
+  // UI-02: Enforce persisted aiMode (defense-in-depth against compromised renderer).
+  const mode = aiModeOverride ?? getCurrentAiMode();
+  const blocked = enforceAiMode(mode, config.provider);
+  if (blocked) {
+    return blocked;
+  }
+
   if (config.provider === 'local') {
     const result = await localChatComplete(config as LocalChatConfig, messages);
     return { ...result, provider: 'local' };

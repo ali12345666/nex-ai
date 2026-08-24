@@ -1,14 +1,42 @@
 /**
- * NEX AI — Bottom Status Dock (Phase 27)
+ * NEX AI — Bottom Status Dock (Phase 27 + UI-02 connectivity control)
  *
  * Real-time system metrics from the P12 SystemMonitorService.
  * Online/Offline, CPU, RAM, sparklines, network info.
  * All data REAL (system-snapshot IPC) — N/A when unavailable.
+ *
+ * UI-02 changes:
+ *   - LOCAL/ONLINE indicator replaced with a real 3-state toggle:
+ *     LOCAL → ONLINE → AUTO → LOCAL (cycles on click).
+ *   - Single source of truth: aiMode from persisted settings (not runtime
+ *     backend status). The runtime status (LOCAL/ONLINE backend) is now
+ *     shown as a small subtext indicator next to the mode.
+ *   - On click, settings are reloaded, aiMode mutated, and persisted via
+ *     the existing `settings-save` IPC. The main process enforces the
+ *     new mode server-side (see src/main/ai/ai-mode.ts).
+ *   - Network availability is shown as a small dot (green=online, gray=offline)
+ *     and is read from `navigator.onLine` (browser API, no IPC needed).
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Cpu, HardDrive, MemoryStick, Wifi, WifiOff, ArrowUp, ArrowDown } from 'lucide-react';
+import { Activity, Cpu, MemoryStick, Wifi, WifiOff, Cloud, Cpu as CpuIcon, Zap } from 'lucide-react';
 import type { SystemMonitorSnapshot } from '../../types/electron';
+
+type AIMode = 'local' | 'online' | 'auto';
+
+const MODE_CYCLE: AIMode[] = ['local', 'online', 'auto'];
+
+const MODE_LABEL: Record<AIMode, string> = {
+  local: 'LOCAL',
+  online: 'ONLINE',
+  auto: 'AUTO',
+};
+
+const MODE_DESCRIPTION: Record<AIMode, string> = {
+  local: 'Local-only. No external calls. Works fully offline.',
+  online: 'Online providers (if network available). Local still allowed.',
+  auto: 'Renderer decides; tries local first, falls back to online.',
+};
 
 /** Rolling history for sparklines */
 function useHistory(value: number | undefined, maxLen = 30): number[] {
@@ -39,10 +67,16 @@ function Sparkline({ data, color, width = 48, height = 16 }: { data: number[]; c
 
 export default function BottomStatusBar() {
   const [snap, setSnap] = useState<SystemMonitorSnapshot | null>(null);
+  const [aiMode, setAiModeState] = useState<AIMode>('local');
+  const [modeSwitching, setModeSwitching] = useState(false);
+  const [networkOnline, setNetworkOnline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  );
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
   const pollRef = useRef<() => void>(() => {});
 
+  // Poll SystemMonitor snapshots every 2s.
   const poll = useCallback(async () => {
     try {
       const r = await window.nexAPI.systemSnapshot();
@@ -61,10 +95,76 @@ export default function BottomStatusBar() {
     };
   }, [poll]);
 
+  // UI-02: Load persisted aiMode from settings on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await window.nexAPI.settingsLoad();
+        if (!cancelled && r?.settings?.aiMode) {
+          setAiModeState(r.settings.aiMode as AIMode);
+        }
+      } catch { /* keep default 'local' */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // UI-02: Subscribe to browser online/offline events.
+  useEffect(() => {
+    const onOnline = () => setNetworkOnline(true);
+    const onOffline = () => setNetworkOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // UI-02: Cycle through modes on click — LOCAL → ONLINE → AUTO → LOCAL.
+  // Saves via the existing `settings-save` IPC; backend enforces server-side.
+  const cycleMode = useCallback(async () => {
+    if (modeSwitching) return;
+    setModeSwitching(true);
+    try {
+      // Load fresh settings (in case user changed them elsewhere).
+      const loaded = await window.nexAPI.settingsLoad();
+      const currentSettings = loaded?.settings || {};
+      const currentMode = (currentSettings.aiMode as AIMode) || 'local';
+      const nextMode = MODE_CYCLE[(MODE_CYCLE.indexOf(currentMode) + 1) % MODE_CYCLE.length];
+      const updatedSettings = { ...currentSettings, aiMode: nextMode };
+      const result = await window.nexAPI.settingsSave(updatedSettings);
+      if (result?.success) {
+        setAiModeState(nextMode);
+      }
+    } catch (err) {
+      // Silently fail — keep current mode. Log for debugging only.
+      console.warn('[NEX AI] Failed to switch aiMode:', err);
+    } finally {
+      setModeSwitching(false);
+    }
+  }, [modeSwitching]);
+
   const cpuHistory = useHistory(snap?.cpu.usagePercent);
   const ramHistory = useHistory(snap?.memory.usagePercent);
   const rt = snap?.aiRuntime;
-  const isLocal = snap ? rt?.backend === 'local' || rt?.backend === 'none' : true;
+  // UI-02: runtime backend status — separate concept from aiMode.
+  // Shows whether a local or online backend is ACTUALLY running right now.
+  const runtimeBackend = rt?.backend;
+  const runtimeLabel = runtimeBackend === 'local'
+    ? 'local runtime'
+    : runtimeBackend && runtimeBackend !== 'none'
+      ? `${runtimeBackend} runtime`
+      : 'no runtime';
+
+  // Mode-specific styling.
+  const modeColor = aiMode === 'local'
+    ? 'var(--nex-accent)'
+    : aiMode === 'online'
+      ? (networkOnline ? 'var(--nex-success)' : 'var(--nex-warning, #f59e0b)')
+      : 'var(--nex-text-dim)';
+
+  const ModeIcon = aiMode === 'local' ? CpuIcon : aiMode === 'online' ? Cloud : Zap;
 
   return (
     <footer
@@ -80,22 +180,36 @@ export default function BottomStatusBar() {
       role="status"
       aria-label="System status bar"
     >
-      {/* Online/Offline */}
-      <div className="flex items-center gap-2 shrink-0">
-        {isLocal ? (
-          <>
-            <WifiOff size={12} style={{ color: 'var(--nex-accent)' }} />
-            <span style={{ color: 'var(--nex-accent-text)', fontWeight: 500 }}>LOCAL</span>
-            <span style={{ color: 'var(--nex-text-muted)' }}>offline-first</span>
-          </>
-        ) : (
-          <>
-            <Wifi size={12} style={{ color: 'var(--nex-success)' }} className="nex-animate-pulse" />
-            <span style={{ color: 'var(--nex-success)', fontWeight: 500 }}>ONLINE</span>
-            <span style={{ color: 'var(--nex-text-muted)' }}>connected</span>
-          </>
+      {/* UI-02: aiMode toggle (clickable — cycles LOCAL → ONLINE → AUTO) */}
+      <button
+        onClick={cycleMode}
+        disabled={modeSwitching}
+        className="flex items-center gap-2 shrink-0 nex-click nex-focus rounded-md px-2 py-1 transition-all"
+        style={{
+          color: modeColor,
+          border: '1px solid var(--nex-glass-border)',
+          cursor: modeSwitching ? 'wait' : 'pointer',
+          opacity: modeSwitching ? 0.6 : 1,
+        }}
+        aria-label={`AI mode: ${MODE_LABEL[aiMode]}. Click to cycle to next mode.`}
+        title={MODE_DESCRIPTION[aiMode]}
+      >
+        <ModeIcon size={12} aria-hidden />
+        <span style={{ fontWeight: 500 }}>{MODE_LABEL[aiMode]}</span>
+        {/* Network availability dot (only meaningful for online/auto modes) */}
+        {aiMode !== 'local' && (
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{
+              background: networkOnline ? 'var(--nex-success)' : 'var(--nex-text-muted)',
+              boxShadow: networkOnline ? '0 0 4px var(--nex-success)' : 'none',
+            }}
+            aria-label={networkOnline ? 'Network online' : 'Network offline'}
+            title={networkOnline ? 'Network online' : 'Network offline'}
+          />
         )}
-      </div>
+        <span style={{ color: 'var(--nex-text-muted)', fontSize: 9 }}>{runtimeLabel}</span>
+      </button>
 
       {/* Divider */}
       <div style={{ width: 1, height: 18, background: 'var(--nex-glass-border)' }} />
