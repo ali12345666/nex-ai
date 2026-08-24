@@ -21,6 +21,7 @@ import {
   abortInference as _abortInference,
   getLoadedModelInfo as _getLoadedModelInfo,
   shutdownLlama as _shutdownLlama,
+  getGpuBackend as _getGpuBackend,
 } from '../inference';
 import { noteInferenceStats } from '../runtime';
 
@@ -104,7 +105,9 @@ export class LlamaCppRuntime implements AIRuntime {
       // RAM/VRAM stats not exposed by node-llama-cpp v3 by default
       ramUsageBytes: undefined,
       vramUsageBytes: undefined,
-      gpuBackend: 'cpu', // will be 'vulkan' / 'cuda' when GPU works
+      // UI-03: use the ACTUAL GPU backend reported by llama.cpp (was
+      // hardcoded to 'cpu' — fake telemetry when GPU offload active).
+      gpuBackend: _getGpuBackend(),
       threadsInUse: undefined,
     };
   }

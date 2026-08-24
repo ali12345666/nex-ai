@@ -75,6 +75,8 @@ let _currentSession: any = null;
 // getSequence() per completion exhausted the pool after one call.
 let _ctxSequence: any = null;
 let _abortFlag: boolean = false;
+// UI-03: actual GPU backend detected from llama.cpp (was hardcoded 'cpu').
+let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
 
 async function getLlamaInstance() {
   if (!_llama) {
@@ -89,9 +91,31 @@ async function getLlamaInstance() {
     const mod = await dynamicImport('node-llama-cpp');
     _llama = await mod.getLlama();
     _LlamaChatSession = mod.LlamaChatSession;
-    console.log('[NEX AI Local] Engine ready');
+    // UI-03: capture the ACTUAL GPU backend reported by llama.cpp (was
+    // previously hardcoded to 'cpu' in llamacpp-runtime.getStats — fake
+    // telemetry when GPU offload is actually active).
+    // node-llama-cpp v3 Llama.gpu returns: 'metal' | 'cuda' | 'vulkan' | false.
+    try {
+      const gpu = (_llama as any).gpu;
+      if (gpu === 'metal' || gpu === 'cuda' || gpu === 'vulkan') {
+        _gpuBackend = gpu;
+      } else {
+        _gpuBackend = 'cpu';
+      }
+    } catch {
+      _gpuBackend = 'cpu';
+    }
+    console.log(`[NEX AI Local] Engine ready (GPU backend: ${_gpuBackend})`);
   }
   return _llama;
+}
+
+/**
+ * UI-03: return the actual GPU backend in use by the llama.cpp engine.
+ * Returns 'cpu' before the engine is initialized (safe default).
+ */
+export function getGpuBackend(): 'cpu' | 'cuda' | 'metal' | 'vulkan' {
+  return _gpuBackend;
 }
 
 /**
@@ -137,6 +161,12 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   touchModel(model.id);
 
   noteLoadedModel(model.name);
+  // UI-03: surface the model's configured context window size so the UI
+  // (BottomStatusBar / HardwareMonitor) can show context usage even for
+  // direct chat (was previously only populated for agent tasks).
+  noteInferenceStats({
+    contextMaxTokens: opts.contextSize ?? model.contextSize ?? 2048,
+  });
   console.log(`[NEX AI Local] Model loaded: ${model.name}`);
 }
 

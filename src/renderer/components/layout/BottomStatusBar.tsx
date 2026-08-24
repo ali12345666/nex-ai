@@ -1,13 +1,19 @@
 /**
- * NEX AI — Bottom Status Dock (Phase 27)
+ * NEX AI — Bottom Status Dock (Phase 27 + UI-03 telemetry indicators)
  *
  * Real-time system metrics from the P12 SystemMonitorService.
- * Online/Offline, CPU, RAM, sparklines, network info.
+ * Online/Offline, CPU, RAM, GPU, VRAM, tok/s, agent state, sparklines.
  * All data REAL (system-snapshot IPC) — N/A when unavailable.
+ *
+ * UI-03 additions:
+ *   - GPU% indicator (from snapshot.gpus[0].utilizationPercent)
+ *   - VRAM% indicator (from snapshot.gpus[0].vramPercent)
+ *   - Agent state indicator (from snapshot.agent)
+ *   - All values N/A when backend reports them as undefined — never fake.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Cpu, HardDrive, MemoryStick, Wifi, WifiOff, ArrowUp, ArrowDown } from 'lucide-react';
+import { Activity, Cpu, HardDrive, MemoryStick, Wifi, WifiOff, ArrowUp, ArrowDown, Gauge, Bot } from 'lucide-react';
 import type { SystemMonitorSnapshot } from '../../types/electron';
 
 /** Rolling history for sparklines */
@@ -66,6 +72,20 @@ export default function BottomStatusBar() {
   const rt = snap?.aiRuntime;
   const isLocal = snap ? rt?.backend === 'local' || rt?.backend === 'none' : true;
 
+  // UI-03: GPU/VRAM/agent telemetry — all from snapshot, N/A when undefined.
+  const gpu = snap?.gpus?.[0];
+  const gpuPercent = gpu?.utilizationPercent;
+  const vramPercent = gpu?.vramPercent;
+  const agent = snap?.agent;
+  const agentActive = agent && agent.queueState !== 'idle' && agent.queueState !== 'unknown';
+  const agentLabel = agentActive
+    ? (agent.activeTool
+        ? `tool: ${agent.activeTool}`
+        : agent.currentTask
+          ? `task: ${agent.currentTask.slice(0, 24)}${agent.currentTask.length > 24 ? '…' : ''}`
+          : agent.queueState)
+    : null;
+
   return (
     <footer
       className="nex-glass-strong flex items-center gap-6 px-5 shrink-0 select-none"
@@ -120,6 +140,28 @@ export default function BottomStatusBar() {
         <Sparkline data={ramHistory} color="var(--nex-accent-secondary)" />
       </div>
 
+      {/* UI-03: GPU (only when a GPU is reported by backend) */}
+      {gpu && (
+        <div className="flex items-center gap-2">
+          <Gauge size={12} aria-hidden />
+          <span>GPU</span>
+          <span style={{ color: 'var(--nex-text-dim)', fontWeight: 500, minWidth: 32 }}>
+            {gpuPercent !== undefined ? `${Math.round(gpuPercent)}%` : 'N/A'}
+          </span>
+        </div>
+      )}
+
+      {/* UI-03: VRAM (only when VRAM data is available) */}
+      {gpu && vramPercent !== undefined && (
+        <div className="flex items-center gap-2">
+          <HardDrive size={12} aria-hidden />
+          <span>VRAM</span>
+          <span style={{ color: 'var(--nex-text-dim)', fontWeight: 500, minWidth: 32 }}>
+            {`${Math.round(vramPercent)}%`}
+          </span>
+        </div>
+      )}
+
       {/* AI Model */}
       <div className="flex items-center gap-2">
         <Activity size={12} aria-hidden />
@@ -129,7 +171,27 @@ export default function BottomStatusBar() {
         {rt?.lastTokensPerSecond !== undefined && rt.lastTokensPerSecond > 0 && (
           <span style={{ color: 'var(--nex-accent-text)' }}>{Math.round(rt.lastTokensPerSecond)} tok/s</span>
         )}
+        {/* UI-03: context usage (only when contextMaxTokens is populated) */}
+        {rt?.contextMaxTokens !== undefined && rt.contextMaxTokens > 0 && (
+          <span style={{ color: 'var(--nex-text-muted)' }}>
+            ctx {rt.contextUsedTokens !== undefined ? `${Math.round(rt.contextUsedTokens / rt.contextMaxTokens * 100)}%` : '0%'}
+          </span>
+        )}
       </div>
+
+      {/* UI-03: Agent state (only when an agent task is active) */}
+      {agentLabel && agent && (
+        <div
+          className="flex items-center gap-2 nex-glass px-2 py-0.5 rounded-md"
+          style={{ border: '1px solid var(--nex-glass-border)' }}
+          title={`Agent: ${agent.queueState}${agent.currentTask ? ` — ${agent.currentTask}` : ''}`}
+        >
+          <Bot size={12} aria-hidden style={{ color: 'var(--nex-accent-text)' }} />
+          <span style={{ color: 'var(--nex-accent-text)', fontWeight: 500 }}>
+            {agentLabel}
+          </span>
+        </div>
+      )}
 
       {/* Spacer */}
       <div className="flex-1" />
