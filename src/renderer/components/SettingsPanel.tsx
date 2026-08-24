@@ -421,7 +421,12 @@ export default function SettingsPanel() {
                 <Row label="Engine" value="node-llama-cpp (bundled)" mono />
                 <Row label="Models" value={localModelCount} />
                 <Row label="Status" value={localModelCount > 0 ? 'Ready' : 'No models'} />
-                <ActionButton onClick={() => window.nexAPI.openFolder()}>
+                <ActionButton onClick={async () => {
+                  const r = await window.nexAPI.openFile();
+                  if (!r.canceled && r.path) {
+                    await window.nexAPI.modelAdd(r.path, { category: 'embedding' }).catch(() => {});
+                  }
+                }}>
                   Add Model File
                 </ActionButton>
               </Card>

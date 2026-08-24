@@ -274,24 +274,29 @@ export default function AppShell() {
               Positioned left side of center area, with gap from Chat.
               pointer-events enabled so panel is interactive.
               UI-16 Settings Fix: Settings panel gets wider width (760px) for
-              readability. Other panels keep 420px. */}
-          {!showOrb && leftPanel() && (
-            <div
-              className="absolute nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
-              style={{
-                top: 8,
-                bottom: 8,
-                left: 8,
-                width: view === 'settings' ? 'min(760px, 70%)' : 420,
-                maxWidth: view === 'settings' ? '70%' : '42%',
-                borderRadius: 'var(--nex-radius-lg)',
-                border: '1px solid var(--nex-panel-border)',
-                zIndex: 5,
-              }}
-            >
-              {leftPanel()}
-            </div>
-          )}
+              readability. Other panels keep 420px.
+              FIX: leftPanel() called ONCE — stored in variable to prevent
+              double element creation (was called in condition + body). */}
+          {(() => {
+            const panel = !showOrb ? leftPanel() : null;
+            return panel && (
+              <div
+                className="absolute nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
+                style={{
+                  top: 8,
+                  bottom: 8,
+                  left: 8,
+                  width: view === 'settings' ? 'min(760px, 70%)' : 420,
+                  maxWidth: view === 'settings' ? '70%' : '42%',
+                  borderRadius: 'var(--nex-radius-lg)',
+                  border: '1px solid var(--nex-panel-border)',
+                  zIndex: 5,
+                }}
+              >
+                {panel}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Right: AI Chat Panel */}
@@ -391,6 +396,7 @@ function OrbLoading() {
 }
 
 function NoProject() {
+  const { setProjectPath } = useStore();
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center">
       <div
@@ -405,7 +411,10 @@ function NoProject() {
       <button
         className="nex-click nex-focus px-3 py-1.5 rounded-lg text-xs font-medium nex-glass-accent"
         style={{ color: 'var(--nex-accent-text)' }}
-        onClick={() => window.nexAPI.openFolder()}
+        onClick={async () => {
+          const r = await window.nexAPI.openFolder();
+          if (!r.canceled && r.path) setProjectPath(r.path);
+        }}
       >
         Open Project
       </button>

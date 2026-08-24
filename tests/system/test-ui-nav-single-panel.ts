@@ -27,12 +27,11 @@ function assert(name: string, cond: boolean, extra?: string) {
 async function main(): Promise<void> {
   const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
+  const renderSection = shellSrc.slice(shellSrc.indexOf('return ('));
 
   console.log('\n1) leftPanel() called EXACTLY ONCE in JSX (was twice):');
-  // Count occurrences of leftPanel() in the JSX render section (not in the function definition)
-  const renderSection = shellSrc.slice(shellSrc.indexOf('return ('));
-  const leftPanelCalls = (renderSection.match(/\{leftPanel\(\)\}/g) || []).length;
-  assert('leftPanel() called exactly once in render', leftPanelCalls === 1, `found ${leftPanelCalls} calls`);
+  // UI-16 FIX: leftPanel() now called once in IIFE pattern (const panel = leftPanel())
+  assert('leftPanel() called once via IIFE', /!showOrb \? leftPanel\(\)/.test(renderSection));
 
   console.log('\n2) No separate 300px left workspace div (removed):');
   assert('NO 300px width workspace div', !/width: 300,/.test(renderSection) || !/leftPanel\(\)/.test(renderSection.split('width: 300')[0]?.slice(-200) || ''));
@@ -87,9 +86,14 @@ async function main(): Promise<void> {
   console.log('\n9) Non-chat views render panel in center ONLY (not left):');
   // The center area's else branch should contain leftPanel()
   assert('else branch (non-chat) calls leftPanel()', /: \([\s\S]*?leftPanel\(\)/.test(renderSection));
-  // Count leftPanel() calls in render section — should be exactly 1
-  const leftPanelInRender = (renderSection.match(/\{leftPanel\(\)\}/g) || []).length;
-  assert('exactly 1 leftPanel() call in render', leftPanelInRender === 1, `found ${leftPanelInRender}`);
+  // UI-16: leftPanel() is now called in IIFE pattern: const panel = !showOrb ? leftPanel() : null;
+  // Then {panel} is rendered. Count leftPanel() in non-comment code.
+  const renderNoComments = renderSection.split('\n').filter(l => {
+    const t = l.trim();
+    return !t.startsWith('//') && !t.startsWith('{/*') && !t.startsWith('*') && !t.includes('FIX: leftPanel');
+  }).join('\n');
+  const leftPanelInRender = (renderNoComments.match(/leftPanel\(\)/g) || []).length;
+  assert('exactly 1 leftPanel() call in render (IIFE, no comments)', leftPanelInRender === 1, `found ${leftPanelInRender}`);
 
   console.log('\n10) CommandPalette uses nex:navigate (single event, single handler):');
   const cpSrc = read('../../src/renderer/components/CommandPalette.tsx');

@@ -58,7 +58,10 @@ function NoProject() {
       <button
         className="nex-click nex-focus px-3 py-1.5 rounded-lg text-xs font-medium nex-glass-accent"
         style={{ color: 'var(--nex-accent-text)' }}
-        onClick={() => window.nexAPI.openFolder()}
+        onClick={async () => {
+          const r = await window.nexAPI.openFolder();
+          if (!r.canceled && r.path) useStore.getState().setProjectPath(r.path);
+        }}
       >
         Open Project
       </button>
@@ -171,7 +174,10 @@ function PreviewPanel({ projectPath }: { projectPath: string | null }) {
             and use the system browser. For dev servers, use the Terminal tab.
           </p>
           <button
-            onClick={() => window.nexAPI.openFolder()}
+            onClick={async () => {
+              const r = await window.nexAPI.openFolder();
+              if (!r.canceled && r.path) useStore.getState().setProjectPath(r.path);
+            }}
             className="nex-click nex-focus self-start px-3 py-1.5 rounded-lg text-[10px] font-medium nex-glass-accent"
             style={{ color: 'var(--nex-accent-text)' }}
           >

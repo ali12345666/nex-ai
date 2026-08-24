@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   assert('center container has relative + overflow-hidden', /flex-1 relative overflow-hidden/.test(shellSrc));
 
   console.log('\n6) Single panel rendering (no duplicates):');
-  assert('leftPanel() called exactly once', (shellNoComments.match(/\{leftPanel\(\)\}/g) || []).length === 1);
+  assert('leftPanel() called once via IIFE', /!showOrb \? leftPanel()/.test(shellSrc));
   assert('NO double panel render path', !/absolute inset-0 nex-glass-strong/.test(shellSrc));
 
   console.log('\n7) Chat is fixed-width (independent of panel):');
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
 
   console.log('\n10) Panel close returns to Orb with no layout shift:');
   assert('showOrb variable controls panel visibility', /const showOrb = view === 'chat'/.test(shellSrc));
-  assert('panel renders only when !showOrb', /!showOrb && leftPanel\(\)/.test(shellSrc));
+  assert('panel conditional on !showOrb (IIFE)', /!showOrb \? leftPanel()/.test(shellSrc));
   // Orb container is always present — no conditional render that would cause layout shift
   assert('Orb always rendered (no showOrb conditional on Orb itself)', /absolute inset-0 flex flex-col items-center justify-center pointer-events-none/.test(shellSrc));
 

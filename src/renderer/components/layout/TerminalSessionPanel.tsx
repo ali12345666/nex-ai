@@ -37,6 +37,7 @@ export default function TerminalSessionPanel() {
   const fitRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>('starting');
+  const [shellName, setShellName] = useState<string>('');
   const cleanupFns = useRef<Array<() => void>>([]);
 
   const spawnSession = useCallback(async (cwd: string) => {
@@ -55,6 +56,10 @@ export default function TerminalSessionPanel() {
     }
 
     sessionIdRef.current = result.sessionId;
+    // Show shell name in terminal (e.g., "PowerShell 5.1" or "Command Prompt")
+    if ((result as any).shellName) {
+      setShellName((result as any).shellName);
+    }
     setSessionState('running');
 
     // Wire output listener
@@ -180,7 +185,7 @@ export default function TerminalSessionPanel() {
         <div className="flex items-center gap-2">
           <TerminalIcon size={12} style={{ color: 'var(--nex-accent)' }} />
           <span className="text-[10px] font-semibold tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
-            TERMINAL
+            TERMINAL{shellName ? ` — ${shellName}` : ''}
           </span>
           {/* State indicator */}
           <span className="flex items-center gap-1 ml-1">
