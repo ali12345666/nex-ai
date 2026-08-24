@@ -987,6 +987,11 @@ function setupIPC(): void {
 
   ipcMain.handle('knowledge-ingest', async (_event, projectPath: string, filePath: string) => {
     try {
+      // UI-10: security guard — ensure filePath is inside the project workspace.
+      // Was missing per audit 1-c GAP-4: AI could ingest arbitrary files
+      // (e.g., ~/.ssh/id_rsa) by calling this IPC with an out-of-workspace path.
+      const { assertPathInside } = await import('./security');
+      assertPathInside(filePath, [projectPath]);
       const svc = await knowledgeServiceFor(projectPath);
       const report = await svc.ingestWithReport(filePath);
       return { success: report.status === 'indexed' || report.status === 'skipped-unchanged', report };
@@ -997,6 +1002,11 @@ function setupIPC(): void {
 
   ipcMain.handle('knowledge-ingest-many', async (_event, projectPath: string, filePaths: string[]) => {
     try {
+      // UI-10: security guard — ensure ALL filePaths are inside project workspace.
+      const { assertPathInside } = await import('./security');
+      for (const fp of (filePaths || [])) {
+        assertPathInside(fp, [projectPath]);
+      }
       const svc = await knowledgeServiceFor(projectPath);
       const reports = [];
       for (const fp of (filePaths || []).slice(0, 500)) {
