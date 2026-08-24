@@ -79,8 +79,11 @@ assert('per-core grid capped (16 shown)', /slice\(0, 16\)/.test(panel));
 // Sidebar/App wiring
 const sidebar = read('../../src/renderer/components/Sidebar.tsx');
 assert("sidebar 'system' view (Activity icon)", sidebar.includes("'system' as SidebarView") && sidebar.includes('Activity'));
-const app = read('../../src/renderer/App.tsx');
-assert('panel mounted WITHOUT project requirement', /system: <HardwareMonitorPanel \/>/.test(app));
+// UI-08 INTEGRATION FIX: App.tsx no longer has a panelMap (legacy layout removed).
+// HardwareMonitorPanel is now routed via AppShell.tsx's leftPanel() function.
+// Check that AppShell routes 'monitor' view to HardwareMonitorPanel.
+const appShell = read('../../src/renderer/components/layout/AppShell.tsx');
+assert('panel mounted WITHOUT project requirement', /case 'monitor': return <Suspense fallback=\{<PanelLoading \/>\}><HardwareMonitorPanel/.test(appShell));
 
 console.log('\nsecurity static:');
 assert('panel: no arbitrary command strings', !/(['"`])(rm |del |curl |wget |powershell |cmd )\1/.test(panel));

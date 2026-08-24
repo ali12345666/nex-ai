@@ -61,8 +61,15 @@ assert('5-min staleness pin intact', /5 \* 60 \* 1000/.test(rt));
 
 console.log('\nB) command palette coverage:');
 const palette = fs.readFileSync(path.join(__dirname, '../../src/renderer/components/CommandPalette.tsx'), 'utf-8');
-for (const [id, view] of [['view-knowledge', 'knowledge'], ['view-memory', 'memory'], ['view-system-monitor', 'system'], ['view-plugins', 'plugins']] as const) {
-  assert(`palette: '${id}' → ${view}`, palette.includes(`id: '${id}'`) && palette.includes(`setSidebarView('${view}')`));
+// UI-06 INTEGRATION FIX: palette commands now use navigateTo(view) which
+// dispatches nex:navigate CustomEvent (was setSidebarView — dead store call
+// that AppShell never read). The mapping changed:
+//   view-system-monitor → navigateTo('monitor')  (was setSidebarView('system'))
+//   view-knowledge → navigateTo('knowledge')
+//   view-memory → navigateTo('memory')
+//   view-plugins → navigateTo('plugins')
+for (const [id, view] of [['view-knowledge', 'knowledge'], ['view-memory', 'memory'], ['view-system-monitor', 'monitor'], ['view-plugins', 'plugins']] as const) {
+  assert(`palette: '${id}' → ${view}`, palette.includes(`id: '${id}'`) && palette.includes(`navigateTo('${view}')`));
 }
 assert('palette: labels human-readable', ['Knowledge Base', 'System Monitor', 'Plugins'].every((l) => palette.includes(l)));
 const storeSrc = fs.readFileSync(path.join(__dirname, '../../src/renderer/store/useStore.ts'), 'utf-8');

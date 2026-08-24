@@ -80,9 +80,13 @@ async function main(): Promise<void> {
   console.log('\n7) Legacy component files still exist (not deleted — separate decision):');
   // These are still imported by other tests / potential future re-wiring.
   // Deletion would be a separate phase (and risks breaking p36 legacy audit).
+  // UI-09 INTEGRATION FIX: SnippetPanel.tsx was removed from this list because
+  // UI-09 deleted the file (fake data + __monacoEditor hack). The original
+  // UI-08 test expected all 15 files to still exist; after merging UI-09,
+  // SnippetPanel no longer exists.
   const componentFiles = [
     'TitleBar.tsx', 'Sidebar.tsx', 'ChatPanel.tsx', 'TerminalPanel.tsx',
-    'FileExplorer.tsx', 'SearchPanel.tsx', 'SnippetPanel.tsx', 'DiagnosticsPanel.tsx',
+    'FileExplorer.tsx', 'SearchPanel.tsx', 'DiagnosticsPanel.tsx',
     'ModelsPanel.tsx', 'WelcomeScreen.tsx', 'StatusBar.tsx', 'EditorPanel.tsx',
     'GitPanel.tsx', 'InputDialog.tsx', 'RecentProjects.tsx',
   ];
