@@ -41,6 +41,11 @@ const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const PluginsPanel = lazy(() => import('../PluginsPanel'));
 const HardwareMonitorPanel = lazy(() => import('../HardwareMonitorPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
+// UI-05: previously-dead nav items now wired to real panels.
+const GitPanel = lazy(() => import('../GitPanel'));
+const AgentsPanel = lazy(() => import('./AgentsPanel'));
+const ToolsPanel = lazy(() => import('./ToolsPanel'));
+const OverviewPanel = lazy(() => import('./OverviewPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -140,22 +145,23 @@ export default function AppShell() {
 
   // Left workspace content based on active view
   const leftPanel = () => {
-    if (!projectPath && view !== 'terminal' && view !== 'settings') {
+    if (!projectPath && view !== 'terminal' && view !== 'settings' && view !== 'home') {
       return <NoProject />;
     }
     switch (view) {
+      case 'home': return <Suspense fallback={<PanelLoading />}><OverviewPanel onNavigate={navigate as any} /></Suspense>;
       case 'terminal': return <Suspense fallback={<PanelLoading />}><TerminalSessionPanel /></Suspense>;
       case 'files':
       case 'code': return <Suspense fallback={<PanelLoading />}><WorkspaceExplorer /></Suspense>;
+      case 'agents': return <Suspense fallback={<PanelLoading />}><AgentsPanel /></Suspense>;
+      case 'tools': return <Suspense fallback={<PanelLoading />}><ToolsPanel /></Suspense>;
+      case 'git': return <Suspense fallback={<PanelLoading />}><GitPanel /></Suspense>;
       case 'knowledge': return <Suspense fallback={<PanelLoading />}><KnowledgePanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'plugins': return <Suspense fallback={<PanelLoading />}><PluginsPanel /></Suspense>;
       case 'monitor': return <Suspense fallback={<PanelLoading />}><HardwareMonitorPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
-      case 'agents':
-      case 'git':
-      case 'tools':
-      default: return <WorkspacePanel view={view} />;
+      default: return <NoProject />;
     }
   };
 
@@ -367,25 +373,6 @@ function NoProject() {
   );
 }
 
-function WorkspacePanel({ view }: { view: NexView }) {
-  const labels: Record<string, string> = {
-    agents: 'Agent Tasks', git: 'Source Control', tools: 'Tool Manager',
-    home: 'Overview', code: 'Code Editor',
-  };
-  return (
-    <div className="flex flex-col items-center justify-center h-full gap-4">
-      <div
-        className="flex items-center justify-center w-14 h-14 rounded-full nex-glass-accent"
-        style={{ border: '1px solid var(--nex-panel-border)' }}
-      >
-        <span className="text-lg" style={{ color: 'var(--nex-accent)' }}>NX</span>
-      </div>
-      <p className="text-sm font-medium" style={{ color: 'var(--nex-text-dim)' }}>
-        {labels[view] || view}
-      </p>
-      <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
-        Panel integrates with existing backend
-      </p>
-    </div>
-  );
-}
+// UI-05: WorkspacePanel placeholder function removed — all 12 nav items
+// now route to real panels (OverviewPanel, AgentsPanel, ToolsPanel, GitPanel).
+// The fake "Panel integrates with existing backend" placeholder is gone.
