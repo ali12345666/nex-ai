@@ -33,7 +33,10 @@ assert('dismiss resets state', ebSrc.includes('hasError: false'));
 
 const appSrc = read('../../src/renderer/App.tsx');
 assert('App.tsx wraps AppShell path', appSrc.includes('<NexErrorBoundary>'));
-assert('App.tsx wraps legacy path too', appSrc.split('<NexErrorBoundary>').length >= 3);
+// UI-08: legacy fallback layout was removed (was dead code — AppShellReady
+// was always non-null). Now there's only ONE NexErrorBoundary wrapper (around
+// the single AppShell render path), not two (legacy + new).
+assert('App.tsx has single NexErrorBoundary wrapper (legacy removed)', appSrc.split('<NexErrorBoundary>').length === 2);
 
 // ═══ Token Migration (5 panels) ═══
 console.log('\nToken migration structural:');

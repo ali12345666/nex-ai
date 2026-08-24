@@ -20,10 +20,16 @@ const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
 console.log('\n1. Production Bug Fix (require to import):');
 const appSrc = read('../../src/renderer/App.tsx');
 assert('AppShell statically imported', appSrc.includes('import AppShell from'));
-assert('AppShellReady is always set (no try/catch null)', appSrc.includes('AppShellReady') && appSrc.includes('= AppShell'));
+// UI-08: AppShellReady variable was removed — legacy fallback layout was dead
+// code (AppShellReady was always non-null, so the `if (AppShellReady)` branch
+// always won). Now AppShell is rendered directly with no fallback branch.
+assert('AppShellReady variable removed (dead code eliminated)', !appSrc.includes('AppShellReady'));
 // Check no actual require() call (only the comment mentions it)
 const appNoComments = appSrc.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 assert('no require() call in code (only in comments)', !appNoComments.includes("require('./"));
+// UI-08: legacy fallback layout (TitleBar/Sidebar/StatusBar/ChatPanel etc)
+// is no longer present in App.tsx — was 47 lines of unreachable code.
+assert('legacy fallback layout removed', !appSrc.includes('<TitleBar') && !appSrc.includes('<Sidebar') && !appSrc.includes('<StatusBar'));
 
 console.log('\n2. E2E Test Infrastructure:');
 const e2eSrc = read('../../tests/e2e/test-p36-ui.js');
