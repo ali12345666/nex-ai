@@ -11,7 +11,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import {
-  Terminal as TerminalIcon, X, Trash2, Loader2, Circle,
+  Terminal as TerminalIcon, Trash2, Loader2, Circle,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
@@ -26,7 +26,12 @@ const STATE_COLORS: Record<SessionState, string> = {
 };
 
 export default function TerminalSessionPanel() {
-  const { projectPath, terminalVisible, toggleTerminal } = useStore();
+  const { projectPath } = useStore();
+  // FIX: Removed terminalVisible dependency — this panel is rendered inside
+  // WorkspacePanel's terminal tab. The tab visibility is controlled by
+  // WorkspacePanel, NOT by terminalVisible. Using terminalVisible caused
+  // the panel to render null when user clicked the Terminal tab (because
+  // terminalVisible defaults to false and is only set via Ctrl+` shortcut).
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -69,7 +74,7 @@ export default function TerminalSessionPanel() {
   }, []);
 
   useEffect(() => {
-    if (!terminalVisible || !containerRef.current) return;
+    if (!containerRef.current) return;
 
     // Create xterm instance
     const term = new Terminal({
@@ -116,10 +121,9 @@ export default function TerminalSessionPanel() {
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(containerRef.current);
 
-    // Spawn in workspace
-    if (projectPath) {
-      spawnSession(projectPath);
-    }
+    // Spawn in workspace (or home dir if no project)
+    const spawnCwd = projectPath || (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
+    spawnSession(spawnCwd);
 
     // Listen for "Open Terminal Here" from Explorer
     const openHereHandler = (e: Event) => {
@@ -146,14 +150,15 @@ export default function TerminalSessionPanel() {
       term.dispose();
       xtermRef.current = null;
     };
-  }, [terminalVisible]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-spawn when project changes
   useEffect(() => {
-    if (terminalVisible && projectPath && sessionIdRef.current === null) {
-      spawnSession(projectPath);
+    if (sessionIdRef.current === null) {
+      const spawnCwd = projectPath || (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
+      spawnSession(spawnCwd);
     }
-  }, [projectPath, terminalVisible, spawnSession]);
+  }, [projectPath, spawnSession]);
 
   const handleClear = () => xtermRef.current?.clear();
   const handleCtrlC = () => {
@@ -162,7 +167,8 @@ export default function TerminalSessionPanel() {
     }
   };
 
-  if (!terminalVisible) return null;
+  // FIX: Always render — tab visibility is controlled by WorkspacePanel
+  // (was: if (!terminalVisible) return null; — this caused terminal tab to be blank)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -207,15 +213,6 @@ export default function TerminalSessionPanel() {
           >
             <Trash2 size={10} />
           </button>
-          <button
-            onClick={toggleTerminal}
-            className="p-1 rounded transition-colors hover:bg-white/[0.06]"
-            style={{ color: 'var(--nex-text-muted)' }}
-            title="Close"
-            aria-label="Close terminal"
-          >
-            <X size={10} />
-          </button>
         </div>
       </div>
 
@@ -228,7 +225,7 @@ export default function TerminalSessionPanel() {
         style={{ borderTop: '1px solid var(--nex-glass-border)' }}
       >
         <span className="text-[9px] text-[var(--nex-text-muted)] font-mono">
-          {projectPath ? projectPath.split('/').pop() : '~'}
+          {projectPath ? projectPath.split(/[\\/]/).pop() : '~'}
         </span>
         {sessionState === 'starting' && <Loader2 size={9} className="animate-spin text-[var(--nex-warning)]" />}
       </div>

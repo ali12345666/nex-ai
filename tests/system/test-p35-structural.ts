@@ -75,7 +75,8 @@ assert('ConversationHistory search has aria-label', histSrc.includes('aria-label
 const termSrc = read('../../src/renderer/components/layout/TerminalSessionPanel.tsx');
 assert('Terminal Ctrl+C has aria-label', termSrc.includes('aria-label="Send Ctrl+C"'));
 assert('Terminal Clear has aria-label', termSrc.includes('aria-label="Clear terminal"'));
-assert('Terminal Close has aria-label', termSrc.includes('aria-label="Close terminal"'));
+// FIX: Terminal Close button removed (terminal now in WorkspacePanel tabs)
+assert('Terminal Clear has aria-label', termSrc.includes('aria-label="Clear terminal"'));
 
 // ═══ Architecture unchanged ═══
 console.log('\nArchitecture unchanged:');

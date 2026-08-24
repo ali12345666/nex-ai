@@ -50,24 +50,40 @@ export class TerminalService {
     };
 
     // Determine shell per platform
+    // FIX: Use process.env.SHELL on Linux/macOS instead of hardcoded 'bash'.
+    // Windows: PowerShell with cmd.exe fallback.
     const platform = process.platform;
-    const shellBin = shell || (platform === 'win32' ? 'powershell.exe' : 'bash');
-    const shellArgs = platform === 'win32' ? ['-NoLogo', '-NoProfile'] : ['-i'];
+    let shellBin: string;
+    let shellArgs: string[];
+    if (shell) {
+      shellBin = shell;
+      shellArgs = [];
+    } else if (platform === 'win32') {
+      // Windows: PowerShell first, cmd.exe fallback handled by safeSpawn
+      shellBin = 'powershell.exe';
+      shellArgs = ['-NoLogo', '-NoProfile'];
+    } else {
+      // Linux/macOS: use $SHELL env var, fallback to /bin/bash then /bin/sh
+      shellBin = process.env.SHELL || '/bin/bash';
+      shellArgs = ['-i']; // interactive mode
+    }
 
     const child = safeSpawn(shellBin, shellArgs, { cwd });
     session.process = child;
     session.state = 'running';
 
+    // FIX: Set encoding to utf-8 so stdout/stderr emit strings (not Buffers).
+    // This ensures proper text handling across all platforms.
     if (child.stdout) {
-      child.stdout.on('data', (data: Buffer) => {
-        const text = data.toString();
-        this.outputHandlers.get(id)?.(text);
+      child.stdout.setEncoding('utf-8');
+      child.stdout.on('data', (data: string) => {
+        this.outputHandlers.get(id)?.(data);
       });
     }
     if (child.stderr) {
-      child.stderr.on('data', (data: Buffer) => {
-        const text = data.toString();
-        this.outputHandlers.get(id)?.(text);
+      child.stderr.setEncoding('utf-8');
+      child.stderr.on('data', (data: string) => {
+        this.outputHandlers.get(id)?.(data);
       });
     }
     child.on('exit', (code) => {
