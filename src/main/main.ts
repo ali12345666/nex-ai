@@ -1177,9 +1177,16 @@ function setupIPC(): void {
   });
 
   // Phase 10 / P10-D/E: embedding backend selection (LOCAL only)
+  // FIX: createConfiguredEmbedder() returns an EmbedderResolution that includes
+  // an `embedder` field (a class instance). While the handler doesn't directly
+  // return resolution.embedder, it WAS returning `needsRebuildAfterSwitch` —
+  // a FUNCTION reference — as `needsRebuildOnSwitch`. Functions cannot be
+  // structured-cloned across IPC, causing "Error: An object could not be cloned."
+  // Fix: omit the function entirely (renderer never reads needsRebuildOnSwitch
+  // from this handler — it only reads it from knowledge-embedding-set).
   ipcMain.handle('knowledge-embedding-get', async () => {
     try {
-      const { createConfiguredEmbedder, needsRebuildAfterSwitch } = await import('./knowledge/embedding-select');
+      const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
       const resolution = await createConfiguredEmbedder();
       const models = listModels().map((m: any) => ({
         id: m.id, name: m.name, path: m.path, category: m.category, fileExists: m.fileExists,
@@ -1195,8 +1202,6 @@ function setupIPC(): void {
           fallbackReason: resolution.fallbackReason ?? null,
           offline: true,
         },
-        // backend switch invalidates stored vectors (dimension change)
-        needsRebuildOnSwitch: needsRebuildAfterSwitch,
         embeddingModels,
         otherModels,
       };
