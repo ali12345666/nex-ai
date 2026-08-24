@@ -211,7 +211,11 @@ export default function AppShell() {
             <Suspense fallback={<OrbLoading />}>
               <NexOrb
                 state={orbState}
-                audioLevel={orbAudioRef.current}
+                // UI-01: pass the REF object, not its current value. VoiceService
+                // updates orbAudioRef.current 60×/sec via subscribeOrbAudio;
+                // NexOrb reads it inside useFrame so updates flow through
+                // without triggering React re-renders (fixes stale-prop bug).
+                audioLevelRef={orbAudioRef}
                 primaryColor={orbColors.primary}
                 secondaryColor={orbColors.secondary}
                 quality="high"
