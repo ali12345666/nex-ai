@@ -87,6 +87,8 @@ function ParticleSphere({
   // are actually visible (was a known gap — colorShift computed but unused).
   // UI-13: thinking + speaking + active all use RED (#ff2d55) — "NEX is working".
   // error uses muted red (#ef4444) — distinct from active vibrant red.
+  // UI-14: added cohesion/dispersion/turbulence/waveAmplitude/waveFrequency/
+  // particleScale/opacity/corePulse uniforms for cosmic morphing (§7-§9).
   const uniforms = useMemo(() => ({
     uTime: { value: 0 },
     uSpeed: { value: 1 },
@@ -97,6 +99,15 @@ function ParticleSphere({
     uStateColor: { value: new THREE.Color(primaryColor) },
     uColorShift: { value: 0 },
     uAudio: { value: 0 },
+    // UI-14 §9: cohesion/dispersion engine
+    uCohesion: { value: 0.8 },
+    uDispersion: { value: 0.2 },
+    uTurbulence: { value: 0.1 },
+    uWaveAmplitude: { value: 0.05 },
+    uWaveFrequency: { value: 1 },
+    uParticleScale: { value: 1 },
+    uOpacity: { value: 0.8 },
+    uCorePulse: { value: 0.5 },
   }), []); // create once — colors updated via useEffect below
 
   // Phase 31: Update uniform colors on theme change WITHOUT recreating
@@ -112,27 +123,47 @@ function ParticleSphere({
     uniform float uSpeed;
     uniform float uScale;
     uniform float uAudio;
+    // UI-14 §9: cohesion/dispersion/turbulence/wave uniforms
+    uniform float uCohesion;
+    uniform float uDispersion;
+    uniform float uTurbulence;
+    uniform float uWaveAmplitude;
+    uniform float uWaveFrequency;
+    uniform float uParticleScale;
     varying float vDist;
     varying float vPhase;
+    varying float vDispersion;
 
     void main() {
       vPhase = phase;
-      // Organic fluid wave: multiple sine layers
-      float wave1 = sin(position.x * 3.0 + uTime * uSpeed + phase) * 0.06;
-      float wave2 = sin(position.y * 5.0 + uTime * uSpeed * 1.3 + phase * 1.5) * 0.04;
-      float wave3 = sin(position.z * 7.0 + uTime * uSpeed * 0.7 + phase * 0.8) * 0.03;
+      // UI-14 §7-§9: Dynamic particle morphing.
+      // Organic fluid wave: multiple sine layers (state-reactive amplitude/frequency)
+      float wave1 = sin(position.x * 3.0 * uWaveFrequency + uTime * uSpeed + phase) * uWaveAmplitude;
+      float wave2 = sin(position.y * 5.0 * uWaveFrequency + uTime * uSpeed * 1.3 + phase * 1.5) * uWaveAmplitude * 0.7;
+      float wave3 = sin(position.z * 7.0 * uWaveFrequency + uTime * uSpeed * 0.7 + phase * 0.8) * uWaveAmplitude * 0.5;
       float audioWave = uAudio * sin(phase * 4.0 + uTime * 8.0) * 0.08;
-      float displacement = wave1 + wave2 + wave3 + audioWave;
 
-      vec3 displaced = position * (uScale + displacement);
+      // UI-14 §9: turbulence — chaotic displacement (procedural noise approximation)
+      float turbNoise = sin(phase * 12.0 + uTime * uSpeed * 2.0) * cos(phase * 7.0 + uTime * uSpeed * 1.7) * uTurbulence * 0.1;
+
+      float displacement = wave1 + wave2 + wave3 + audioWave + turbNoise;
+
+      // UI-14 §9: cohesion vs dispersion — pull particles toward center (cohesion)
+      // or push them outward (dispersion). High cohesion = tighter sphere.
+      float cohesionFactor = mix(1.0 + uDispersion * 0.3, 1.0 - uCohesion * 0.1, uCohesion);
+      vec3 displaced = position * (uScale * cohesionFactor + displacement);
+
       vDist = displacement;
+      vDispersion = uDispersion;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
-      gl_PointSize = 2.0 + abs(displacement) * 6.0;
+      // UI-14 §7: particle size varies with particleScale uniform + displacement
+      gl_PointSize = (2.0 + abs(displacement) * 6.0) * uParticleScale;
     }
   `, []);
 
   // UI-01: fragment shader now mixes primary → stateColor by colorShift,
   // giving error (red) and thinking (violet) actual visual differentiation.
+  // UI-14: opacity uniform added for state-reactive particle visibility.
   const fragmentShader = useMemo(() => `
     uniform vec3 uPrimary;
     uniform vec3 uSecondary;
@@ -140,17 +171,20 @@ function ParticleSphere({
     uniform float uColorShift;
     uniform float uGlow;
     uniform float uAudio;
+    uniform float uOpacity;
     varying float vDist;
     varying float vPhase;
+    varying float vDispersion;
 
     void main() {
       float alpha = 0.3 + abs(vDist) * 3.0 + uAudio * 0.2;
       alpha *= uGlow;
+      alpha *= uOpacity;
       // First mix primary→secondary along displacement, then mix toward
       // stateColor (e.g., red for error) by uColorShift.
       vec3 base = mix(uPrimary, uSecondary, abs(vDist) * 4.0);
       vec3 color = mix(base, uStateColor, uColorShift);
-      gl_FragColor = vec4(color, clamp(alpha, 0.05, 0.9));
+      gl_FragColor = vec4(color, clamp(alpha, 0.05, 0.95));
     }
   `, []);
 
@@ -172,6 +206,14 @@ function ParticleSphere({
     uniforms.uGlow.value = smoothGlow.current;
     uniforms.uAudio.value = audioLevel;
     uniforms.uColorShift.value = smoothColorShift.current;
+    // UI-14 §9: set new cohesion/dispersion/turbulence/wave uniforms
+    uniforms.uCohesion.value = visual.cohesion;
+    uniforms.uDispersion.value = visual.dispersion;
+    uniforms.uTurbulence.value = visual.turbulence;
+    uniforms.uWaveAmplitude.value = visual.waveAmplitude;
+    uniforms.uWaveFrequency.value = visual.waveFrequency;
+    uniforms.uParticleScale.value = visual.particleScale;
+    uniforms.uOpacity.value = visual.opacity;
 
     // Update state color uniform (only when stateColor changes)
     if (visual.stateColor) {

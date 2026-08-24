@@ -53,14 +53,15 @@ async function main(): Promise<void> {
   assert('filename has title attribute for full path', /title=\{activeFile\}/.test(shellSrc));
 
   console.log('\n4) No regression to Orb + branding (shown when no file open):');
-  assert('N E X branding still present', /N E X/.test(shellSrc));
-  assert('AI ASSISTANT subtitle still present', /AI ASSISTANT/.test(shellSrc));
+  assert('NEX AI branding present (UI-14)', /NEX AI/.test(shellSrc));
+  assert('LOCAL INTELLIGENCE subtitle present (UI-14)', /LOCAL INTELLIGENCE/.test(shellSrc));
   // UI-13: orb size increased ~2x — old min(42vh,38vw) → new min(72vh,48vw).
   // Test updated to check for responsive sizing (either old or new pattern is fine
   // as long as it's viewport-responsive, not fixed px).
   assert('Orb container still has responsive sizing', /width: 'min\(\d+vh, \d+vw\)'/.test(shellSrc));
   assert('Orb fallback OrbLoading still present', /fallback=\{<OrbLoading \/>\}/.test(shellSrc));
-  assert('Voice toggle button still in Orb view', /voiceActive \? 'LISTENING' : 'VOICE'/.test(shellSrc));
+  // UI-14 §3: voice toggle button removed — Always-Ready Voice.
+  assert('NO voice toggle button in Orb view (UI-14)', !/voiceActive \? 'LISTENING' : 'VOICE'/.test(shellSrc));
   assert('Partial transcript display still in Orb view', /partialTranscript/.test(shellSrc));
 
   console.log('\n5) Store openFile/closeFile contract unchanged:');

@@ -85,7 +85,7 @@ const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
 assert('orb still present', shellSrc.includes('NexOrb'));
 assert('NavigationRail still present', shellSrc.includes('NavigationRail'));
 assert('BottomStatusBar still present', shellSrc.includes('BottomStatusBar'));
-assert('NEX branding intact', shellSrc.includes('N E X'));
+assert('NEX branding intact (NEX AI, UI-14)', shellSrc.includes('NEX AI'));
 assert('no new database', !read('../../src/main/persistence/index.ts').includes('sqlite'));
 
 console.log('\n══════════════════════════════════════');

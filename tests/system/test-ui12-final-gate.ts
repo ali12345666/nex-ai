@@ -107,8 +107,8 @@ async function main(): Promise<void> {
   assert('AppShell still renders NexOrb', /<NexOrb/.test(shellSrc));
   assert('AppShell still renders NavigationRail', /<NavigationRail/.test(shellSrc));
   assert('AppShell still renders BottomStatusBar', /<BottomStatusBar/.test(shellSrc));
-  assert('N E X branding still present', /N E X/.test(shellSrc));
-  assert('AI ASSISTANT subtitle still present', /AI ASSISTANT/.test(shellSrc));
+  assert('NEX AI branding present (UI-14)', /NEX AI/.test(shellSrc));
+  assert('LOCAL INTELLIGENCE subtitle present (UI-14)', /LOCAL INTELLIGENCE/.test(shellSrc));
   assert('orb container has responsive sizing', /min\(42vh, 38vw\)/.test(shellSrc));
 
   console.log('\n6) Orb has required visual layers + states (on main):');

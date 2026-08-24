@@ -84,11 +84,12 @@ const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
 assert('imports voiceController', /voiceController/.test(shellSrc));
 assert('orb gets voice state', /orbState/.test(shellSrc));
 assert('orb gets audio level', /orbAudioRef/.test(shellSrc));
-assert('voice toggle button (small)', /VOICE/.test(shellSrc));
+// UI-14 §3: voice toggle removed — Always-Ready Voice
+assert('NO voice toggle button (UI-14)', !/VOICE/.test(shellSrc));
 assert('NO large microphone button', !/Mic.*size.*[5-9][0-9]/.test(shellSrc));
 assert('partial transcript display', /partialTranscript/.test(shellSrc));
 assert('voice cleanup on unmount', /voiceController\.dispose/.test(shellSrc));
-assert('Phase 27 composition preserved', /N E X/.test(shellSrc) && /NavigationRail/.test(shellSrc));
+assert('Phase 27 composition preserved (NEX AI branding, UI-14)', /NEX AI/.test(shellSrc) && /NavigationRail/.test(shellSrc));
 
 console.log('\n6) Chat + voice integration:');
 const chatSrc = read('../../src/renderer/components/chat/NexChatPanel.tsx');

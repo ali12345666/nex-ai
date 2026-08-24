@@ -85,7 +85,7 @@ console.log('\n4. Architecture:');
 const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
 assert('AppShell has NexOrb', shellSrc.includes('NexOrb'));
 assert('AppShell has NavigationRail', shellSrc.includes('NavigationRail'));
-assert('NEX branding', shellSrc.includes('N E X'));
+assert('NEX branding (NEX AI, UI-14)', shellSrc.includes('NEX AI'));
 assert('no new database', !read('../../src/main/persistence/index.ts').includes('sqlite'));
 
 console.log('\n══════════════════════════════════════');

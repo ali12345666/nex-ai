@@ -87,8 +87,9 @@ assert('thinking state still wired', /setThinking/.test(chatSrc));
 assert('message model still NexMessage', /NexMessage/.test(chatSrc));
 assert('getProviderConfig still used', /getProviderConfig/.test(chatSrc));
 const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-assert('AppShell composition preserved (NEX branding)', /N E X/.test(shellSrc));
-assert('voice toggle still present', /VOICE/.test(shellSrc));
+assert('AppShell composition preserved (NEX AI branding, UI-14)', /NEX AI/.test(shellSrc));
+// UI-14 §3: voice toggle removed
+assert('NO voice toggle (UI-14)', !/VOICE/.test(shellSrc));
 assert('orb still receives audioLevel', /orbAudioRef/.test(shellSrc));
 
 console.log('\n══════════════════════════════════════');

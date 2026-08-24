@@ -58,7 +58,8 @@ export default function AppShell() {
   // Phase 31: theme-aware orb colors (re-resolved on theme change)
   const [orbColors, setOrbColors] = useState(() => getOrbColors());
   const orbAudioRef = useRef<number>(0);
-  const [voiceActive, setVoiceActive] = useState(false);
+  // UI-14 §3: voiceActive state removed — voice is now Always-Ready.
+  // No toggle button, auto-starts on app boot, auto-restarts after commands.
   // Phase 32: Conversation state
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -157,6 +158,7 @@ export default function AppShell() {
   }, []);
 
   // Phase 30: Voice → Orb wiring (state + audio level via refs, not React state for audio)
+  // UI-14 §3: Voice is Always-Ready — auto-starts on app boot (no toggle button).
   useEffect(() => {
     // Subscribe to orb state changes
     const unsubState = voiceController.subscribeOrbState((state) => {
@@ -178,6 +180,15 @@ export default function AppShell() {
     });
     orbStateSubRef.current = unsubState;
     orbAudioSubRef.current = unsubAudio;
+
+    // UI-14 §3: Always-Ready Voice — auto-start listening on app boot.
+    // VoiceController.start() enables microphone + STT. If permission not
+    // granted yet, browser will prompt. After each command completes,
+    // VoiceService auto-restarts STT (via _shouldRestartSTT flag).
+    voiceController.start().catch(() => {
+      // Permission denied or mic unavailable — orb stays idle, chat still works via keyboard.
+    });
+
     return () => {
       unsubState();
       unsubAudio();
@@ -288,18 +299,21 @@ export default function AppShell() {
             </div>
           ) : (
             <>
-              {/* Branding above orb */}
-              <div className="flex flex-col items-center gap-1 mb-8 select-none pointer-events-none">
-                <div className="nex-brand-title text-4xl sm:text-5xl lg:text-6xl" aria-label="NEX">
-                  N E X
+              {/* UI-14 §2: Compact header — was text-4xl/5xl/6xl + mb-8 (huge).
+                  Now text-base/sm + mb-2 (minimal). Subtitle is subtle one-liner.
+                  "NEX AI / Local Intelligence • Always Ready" per directive. */}
+              <div className="flex flex-col items-center gap-0.5 mb-2 select-none pointer-events-none">
+                <div className="nex-brand-title text-base sm:text-lg font-medium tracking-[0.3em]" aria-label="NEX AI" style={{ color: 'var(--nex-text)' }}>
+                  NEX AI
                 </div>
-                <div className="nex-brand-subtitle" aria-label="AI Assistant">
-                  AI ASSISTANT
+                <div className="nex-brand-subtitle text-[9px] sm:text-[10px] tracking-wider opacity-60" aria-label="Local Intelligence, Always Ready">
+                  LOCAL INTELLIGENCE • ALWAYS READY
                 </div>
               </div>
 
               {/* Orb container
                   UI-13: orb size increased ~2x (was min(42vh, 38vw) → now min(72vh, 48vw)).
+                  UI-14: mb reduced from 8 to 2 (header is now compact, more room for orb).
                   Responsive: on 1080p → ~778px, 1440p → ~1037px, 1280x720 → ~518px.
                   Caps ensure it never overflows horizontally (48vw < available center
                   width on standard layouts) and stays within viewport height (72vh
@@ -331,23 +345,10 @@ export default function AppShell() {
                       "{partialTranscript}"
                     </div>
                   )}
-                  {/* Phase 30: Voice toggle (subtle indicator, not a big button) */}
-                  <button
-                    onClick={() => { voiceController.toggle(); setVoiceActive(!voiceActive); }}
-                    className="absolute bottom-4 right-4 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-medium nex-glass nex-click transition-all"
-                    style={{
-                      color: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)',
-                      border: voiceActive ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-glass-border)',
-                    }}
-                    aria-label={voiceActive ? 'Stop voice input' : 'Start voice input'}
-                    title={voiceActive ? 'Voice active — click to stop' : 'Click to start voice'}
-                  >
-                    <span
-                      className={voiceActive ? 'inline-block w-1.5 h-1.5 rounded-full animate-pulse' : 'inline-block w-1.5 h-1.5 rounded-full'}
-                      style={{ background: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
-                    />
-                    {voiceActive ? 'LISTENING' : 'VOICE'}
-                  </button>
+                  {/* UI-14 §3: Voice toggle button REMOVED.
+                      Voice is now Always-Ready — auto-starts on app boot,
+                      auto-restarts after each command, and supports interruption.
+                      See AppShell useEffect for voiceController.start() call. */}
                 </Suspense>
               </div>
             </>

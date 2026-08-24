@@ -79,7 +79,7 @@ assert('NexErrorBoundary wraps both paths', appSrc.includes('<NexErrorBoundary>'
 const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
 assert('Orb present', shellSrc.includes('NexOrb'));
 assert('NavigationRail present', shellSrc.includes('NavigationRail'));
-assert('NEX branding', shellSrc.includes('N E X'));
+assert('NEX branding (NEX AI, UI-14)', shellSrc.includes('NEX AI'));
 assert('no AURA', !shellSrc.includes('AURA'));
 
 console.log('\n7. Full App.tsx Import Audit:');

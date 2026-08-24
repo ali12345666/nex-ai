@@ -86,7 +86,7 @@ for (const p of panels) {
 console.log('\n8) Architecture unchanged:');
 assert('voice still imported in chat', chatSrc.includes('voiceController'));
 assert('orb audio still in AppShell', shellSrc.includes('orbAudioRef'));
-assert('NEX branding intact', shellSrc.includes('N E X'));
+assert('NEX branding intact (NEX AI, UI-14)', shellSrc.includes('NEX AI'));
 assert('NavigationRail still present', shellSrc.includes('NavigationRail'));
 assert('BottomStatusBar still present', shellSrc.includes('BottomStatusBar'));
 assert('no new database', !read('../../src/main/persistence/index.ts').includes('sqlite'));

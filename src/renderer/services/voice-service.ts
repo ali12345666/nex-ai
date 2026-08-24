@@ -127,11 +127,34 @@ export class VoiceService {
       return;
     }
     window.speechSynthesis.cancel();
+    // UI-14 §4: Pause STT during TTS to prevent self-hearing (ASR picking up
+    // NEX's own TTS output as a user command). _shouldRestartSTT stays true
+    // so STT auto-resumes after TTS ends (via utterance.onend → startSTT()).
+    if (this._sttActive) {
+      this.stopSTT();
+      // Keep _shouldRestartSTT true so onend handler restarts listening.
+      this._shouldRestartSTT = true;
+    }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = this.config.language;
     utterance.onstart = () => { this._ttsActive = true; this.setCondition('tts', 'speaking'); };
-    utterance.onend = () => { this._ttsActive = false; this.clearCondition('tts'); };
-    utterance.onerror = () => { this._ttsActive = false; this.clearCondition('tts'); };
+    utterance.onend = () => {
+      this._ttsActive = false;
+      this.clearCondition('tts');
+      // UI-14 §3+§4: Auto-resume listening after TTS ends (Always-Ready Voice).
+      // _shouldRestartSTT was kept true during TTS, so startSTT() will run.
+      if (this._shouldRestartSTT && !this._sttActive) {
+        setTimeout(() => { if (this._shouldRestartSTT) this.startSTT(); }, 200);
+      }
+    };
+    utterance.onerror = () => {
+      this._ttsActive = false;
+      this.clearCondition('tts');
+      // UI-14 §4: Resume listening even on TTS error (don't leave voice dead).
+      if (this._shouldRestartSTT && !this._sttActive) {
+        setTimeout(() => { if (this._shouldRestartSTT) this.startSTT(); }, 200);
+      }
+    };
     window.speechSynthesis.speak(utterance);
   }
 
