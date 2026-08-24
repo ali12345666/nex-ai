@@ -41,6 +41,8 @@ const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const PluginsPanel = lazy(() => import('../PluginsPanel'));
 const HardwareMonitorPanel = lazy(() => import('../HardwareMonitorPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
+// UI-04: EditorPanel — lazy-loaded, rendered as floating overlay when a file is opened
+const EditorPanel = lazy(() => import('../EditorPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -75,7 +77,11 @@ export default function AppShell() {
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const orbAudioSubRef = useRef<(() => void) | null>(null);
   const orbStateSubRef = useRef<(() => void) | null>(null);
-  const { projectPath } = useStore();
+  // UI-04: read openFiles/activeFile/closeFile from store so clicking a file
+  // in WorkspaceExplorer actually displays the editor (was previously a
+  // silent no-op — openFile() set activePanel='editor' but AppShell never
+  // rendered EditorPanel).
+  const { projectPath, activeFile, closeFile } = useStore();
 
   const navigate = useCallback((v: NexView) => setView(v), []);
 
@@ -89,6 +95,23 @@ export default function AppShell() {
     window.addEventListener('nex:open-history-search', handler);
     return () => window.removeEventListener('nex:open-history-search', handler);
   }, []);
+
+  // UI-04: Escape key closes the editor overlay (returns to Orb view).
+  // Improves UX — no need to click the small X button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && activeFile && !historyOpen) {
+        // Don't intercept if user is typing in an input/textarea
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          return;
+        }
+        closeFile(activeFile);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activeFile, closeFile, historyOpen]);
 
   // Phase 31: Watch for theme changes → re-resolve orb colors
   useEffect(() => {
@@ -183,73 +206,115 @@ export default function AppShell() {
           <div className="flex-1 overflow-hidden">{leftPanel()}</div>
         </div>
 
-        {/* Center: NEX AI Orb */}
+        {/* Center: NEX AI Orb (or EditorPanel overlay when a file is open) */}
         <div
           className="flex-1 flex flex-col items-center justify-center relative"
           style={{ minWidth: 0 }}
         >
-          {/* Branding above orb */}
-          <div className="flex flex-col items-center gap-1 mb-8 select-none pointer-events-none">
-            <div className="nex-brand-title text-4xl sm:text-5xl lg:text-6xl" aria-label="NEX">
-              N E X
-            </div>
-            <div className="nex-brand-subtitle" aria-label="AI Assistant">
-              AI ASSISTANT
-            </div>
-          </div>
-
-          {/* Orb container */}
-          <div
-            className="relative"
-            style={{
-              width: 'min(42vh, 38vw)',
-              height: 'min(42vh, 38vw)',
-              minHeight: 220,
-              minWidth: 220,
-            }}
-          >
-            <Suspense fallback={<OrbLoading />}>
-              <NexOrb
-                state={orbState}
-                // UI-01: pass the REF object, not its current value. VoiceService
-                // updates orbAudioRef.current 60×/sec via subscribeOrbAudio;
-                // NexOrb reads it inside useFrame so updates flow through
-                // without triggering React re-renders (fixes stale-prop bug).
-                audioLevelRef={orbAudioRef}
-                primaryColor={orbColors.primary}
-                secondaryColor={orbColors.secondary}
-                quality="high"
-                className="w-full h-full"
-              />
-              {/* Phase 30: Voice transcript display */}
-              {partialTranscript && (
-                <div
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
-                  style={{ color: 'var(--nex-accent-text)' }}
-                  aria-live="polite"
-                >
-                  "{partialTranscript}"
-                </div>
-              )}
-              {/* Phase 30: Voice toggle (subtle indicator, not a big button) */}
-              <button
-                onClick={() => { voiceController.toggle(); setVoiceActive(!voiceActive); }}
-                className="absolute bottom-4 right-4 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-medium nex-glass nex-click transition-all"
-                style={{
-                  color: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)',
-                  border: voiceActive ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-glass-border)',
-                }}
-                aria-label={voiceActive ? 'Stop voice input' : 'Start voice input'}
-                title={voiceActive ? 'Voice active — click to stop' : 'Click to start voice'}
+          {/* UI-04: EditorPanel overlay — shown when a file is open, hides the
+              Orb + branding. Closing all files returns to the Orb view.
+              EditorPanel reads openFiles/activeFile directly from the store. */}
+          {activeFile ? (
+            <div
+              className="absolute inset-0 nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
+              style={{
+                borderRadius: 'var(--nex-radius-lg)',
+                margin: '8px 4px',
+                border: '1px solid var(--nex-panel-border)',
+              }}
+            >
+              {/* Editor header with close button */}
+              <div
+                className="flex items-center justify-between px-3 py-2 shrink-0"
+                style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
               >
                 <span
-                  className={voiceActive ? 'inline-block w-1.5 h-1.5 rounded-full animate-pulse' : 'inline-block w-1.5 h-1.5 rounded-full'}
-                  style={{ background: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
-                />
-                {voiceActive ? 'LISTENING' : 'VOICE'}
-              </button>
-            </Suspense>
-          </div>
+                  className="text-[10px] font-medium tracking-wider truncate"
+                  style={{ color: 'var(--nex-accent-text)' }}
+                  title={activeFile}
+                >
+                  {activeFile.split(/[\\/]/).pop() || activeFile}
+                </span>
+                <button
+                  onClick={() => closeFile(activeFile)}
+                  className="nex-click nex-focus p-1 rounded transition-colors hover:bg-white/[0.06]"
+                  style={{ color: 'var(--nex-text-muted)' }}
+                  aria-label="Close editor and return to Orb"
+                  title="Close editor (Esc)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              {/* Editor body */}
+              <div className="flex-1 overflow-hidden">
+                <Suspense fallback={<PanelLoading />}>
+                  <EditorPanel />
+                </Suspense>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Branding above orb */}
+              <div className="flex flex-col items-center gap-1 mb-8 select-none pointer-events-none">
+                <div className="nex-brand-title text-4xl sm:text-5xl lg:text-6xl" aria-label="NEX">
+                  N E X
+                </div>
+                <div className="nex-brand-subtitle" aria-label="AI Assistant">
+                  AI ASSISTANT
+                </div>
+              </div>
+
+              {/* Orb container */}
+              <div
+                className="relative"
+                style={{
+                  width: 'min(42vh, 38vw)',
+                  height: 'min(42vh, 38vw)',
+                  minHeight: 220,
+                  minWidth: 220,
+                }}
+              >
+                <Suspense fallback={<OrbLoading />}>
+                  <NexOrb
+                    state={orbState}
+                    audioLevelRef={orbAudioRef}
+                    primaryColor={orbColors.primary}
+                    secondaryColor={orbColors.secondary}
+                    quality="high"
+                    className="w-full h-full"
+                  />
+                  {partialTranscript && (
+                    <div
+                      className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
+                      style={{ color: 'var(--nex-accent-text)' }}
+                      aria-live="polite"
+                    >
+                      "{partialTranscript}"
+                    </div>
+                  )}
+                  {/* Phase 30: Voice toggle (subtle indicator, not a big button) */}
+                  <button
+                    onClick={() => { voiceController.toggle(); setVoiceActive(!voiceActive); }}
+                    className="absolute bottom-4 right-4 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-medium nex-glass nex-click transition-all"
+                    style={{
+                      color: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)',
+                      border: voiceActive ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-glass-border)',
+                    }}
+                    aria-label={voiceActive ? 'Stop voice input' : 'Start voice input'}
+                    title={voiceActive ? 'Voice active — click to stop' : 'Click to start voice'}
+                  >
+                    <span
+                      className={voiceActive ? 'inline-block w-1.5 h-1.5 rounded-full animate-pulse' : 'inline-block w-1.5 h-1.5 rounded-full'}
+                      style={{ background: voiceActive ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
+                    />
+                    {voiceActive ? 'LISTENING' : 'VOICE'}
+                  </button>
+                </Suspense>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right: AI Chat Panel */}
