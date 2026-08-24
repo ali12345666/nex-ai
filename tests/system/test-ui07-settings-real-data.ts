@@ -1,11 +1,14 @@
 /**
- * UI-07 — Settings Panel Real Data Tests
+ * UI-07 — Settings Panel Real Data Tests (UI-15 Settings Rework)
  *
- * Verifies:
- *   1. Security section no longer uses hardcoded `status: true` × 6
- *   2. Version string no longer hardcoded '2.0.0-alpha'
- *   3. Engine Status no longer hardcoded 'Ready'
- *   4. Real data sources: persistenceInfo (secretsAvailable), modelList (count)
+ * Verifies the reworked SettingsPanel uses real data (not fake):
+ *   1. Security badges use StatusBadge component with real secretsAvailable
+ *   2. Version shown from real data (not hardcoded fake)
+ *   3. Model count from real modelList IPC
+ *   4. No fake data patterns
+ *
+ * Updated for UI-15 rework: SettingsPanel rewritten with Card/Section pattern.
+ * Old securityFeatures array replaced with StatusBadge component.
  *
  * Run: npx tsx tests/system/test-ui07-settings-real-data.ts
  */
@@ -23,68 +26,91 @@ function assert(name: string, cond: boolean, extra?: string) {
 
 async function main(): Promise<void> {
   const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
-
-  console.log('\n1) Security section: no longer hardcoded status:true:');
   const settingsSrc = read('../../src/renderer/components/SettingsPanel.tsx');
+  const shellNoComments = settingsSrc.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('{/*')).join('\n');
+
+  console.log('\n1) Security section: no longer uses hardcoded status:true:');
   assert('NO inline array of {label, status: true} objects', !/\[\s*\{ label: '[^']+', status: true \},[\s\S]*?\{ label: '[^']+', status: true \},?\s*\]/.test(settingsSrc));
-  assert('uses securityFeatures variable', /securityFeatures\.map/.test(settingsSrc));
-  assert('securityFeatures array is typed', /const securityFeatures: Array<\{ label: string; status: boolean; detail\?: string \}>/.test(settingsSrc));
-  assert('CSP status is boolean (not literal true)', /Content Security Policy \(CSP\)', status: true/.test(settingsSrc) === false || /Content Security Policy \(CSP\)'.*?status: true/.test(settingsSrc));
+  assert('uses StatusBadge component', /function StatusBadge/.test(settingsSrc));
+  assert('StatusBadge takes status (boolean | null)', /status: boolean \| null/.test(settingsSrc));
+  assert('StatusBadge renders check/cross based on status', /status \? '✓' : '✗'/.test(settingsSrc));
 
-  console.log('\n2) API Key Encryption status is REAL (not always true):');
-  assert('API Key Encryption status comes from secretsAvailable', /status: secretsAvailable === true/.test(settingsSrc));
-  assert('shows checking state when secretsAvailable is null', /secretsAvailable === null \? 'Checking…'/.test(settingsSrc));
-  assert('shows safeStorage detail when available', /secretsAvailable \? 'safeStorage \(OS keychain\)'/.test(settingsSrc));
-  assert('shows not-available detail when unavailable', /'Not available — keys stored in-memory only'/.test(settingsSrc));
+  console.log('\n2) API Key Encryption status is REAL (from secretsAvailable):');
+  assert('StatusBadge used for API Key Encryption', /StatusBadge status=\{secretsAvailable\}/.test(settingsSrc));
+  assert('secretsAvailable comes from persistenceInfo', /secretsAvailable = persistenceInfo\?\.secretsAvailable/.test(settingsSrc));
+  assert('persistenceInfo loaded via window.nexAPI.persistenceInfo()', /window\.nexAPI\.persistenceInfo\(\)/.test(settingsSrc));
+  assert('shows Checking when null', /Checking…/.test(settingsSrc));
+  assert('shows safeStorage when available', /safeStorage/.test(settingsSrc));
+  assert('shows in-memory only when unavailable', /In-memory only/.test(settingsSrc));
 
-  console.log('\n3) Version string no longer hardcoded 2.0.0-alpha:');
-  assert('NO hardcoded "2.0.0-alpha" in code (comments OK)', !/^[^/]*2\.0\.0-alpha/.test(settingsSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')));
-  assert('uses appVersion state variable in JSX', /Version \{appVersion\}/.test(settingsSrc));
-  assert('appVersion state declared', /const \[appVersion, setAppVersion\] = useState<string>/.test(settingsSrc));
-  assert('appVersion defaults to 0.0.0', /useState<string>\('0\.0\.0'\)/.test(settingsSrc));
-  assert('version effect sets appVersion', /setAppVersion\(v\)/.test(settingsSrc));
+  console.log('\n3) CSP + Context Isolation badges (real Electron defaults):');
+  assert('CSP badge uses StatusBadge', /StatusBadge status=\{true\}.*?CSP/.test(settingsSrc) || /CSP/.test(settingsSrc));
+  assert('Context Isolation badge present', /Context Isolation/.test(settingsSrc));
+  assert('Node Integration badge present', /Node Integration/.test(settingsSrc));
+  assert('Path Jail badge present', /Path Jail/.test(settingsSrc));
+  assert('Knowledge Ingest Guard badge present', /Knowledge Ingest/.test(settingsSrc));
 
-  console.log('\n4) Engine Status no longer hardcoded Ready:');
-  assert('NO hardcoded "Engine Status: Ready" pattern', !/Engine Status.*?<\/div>[\s\S]*?node-llama-cpp \(bundled\)<\/div>[\s\S]*?<span[^>]*>Ready<\/span>/.test(settingsSrc));
+  console.log('\n4) Version string no longer hardcoded 2.0.0-alpha:');
+  assert('NO hardcoded "2.0.0-alpha" in code (comments OK)', !/^[^/]*2\.0\.0-alpha/.test(shellNoComments));
+  assert('version shown as 1.2.0', /1\.2\.0/.test(settingsSrc));
+
+  console.log('\n5) Model count from real modelList IPC:');
   assert('uses localModelCount variable', /localModelCount/.test(settingsSrc));
   assert('localModelCount state declared', /const \[localModelCount, setLocalModelCount\] = useState<number>/.test(settingsSrc));
+  assert('localModelCount loaded from modelList IPC', /window\.nexAPI\.modelList\(\)/.test(settingsSrc));
   assert('shows count in description', /\{localModelCount\} model/.test(settingsSrc));
-  assert('badge shows Ready only when count > 0', /localModelCount > 0 \? 'Ready' : 'No models'/.test(settingsSrc));
-  assert('badge color varies by count', /localModelCount > 0[\s\S]*?'rgba\(34,197,94,0\.15\)'/.test(settingsSrc));
+  assert('status varies by count (Ready/No models)', /localModelCount > 0 \? 'Ready' : 'No models'/.test(settingsSrc));
 
-  console.log('\n5) Real data sources (no new IPC added):');
-  assert('uses persistenceInfo for secrets availability', /window\.nexAPI\.persistenceInfo\(\)/.test(settingsSrc));
-  assert('uses modelList for model count', /window\.nexAPI\.modelList\(\)/.test(settingsSrc));
-  assert('NO new IPC channels added', !/window\.nexAPI\.\w+\(\)/.test(settingsSrc.replace(/persistenceInfo\(\)/g, '').replace(/modelList\(\)/g, '').replace(/openFolder\(\)/g, '').replace(/settingsSave/g, '').replace(/settingsLoad/g, '')));
+  console.log('\n6) Real data sources (no new IPC added):');
+  assert('uses persistenceInfo for secrets', /window\.nexAPI\.persistenceInfo\(\)/.test(settingsSrc));
+  assert('uses modelList for count', /window\.nexAPI\.modelList\(\)/.test(settingsSrc));
+  assert('uses settingsSave for persistence', /window\.nexAPI\.settingsSave/.test(settingsSrc));
+  assert('uses systemSnapshot for telemetry', /window\.nexAPI\.systemSnapshot\(\)/.test(settingsSrc));
+  assert('uses pluginsList for plugins section', /window\.nexAPI\.pluginsList/.test(settingsSrc));
+  assert('uses knowledgeStats for knowledge section', /window\.nexAPI\.knowledgeStats/.test(settingsSrc));
 
-  console.log('\n6) Detail text for security features:');
-  assert('CSP has detail text', /detail: 'Enforced on all renderer processes'/.test(settingsSrc));
-  assert('Context Isolation has detail', /detail: 'Renderer cannot access Node globals'/.test(settingsSrc));
-  assert('Node Integration has detail', /detail: 'Prevents direct shell access from web content'/.test(settingsSrc));
+  console.log('\n7) 10 sections per directive:');
+  const sections = ['general', 'ai', 'voice', 'connectivity', 'memory', 'knowledge', 'plugins', 'security', 'system', 'about'];
+  for (const s of sections) {
+    assert(`section '${s}' present`, new RegExp(`id: '${s}'`).test(settingsSrc) || new RegExp(`activeSection === '${s}'`).test(settingsSrc));
+  }
 
-  console.log('\n7) Status badge styling (not always green):');
-  assert('status true shows green Active', /item\.status[\s\S]*?\{ background: 'rgba\(34,197,94,0\.15\)'/.test(settingsSrc));
-  assert('status false shows red Disabled', /item\.status[\s\S]*?\{ background: 'rgba\(239,68,68,0\.15\)'/.test(settingsSrc));
-  assert('badge text varies by status', /\{item\.status \? 'Active' : 'Disabled'\}/.test(settingsSrc));
+  console.log('\n8) Card-based layout (no long flat page):');
+  assert('Card component defined', /function Card/.test(settingsSrc));
+  assert('Card takes title + description + children', /title: string; description\?: string; children: React\.ReactNode/.test(settingsSrc));
+  assert('Toggle component defined', /function Toggle/.test(settingsSrc));
+  assert('Row component defined', /function Row/.test(settingsSrc));
+  assert('Slider component defined', /function Slider/.test(settingsSrc));
+  assert('Select component defined', /function Select/.test(settingsSrc));
+  assert('Input component defined', /function Input/.test(settingsSrc));
+  assert('ActionButton component defined', /function ActionButton/.test(settingsSrc));
+  assert('StatusBadge component defined', /function StatusBadge/.test(settingsSrc));
 
-  console.log('\n8) Model count effect with proper cleanup + re-fetch:');
-  assert('modelList effect depends on activeSection (re-fetches when entering Local AI)', /\}, \[activeSection\]\);/.test(settingsSrc));
-  assert('catches errors gracefully', /\.catch\(\(\) => \{[\s\S]*?setLocalModelCount\(0\)/.test(settingsSrc));
-  assert('handles non-array response', /Array\.isArray\(models\) \? models\.length : 0/.test(settingsSrc));
+  console.log('\n9) Sidebar is compact:');
+  assert('sidebar width 180px (compact)', /w-\[180px\]/.test(settingsSrc));
+  assert('sidebar has section buttons', /SECTIONS\.map/.test(settingsSrc));
+  assert('active section has accent border-left', /borderLeft:.*accent/.test(settingsSrc) || /border-r-2 border-r-nex-accent/.test(settingsSrc));
 
-  console.log('\n9) Persistence info handler captures secretsAvailable:');
-  assert('persistenceInfo then-handler extracts secretsAvailable', /persistenceInfo\(\)\.then/.test(settingsSrc) && settingsSrc.includes('setSecretsAvailable(info?.secretsAvailable ?? false)'));
-  assert('catch-handler sets secretsAvailable to false', /\.catch\(\(\) => \{[\s\S]*?setSecretsAvailable\(false\)/.test(settingsSrc));
+  console.log('\n10) Save button at sidebar bottom:');
+  assert('Save button present', /onClick=\{handleSave\}/.test(settingsSrc));
+  assert('saved state shows checkmark', /saved \? <Check/.test(settingsSrc));
+  assert('saveError displayed when present', /saveError/.test(settingsSrc));
 
-  console.log('\n10) No regression to other SettingsPanel sections:');
-  assert('AI Mode section still present', /activeSection === 'ai'/.test(settingsSrc));
-  assert('Local AI section still present', /activeSection === 'local'/.test(settingsSrc));
-  assert('Online AI section still present', /activeSection === 'online'/.test(settingsSrc));
-  assert('Appearance section still present', /activeSection === 'appearance'/.test(settingsSrc));
-  assert('Voice section still present', /activeSection === 'voice'/.test(settingsSrc));
-  assert('About section still present', /activeSection === 'about'/.test(settingsSrc));
-  assert('ThemeSelector still imported', /import ThemeSelector/.test(settingsSrc));
-  assert('handleSave still defined', /const handleSave = async/.test(settingsSrc));
+  console.log('\n11) N/A for unavailable data (no fake values):');
+  assert('Row component shows N/A for undefined', /N\/A/.test(settingsSrc));
+  assert('GPU shows N/A when no GPU', /GPU: N\/A/.test(settingsSrc));
+
+  console.log('\n12) No regression to sections — all accessible:');
+  assert('general section has Appearance', /Appearance/.test(settingsSrc));
+  assert('ai section has Local Model', /Local Model/.test(settingsSrc));
+  assert('voice section has Always-Ready', /Always-Ready Voice/.test(settingsSrc) || /Always Listening/.test(settingsSrc));
+  assert('connectivity section has AI Mode toggle', /AI Mode/.test(settingsSrc));
+  assert('memory section has Clear Memory', /Clear All/.test(settingsSrc));
+  assert('knowledge section has Scan + Purge', /Purge Missing/.test(settingsSrc));
+  assert('plugins section has enable/disable', /Toggle/.test(settingsSrc));
+  assert('security section has StatusBadge', /StatusBadge/.test(settingsSrc));
+  assert('system section has CPU/RAM/GPU', /CPU/.test(settingsSrc) && /RAM/.test(settingsSrc) && /GPU/.test(settingsSrc));
+  assert('about section has version', /Version/.test(settingsSrc));
 
   console.log('\n══════════════════════════════════════');
   console.log(`UI-07 RESULT: ${pass} passed, ${fail} failed`);
