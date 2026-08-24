@@ -85,6 +85,8 @@ function ParticleSphere({
 
   // UI-01: added uColorShift + uStateColor uniforms so error/thinking tints
   // are actually visible (was a known gap — colorShift computed but unused).
+  // UI-13: thinking + speaking + active all use RED (#ff2d55) — "NEX is working".
+  // error uses muted red (#ef4444) — distinct from active vibrant red.
   const uniforms = useMemo(() => ({
     uTime: { value: 0 },
     uSpeed: { value: 1 },

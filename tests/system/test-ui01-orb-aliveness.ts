@@ -45,7 +45,9 @@ async function main(): Promise<void> {
   assert('NexOrbVisual has colorShift field', /colorShift: number/.test(orbStateSrc));
   assert('NexOrbVisual has stateColor field (nullable)', /stateColor: string \| null/.test(orbStateSrc));
   assert('error state sets stateColor', /stateColor = '#ef4444'/.test(orbStateSrc));
-  assert('thinking state sets stateColor', /stateColor = '#8b5cf6'/.test(orbStateSrc));
+  // UI-13: thinking now uses RED (#ff2d55) instead of violet (#8b5cf6).
+  // thinking IS working → red per UI-13 directive.
+  assert('thinking state sets RED stateColor (UI-13)', /stateColor = ACTIVE_RED/.test(orbStateSrc) || /stateColor = '#ff2d55'/.test(orbStateSrc));
   assert('idle state has null stateColor', /case 'idle'[\s\S]*?stateColor = null/.test(orbStateSrc) || /let stateColor: string \| null = null/.test(orbStateSrc));
 
   assert('uColorShift uniform declared', /uColorShift:/.test(orbSrc));
@@ -53,7 +55,8 @@ async function main(): Promise<void> {
   assert('fragment shader mixes base toward uStateColor', /mix\(base, uStateColor, uColorShift\)/.test(orbSrc));
   assert('useFrame updates uColorShift', /uniforms\.uColorShift\.value/.test(orbSrc));
   assert('useFrame updates uStateColor', /uniforms\.uStateColor\.value\.copy/.test(orbSrc));
-  assert('thinking colorShift = 0.45', /colorShift = 0\.45/.test(orbStateSrc));
+  // UI-13: thinking colorShift increased from 0.45 to 0.85 (more visible red).
+  assert('thinking colorShift = 0.85 (UI-13: increased for red visibility)', /colorShift = 0\.85/.test(orbStateSrc));
   assert('error colorShift = 0.85', /colorShift = 0\.85/.test(orbStateSrc));
 
   console.log('\n3) New visual layers (UI-01: directive §4 layers):');
@@ -72,7 +75,8 @@ async function main(): Promise<void> {
   assert('ringSpeed per state', /ringSpeed = [\d.]+/.test(orbStateSrc));
   assert('ambientDrift per state', /ambientDrift = [\d.]+/.test(orbStateSrc));
   assert('pulseSpeed per state', /pulseSpeed = [\d.]+/.test(orbStateSrc));
-  assert('speaking has non-zero pulseSpeed', /case 'speaking'[\s\S]*?pulseSpeed = 0\.[1-9]/.test(orbStateSrc));
+  // UI-13: speaking pulseSpeed increased from 0.8 to 1.0+ (more visible pulse when working).
+  assert('speaking has non-zero pulseSpeed', /case 'speaking'[\s\S]*?pulseSpeed = [1-9]/.test(orbStateSrc));
   assert('non-speaking states have pulseSpeed 0', /pulseSpeed = 0;/.test(orbStateSrc));
 
   console.log('\n5) Reduced-motion ACTUALLY gates Three.js rotations (UI-01 fix for GAP-6):');

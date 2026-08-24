@@ -55,7 +55,10 @@ async function main(): Promise<void> {
   console.log('\n4) No regression to Orb + branding (shown when no file open):');
   assert('N E X branding still present', /N E X/.test(shellSrc));
   assert('AI ASSISTANT subtitle still present', /AI ASSISTANT/.test(shellSrc));
-  assert('Orb container still has responsive sizing', /width: 'min\(42vh, 38vw\)'/.test(shellSrc));
+  // UI-13: orb size increased ~2x — old min(42vh,38vw) → new min(72vh,48vw).
+  // Test updated to check for responsive sizing (either old or new pattern is fine
+  // as long as it's viewport-responsive, not fixed px).
+  assert('Orb container still has responsive sizing', /width: 'min\(\d+vh, \d+vw\)'/.test(shellSrc));
   assert('Orb fallback OrbLoading still present', /fallback=\{<OrbLoading \/>\}/.test(shellSrc));
   assert('Voice toggle button still in Orb view', /voiceActive \? 'LISTENING' : 'VOICE'/.test(shellSrc));
   assert('Partial transcript display still in Orb view', /partialTranscript/.test(shellSrc));

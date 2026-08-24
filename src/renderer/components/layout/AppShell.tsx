@@ -298,14 +298,19 @@ export default function AppShell() {
                 </div>
               </div>
 
-              {/* Orb container */}
+              {/* Orb container
+                  UI-13: orb size increased ~2x (was min(42vh, 38vw) → now min(72vh, 48vw)).
+                  Responsive: on 1080p → ~778px, 1440p → ~1037px, 1280x720 → ~518px.
+                  Caps ensure it never overflows horizontally (48vw < available center
+                  width on standard layouts) and stays within viewport height (72vh
+                  leaves room for branding + status bar). */}
               <div
                 className="relative"
                 style={{
-                  width: 'min(42vh, 38vw)',
-                  height: 'min(42vh, 38vw)',
-                  minHeight: 220,
-                  minWidth: 220,
+                  width: 'min(72vh, 48vw)',
+                  height: 'min(72vh, 48vw)',
+                  minHeight: 280,
+                  minWidth: 280,
                 }}
               >
                 <Suspense fallback={<OrbLoading />}>
