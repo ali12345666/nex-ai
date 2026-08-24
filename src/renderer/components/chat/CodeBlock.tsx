@@ -68,22 +68,23 @@ export default function CodeBlock({ code, language = '' }: CodeBlockProps) {
         className="flex items-center justify-between px-3 py-1.5"
         style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
       >
-        <span className="text-[9px] font-mono tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
+        <span className="text-[10px] font-mono tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
           {language || 'text'}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] transition-colors hover:bg-white/[0.06]"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors hover:bg-white/[0.06] nex-click nex-focus"
           style={{ color: copied ? 'var(--nex-success)' : 'var(--nex-text-muted)' }}
           aria-label={copied ? 'Copied' : 'Copy code'}
+          title={copied ? 'Copied' : 'Copy code'}
         >
-          {copied ? <Check size={10} /> : <Copy size={10} />}
+          {copied ? <Check size={11} /> : <Copy size={11} />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
       <pre
-        className="overflow-x-auto nex-scroll p-3 text-[11px] leading-relaxed"
-        style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace", color: '#c8d0e0' }}
+        className="overflow-x-auto nex-scrollbar p-3 text-xs leading-relaxed"
+        style={{ fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace", color: '#c8d0e0', direction: 'ltr' }}
       >
         <code dangerouslySetInnerHTML={{ __html: highlighted }} />
       </pre>

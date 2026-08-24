@@ -539,19 +539,19 @@ export default function NexChatPanel() {
       onDragOver={handleDragOver}
     >
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto nex-scroll px-3 py-3" role="list" aria-label="Chat messages">
+      <div className="flex-1 overflow-y-auto nex-scrollbar px-4 py-4" role="list" aria-label="Chat messages">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-3 py-8">
+          <div className="flex flex-col items-center justify-center h-full gap-4 py-8">
             <div
               className="flex items-center justify-center rounded-full"
               style={{
-                width: 44, height: 44,
+                width: 48, height: 48,
                 background: 'radial-gradient(circle at 40% 40%, var(--nex-accent-dim) 0%, transparent 70%)',
               }}
             >
-              <span className="text-[11px] font-bold" style={{ color: 'var(--nex-accent)' }}>NX</span>
+              <span className="text-sm font-bold" style={{ color: 'var(--nex-accent)' }}>NX</span>
             </div>
-            <p className="text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>
+            <p className="text-sm" style={{ color: 'var(--nex-text-dim)' }}>
               How can I help you today?
             </p>
           </div>
@@ -669,7 +669,7 @@ export default function NexChatPanel() {
 
       {/* Input area */}
       <div
-        className="px-3 py-2 shrink-0"
+        className="px-4 py-2.5 shrink-0"
         style={{ borderTop: '1px solid var(--nex-glass-border)' }}
       >
         {/* Toolbar */}
@@ -744,12 +744,13 @@ export default function NexChatPanel() {
           onKeyDown={handleKeyDown}
           placeholder="Type your message…"
           data-chat-input
-          className="w-full bg-white/[0.03] border border-[var(--nex-glass-border)] rounded-lg px-3 py-2 text-[12px] resize-none outline-none transition-colors focus:border-[var(--nex-accent)]/30"
+          className="w-full bg-white/[0.03] border border-[var(--nex-glass-border)] rounded-lg px-3 py-2.5 text-sm resize-none outline-none transition-colors focus:border-[var(--nex-accent)]/30"
           style={{
             color: 'var(--nex-text)',
             maxHeight: 120,
-            minHeight: 36,
-            fontFamily: "'Inter', sans-serif",
+            minHeight: 40,
+            fontFamily: "system-ui, 'Segoe UI', Tahoma, 'Vazirmatn', sans-serif",
+            lineHeight: 1.5,
           }}
           rows={1}
           aria-label="Chat input"
