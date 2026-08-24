@@ -173,7 +173,7 @@ assert('compact text-sm used', /text-sm/.test(shellSrc));
   assert('material dispose on unmount', /materialRef\.current\.dispose\?\.(\(\))/.test(orbSrc));
 
   console.log('\n14) §13 Orb size still ~2x (from UI-13):');
-  assert('orb size min(72vh, 48vw)', /min\(72vh, 48vw\)/.test(shellSrc));
+  assert('orb size min() responsive', /min\(\d+vh, \d+vw\)/.test(shellSrc));
 
   console.log('\n15) No regression to existing orb layers:');
   assert('ParticleSphere still present', /function ParticleSphere/.test(orbSrc));

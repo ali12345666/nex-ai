@@ -36,8 +36,8 @@ async function main(): Promise<void> {
   const shellNoComments = shellSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   assert('NO old size min(42vh, 38vw) in style declarations', !/width: 'min\(42vh, 38vw\)'/.test(shellNoComments));
   // UI-16: orb size now dynamic (showOrb ? 72vh : 42vh)
-assert('orb size uses min() with showOrb', /showOrb \? 'min\(\d+vh/.test(shellSrc));
-  assert('orb height uses min() with showOrb', /showOrb \? 'min\(\d+vh/.test(shellSrc));
+assert('orb size is fixed min() (centered)', /min\(62vh, 42vw\)/.test(shellSrc));
+  assert('orb height is fixed min() (centered)', /min\(62vh, 42vw\)/.test(shellSrc));
   assert('minHeight present (dynamic)', /minHeight:/.test(shellSrc));
   assert('minWidth present (dynamic)', /minWidth:/.test(shellSrc));
   // Calculate size increase: 72/42 = 1.71x, 48/38 = 1.26x. Effective ~1.7x on vh-bound.

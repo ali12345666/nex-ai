@@ -202,40 +202,29 @@ export default function AppShell() {
       className="nex-cosmic-bg nex-stars flex flex-col h-screen w-screen overflow-hidden"
       style={{ background: 'var(--nex-bg)', color: 'var(--nex-text)' }}
     >
-      {/* Main row: Nav + Workspace + Orb + Chat */}
-      <div className="flex flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+      {/* Main row: Nav + Center + Chat
+          UI-16 FIX: Orb is a CENTER ANCHOR — always centered, never moves.
+          Workspace panel is an ABSOLUTE OVERLAY that floats independently.
+          Chat is a fixed-width column on the right.
+          Layout: [ NAV | CENTER(Orb always centered + panel overlay) | CHAT ] */}
+      <div className="flex flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
 
         {/* Left: Navigation Rail */}
         <NavigationRail active={view} onNavigate={navigate} />
 
-      {/* Main row: Nav + Center + Chat
-          UI-15 BUGFIX: Removed the separate 300px left workspace panel div that
-          was causing DOUBLE PANEL RENDERING. Previously leftPanel() was called
-          both in the left workspace div AND in the center area, rendering two
-          instances of the same panel. Now there is ONE source of truth:
-          the center area renders either the Orb (chat view) or the active panel
-          (non-chat views). No duplicate rendering. */}
-
-        {/* Center: Orb (ALWAYS visible) + floating panel overlay (when non-chat view).
-            UI-16: Orb is persistent — panels float as overlays, never cover Orb fully.
-            Layout: [ floating panel | ORB ] within center area. */}
+        {/* Center: Orb ALWAYS centered. Workspace floats as absolute overlay.
+            Orb NEVER participates in flex sizing — it's position:absolute
+            centered in this container. Panel is also position:absolute
+            (left-aligned, doesn't push Orb). */}
         <div
-          className="flex-1 flex items-center justify-center relative overflow-hidden"
+          className="flex-1 relative overflow-hidden"
           style={{ minWidth: 0 }}
         >
-          {/* Orb is ALWAYS rendered — persistent center visual.
-              When a panel is open, Orb shrinks to make room but stays visible. */}
-          <div
-            className="flex flex-col items-center justify-center relative shrink-0"
-            style={{
-              width: showOrb ? 'min(72vh, 48vw)' : 'min(42vh, 28vw)',
-              height: showOrb ? 'min(72vh, 48vw)' : 'min(42vh, 28vw)',
-              minHeight: showOrb ? 280 : 200,
-              minWidth: showOrb ? 280 : 200,
-              transition: 'width 0.3s ease, height 0.3s ease',
-            }}
-          >
-            {/* UI-16 §13: Orb header — ONLY "NEX AI", minimal, no subtitle */}
+          {/* Orb — CENTER ANCHOR. Always centered, fixed size, never shrinks.
+              position:absolute + inset-0 + flex center = perfect centering
+              regardless of what else is in this container. */}
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            {/* UI-16 §13: Orb header — ONLY "NEX AI", minimal */}
             {showOrb && (
               <div className="mb-2 select-none pointer-events-none">
                 <div
@@ -248,40 +237,54 @@ export default function AppShell() {
               </div>
             )}
 
-            <Suspense fallback={<OrbLoading />}>
-              <NexOrb
-                state={orbState}
-                audioLevelRef={orbAudioRef}
-                primaryColor={orbColors.primary}
-                secondaryColor={orbColors.secondary}
-                quality="high"
-                className="w-full h-full"
-              />
-              {partialTranscript && (
-                <div
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
-                  style={{ color: 'var(--nex-accent-text)' }}
-                  aria-live="polite"
-                >
-                  "{partialTranscript}"
-                </div>
-              )}
-            </Suspense>
+            {/* Orb container — FIXED SIZE. Does not change when panel opens. */}
+            <div
+              className="relative pointer-events-auto"
+              style={{
+                width: 'min(62vh, 42vw)',
+                height: 'min(62vh, 42vw)',
+                minHeight: 280,
+                minWidth: 280,
+              }}
+            >
+              <Suspense fallback={<OrbLoading />}>
+                <NexOrb
+                  state={orbState}
+                  audioLevelRef={orbAudioRef}
+                  primaryColor={orbColors.primary}
+                  secondaryColor={orbColors.secondary}
+                  quality="high"
+                  className="w-full h-full"
+                />
+                {partialTranscript && (
+                  <div
+                    className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
+                    style={{ color: 'var(--nex-accent-text)' }}
+                    aria-live="polite"
+                  >
+                    "{partialTranscript}"
+                  </div>
+                )}
+              </Suspense>
+            </div>
           </div>
 
-          {/* UI-16: Floating panel overlay — when non-chat view, panel renders
-              as a floating panel BESIDE the Orb (not covering it).
-              Panel takes ~55% of center width, Orb takes ~45%. */}
+          {/* Workspace / Panel — ABSOLUTE OVERLAY. Floats independently.
+              Does NOT push Orb. Does NOT participate in flex layout.
+              Positioned left side of center area, with gap from Chat.
+              pointer-events enabled so panel is interactive. */}
           {!showOrb && leftPanel() && (
             <div
-              className="nex-glass-strong flex flex-col overflow-hidden nex-animate-in shrink-0"
+              className="absolute nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
               style={{
-                width: 'min(480px, 55%)',
-                maxWidth: '55%',
-                height: 'calc(100% - 16px)',
+                top: 8,
+                bottom: 8,
+                left: 8,
+                width: 420,
+                maxWidth: '42%',
                 borderRadius: 'var(--nex-radius-lg)',
-                margin: '8px',
                 border: '1px solid var(--nex-panel-border)',
+                zIndex: 5,
               }}
             >
               {leftPanel()}
