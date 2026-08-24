@@ -208,18 +208,13 @@ export default function AppShell() {
         {/* Left: Navigation Rail */}
         <NavigationRail active={view} onNavigate={navigate} />
 
-        {/* Left Workspace (Terminal / Project Explorer / Panels) */}
-        <div
-          className="nex-glass flex flex-col overflow-hidden"
-          style={{
-            width: 300,
-            minWidth: 260,
-            borderRadius: 'var(--nex-radius-lg)',
-            margin: '8px 4px',
-          }}
-        >
-          <div className="flex-1 overflow-hidden">{leftPanel()}</div>
-        </div>
+      {/* Main row: Nav + Center + Chat
+          UI-15 BUGFIX: Removed the separate 300px left workspace panel div that
+          was causing DOUBLE PANEL RENDERING. Previously leftPanel() was called
+          both in the left workspace div AND in the center area, rendering two
+          instances of the same panel. Now there is ONE source of truth:
+          the center area renders either the Orb (chat view) or the active panel
+          (non-chat views). No duplicate rendering. */}
 
         {/* Center: Orb (when chat view) OR panel content (when other views).
             UI-15 §2: Orb is the visual heart when in Chat mode. When user
