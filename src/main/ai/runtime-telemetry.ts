@@ -17,6 +17,8 @@ let _lastInference: {
   durationMs?: number;
   modelLoadMs?: number;
   active?: boolean;
+  /** UI-03: context window size — set on loadModel, surfaced to UI */
+  contextMaxTokens?: number;
   at: number;
 } | null = null;
 
@@ -30,6 +32,8 @@ export function noteInferenceStats(stats: {
   durationMs?: number;
   modelLoadMs?: number;
   active?: boolean;
+  /** UI-03: context window size — set on loadModel, surfaced to UI */
+  contextMaxTokens?: number;
 }): void {
   _lastInference = { ...stats, at: Date.now() };
 }
