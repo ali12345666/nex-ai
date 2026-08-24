@@ -1,19 +1,21 @@
 /**
- * NEX AI — Navigation Rail (Phase 27)
+ * NEX AI — Navigation Rail (UI-15 Consolidation)
  *
- * Vertical glass rail with futuristic icons. Active item has cyan glow.
- * Floats with rounded corners and subtle border.
+ * Minimal 5-item navigation: Chat, Workspace, Memory, Knowledge, Settings.
+ * All other panels (Git, Diagnostics, Plugins, Hardware, Terminal, Editor,
+ * Files, Preview, Logs, Agents, Tools) are accessible via Workspace tabs
+ * or Settings — NOT as separate nav items.
  */
 
 import React from 'react';
 import {
-  Zap, Terminal, FolderOpen, Code2, Bot, Database, GitBranch,
-  Wrench, Settings, Brain, BookOpen, Puzzle, Activity,
+  MessageSquare, LayoutGrid, Brain, BookOpen, Settings,
 } from 'lucide-react';
 
-export type NexView =
-  | 'home' | 'terminal' | 'files' | 'code' | 'agents' | 'knowledge'
-  | 'memory' | 'git' | 'tools' | 'plugins' | 'monitor' | 'settings';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings';
+
+/** Workspace sub-tabs — accessible when view === 'workspace'. */
+export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
 
 interface NavItem {
   id: NexView;
@@ -22,17 +24,10 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'home', icon: <Zap size={20} strokeWidth={1.5} />, label: 'NEX Home' },
-  { id: 'terminal', icon: <Terminal size={20} strokeWidth={1.5} />, label: 'Terminal' },
-  { id: 'files', icon: <FolderOpen size={20} strokeWidth={1.5} />, label: 'Files' },
-  { id: 'code', icon: <Code2 size={20} strokeWidth={1.5} />, label: 'Code' },
-  { id: 'agents', icon: <Bot size={20} strokeWidth={1.5} />, label: 'Agents' },
-  { id: 'knowledge', icon: <BookOpen size={20} strokeWidth={1.5} />, label: 'Knowledge' },
+  { id: 'chat', icon: <MessageSquare size={20} strokeWidth={1.5} />, label: 'Chat' },
+  { id: 'workspace', icon: <LayoutGrid size={20} strokeWidth={1.5} />, label: 'Workspace' },
   { id: 'memory', icon: <Brain size={20} strokeWidth={1.5} />, label: 'Memory' },
-  { id: 'git', icon: <GitBranch size={20} strokeWidth={1.5} />, label: 'Git' },
-  { id: 'tools', icon: <Wrench size={20} strokeWidth={1.5} />, label: 'Tools' },
-  { id: 'plugins', icon: <Puzzle size={20} strokeWidth={1.5} />, label: 'Plugins' },
-  { id: 'monitor', icon: <Activity size={20} strokeWidth={1.5} />, label: 'System' },
+  { id: 'knowledge', icon: <BookOpen size={20} strokeWidth={1.5} />, label: 'Knowledge' },
   { id: 'settings', icon: <Settings size={20} strokeWidth={1.5} />, label: 'Settings' },
 ];
 

@@ -7,15 +7,11 @@ import {
   Settings,
   FolderOpen,
   Save,
-  Copy,
   Sparkles,
-  Moon,
   Type,
   X,
   BookOpen,
   Brain,
-  Activity,
-  Puzzle,
 } from 'lucide-react';
 import type { NexView } from './layout/NavigationRail';
 
@@ -81,13 +77,13 @@ export default function CommandPalette() {
       },
     },
     {
-      id: 'toggle-terminal',
-      label: 'Toggle Terminal',
-      description: 'Open the integrated terminal panel',
+      id: 'open-workspace',
+      label: 'Workspace',
+      description: 'Open editor, terminal, files, preview, logs',
       icon: <Terminal size={16} />,
       category: 'View',
       action: () => {
-        navigateTo('terminal');
+        navigateTo('workspace');
         toggleCommandPalette();
       },
     },
@@ -113,9 +109,7 @@ export default function CommandPalette() {
         toggleCommandPalette();
       },
     },
-    // Phase 19 / P19-B: new panels in the palette
-    // UI-06: these were silent no-ops (setSidebarView + setActivePanel were
-    // never read by AppShell). Now dispatch nex:navigate CustomEvent.
+    // UI-15: Consolidated navigation commands (5 main views only)
     {
       id: 'view-knowledge',
       label: 'Knowledge Base',
@@ -135,73 +129,6 @@ export default function CommandPalette() {
       category: 'View',
       action: () => {
         navigateTo('memory');
-        toggleCommandPalette();
-      },
-    },
-    {
-      id: 'view-system-monitor',
-      label: 'System Monitor',
-      description: 'Live CPU / RAM / GPU / AI telemetry',
-      icon: <Activity size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('monitor');
-        toggleCommandPalette();
-      },
-    },
-    {
-      id: 'view-plugins',
-      label: 'Plugins',
-      description: 'Manage local plugins',
-      icon: <Puzzle size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('plugins');
-        toggleCommandPalette();
-      },
-    },
-    // UI-06: new navigation commands (previously missing from palette)
-    {
-      id: 'view-home',
-      label: 'Home Overview',
-      description: 'Project overview + quick actions',
-      icon: <Sparkles size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('home');
-        toggleCommandPalette();
-      },
-    },
-    {
-      id: 'view-files',
-      label: 'File Explorer',
-      description: 'Browse workspace files',
-      icon: <FolderOpen size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('files');
-        toggleCommandPalette();
-      },
-    },
-    {
-      id: 'view-agents',
-      label: 'Agent Tasks',
-      description: 'List running + completed agent tasks',
-      icon: <Sparkles size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('agents');
-        toggleCommandPalette();
-      },
-    },
-    {
-      id: 'view-tools',
-      label: 'Agent Tools',
-      description: 'List available agent tools',
-      icon: <Terminal size={16} />,
-      category: 'View',
-      action: () => {
-        navigateTo('tools');
         toggleCommandPalette();
       },
     },

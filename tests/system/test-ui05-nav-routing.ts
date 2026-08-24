@@ -21,17 +21,19 @@ function assert(name: string, cond: boolean, extra?: string) {
 async function main(): Promise<void> {
   const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
 
-  console.log('\n1) AppShell routes all 12 nav items to real panels:');
+  console.log('\n1) AppShell routes all 5 nav items to real panels (UI-15 consolidated):');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-  assert('imports OverviewPanel', /const OverviewPanel = lazy/.test(shellSrc));
-  assert('imports AgentsPanel', /const AgentsPanel = lazy/.test(shellSrc));
-  assert('imports ToolsPanel', /const ToolsPanel = lazy/.test(shellSrc));
-  assert('imports GitPanel', /const GitPanel = lazy/.test(shellSrc));
+  // UI-15 INTEGRATION FIX: nav consolidated to 5 views. Old panels (OverviewPanel,
+  // AgentsPanel, ToolsPanel, GitPanel) no longer lazy-imported in AppShell —
+  // they're either in WorkspacePanel or removed. Check WorkspacePanel import instead.
+  assert('imports WorkspacePanel', /const WorkspacePanel = lazy\(\(\) => import\('\.\/WorkspacePanel'\)\)/.test(shellSrc));
+  assert('NO imports OverviewPanel (removed)', !/const OverviewPanel = lazy/.test(shellSrc));
+  assert('NO imports AgentsPanel (consolidated)', !/const AgentsPanel = lazy/.test(shellSrc));
+  assert('NO imports ToolsPanel (consolidated)', !/const ToolsPanel = lazy/.test(shellSrc));
+  assert('NO imports GitPanel (consolidated)', !/const GitPanel = lazy/.test(shellSrc));
 
-  assert('home routes to OverviewPanel', /case 'home': return <Suspense fallback=\{<PanelLoading \/>\}><OverviewPanel/.test(shellSrc));
-  assert('agents routes to AgentsPanel', /case 'agents': return <Suspense fallback=\{<PanelLoading \/>\}><AgentsPanel/.test(shellSrc));
-  assert('tools routes to ToolsPanel', /case 'tools': return <Suspense fallback=\{<PanelLoading \/>\}><ToolsPanel/.test(shellSrc));
-  assert('git routes to GitPanel', /case 'git': return <Suspense fallback=\{<PanelLoading \/>\}><GitPanel/.test(shellSrc));
+  // UI-15: workspace routes to WorkspacePanel
+  assert('workspace routes to WorkspacePanel', /case 'workspace': return <Suspense fallback=\{<PanelLoading \/>\}><WorkspacePanel/.test(shellSrc));
 
   console.log('\n2) WorkspacePanel placeholder removed:');
   assert('WorkspacePanel function deleted', !/function WorkspacePanel/.test(shellSrc));
@@ -70,16 +72,17 @@ async function main(): Promise<void> {
   assert('shows current project name', /projectName/.test(overviewSrc));
   assert('has Open Project button', /window\.nexAPI\.openFolder\(\)/.test(overviewSrc));
   assert('has quick actions list', /QUICK_ACTIONS/.test(overviewSrc));
-  assert('quick actions navigate to other views', /onNavigate=\{action\.view\}/.test(overviewSrc) || /onNavigate=\{navigate as any\}/.test(shellSrc));
+  // UI-15: quick actions removed (OverviewPanel was deleted, replaced by WorkspacePanel)
+  assert('NO quick actions (OverviewPanel removed)', !/onNavigate=\{action\.view\}/.test(overviewSrc || ''));
   assert('NO fake data', !/Math\.random/.test(overviewSrc));
   assert('NO hardcoded project list', !/'some-project'/.test(overviewSrc));
 
-  console.log('\n6) NavigationRail unchanged (still 12 items):');
+  console.log('\n6) NavigationRail consolidated to 5 items (UI-15):');
   const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
-  assert('NavigationRail file unchanged', navSrc.length > 0);
-  assert('still has 12 nav items', /'home'.*'terminal'.*'files'.*'code'.*'agents'.*'knowledge'.*'memory'.*'git'.*'tools'.*'plugins'.*'monitor'.*'settings'/.test(navSrc.replace(/\s+/g, ' ')) || (navSrc.match(/id: '/g) || []).length === 12);
-  assert('all 12 nav items have icons', (navSrc.match(/icon: </g) || []).length === 12);
-  assert('all 12 nav items have labels', (navSrc.match(/label: '/g) || []).length === 12);
+  assert('NavigationRail file exists', navSrc.length > 0);
+  assert('UI-15: has 5 nav items (was 12)', (navSrc.match(/id: '/g) || []).length === 5);
+  assert('all 5 nav items have icons', (navSrc.match(/icon: </g) || []).length === 5);
+  assert('all 5 nav items have labels', (navSrc.match(/label: '/g) || []).length === 5);
 
   console.log('\n7) IPC handlers exist (no new IPC needed):');
   const mainSrc = read('../../src/main/main.ts');
@@ -107,10 +110,12 @@ async function main(): Promise<void> {
   })());
 
   console.log('\n10) No dead-code duplication:');
-  assert('each panel rendered exactly once in AppShell', (shellSrc.match(/<OverviewPanel/g) || []).length === 1);
-  assert('AgentsPanel rendered once', (shellSrc.match(/<AgentsPanel/g) || []).length === 1);
-  assert('ToolsPanel rendered once', (shellSrc.match(/<ToolsPanel/g) || []).length === 1);
-  assert('GitPanel rendered once', (shellSrc.match(/<GitPanel/g) || []).length === 1);
+  // UI-15: old panels no longer rendered in AppShell (consolidated to WorkspacePanel)
+  assert('NO OverviewPanel rendered in AppShell', (shellSrc.match(/<OverviewPanel/g) || []).length === 0);
+  assert('NO AgentsPanel rendered in AppShell', (shellSrc.match(/<AgentsPanel/g) || []).length === 0);
+  assert('NO ToolsPanel rendered in AppShell', (shellSrc.match(/<ToolsPanel/g) || []).length === 0);
+  assert('NO GitPanel rendered in AppShell', (shellSrc.match(/<GitPanel/g) || []).length === 0);
+  assert('WorkspacePanel rendered once', (shellSrc.match(/<WorkspacePanel/g) || []).length === 1);
 
   console.log('\n══════════════════════════════════════');
   console.log(`UI-05 RESULT: ${pass} passed, ${fail} failed`);

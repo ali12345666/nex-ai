@@ -33,26 +33,16 @@ const ConversationHistory = lazy(() => import('../chat/ConversationHistory'));
 // Lazy-load chat panel (uses existing ChatPanel but wrapped)
 // Phase 29: Real chat panel using NEX token system
 const NexChatPanel = lazy(() => import('../chat/NexChatPanel'));
-// Phase 28: Real terminal + workspace explorer
-const TerminalSessionPanel = lazy(() => import('./TerminalSessionPanel'));
-const WorkspaceExplorer = lazy(() => import('./WorkspaceExplorer'));
+// UI-15: Workspace panel (consolidates Editor/Terminal/Preview/Files/Logs into tabs)
+const WorkspacePanel = lazy(() => import('./WorkspacePanel'));
 const KnowledgePanel = lazy(() => import('../KnowledgePanel'));
 const MemoryPanel = lazy(() => import('../MemoryPanel'));
-const PluginsPanel = lazy(() => import('../PluginsPanel'));
-const HardwareMonitorPanel = lazy(() => import('../HardwareMonitorPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
-// UI-04: EditorPanel — lazy-loaded, rendered as floating overlay when a file is opened
-const EditorPanel = lazy(() => import('../EditorPanel'));
-// UI-05: previously-dead nav items now wired to real panels.
-const GitPanel = lazy(() => import('../GitPanel'));
-const AgentsPanel = lazy(() => import('./AgentsPanel'));
-const ToolsPanel = lazy(() => import('./ToolsPanel'));
-const OverviewPanel = lazy(() => import('./OverviewPanel'));
 
 import { useStore } from '../../store/useStore';
 
 export default function AppShell() {
-  const [view, setView] = useState<NexView>('home');
+  const [view, setView] = useState<NexView>('chat');
   // Phase 30: Voice state for the Orb (audio level stays in ref, NOT React state)
   const [orbState, setOrbState] = useState<NexOrbState>('idle');
   // Phase 31: theme-aware orb colors (re-resolved on theme change)
@@ -83,11 +73,9 @@ export default function AppShell() {
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const orbAudioSubRef = useRef<(() => void) | null>(null);
   const orbStateSubRef = useRef<(() => void) | null>(null);
-  // UI-04: read openFiles/activeFile/closeFile from store so clicking a file
-  // in WorkspaceExplorer actually displays the editor (was previously a
-  // silent no-op — openFile() set activePanel='editor' but AppShell never
-  // rendered EditorPanel).
-  const { projectPath, activeFile, closeFile } = useStore();
+  // UI-04: EditorPanel now lives inside WorkspacePanel (UI-15 consolidation).
+  // AppShell no longer needs activeFile/closeFile — Workspace handles it.
+  const { projectPath } = useStore();
 
   const navigate = useCallback((v: NexView) => setView(v), []);
 
@@ -128,22 +116,8 @@ export default function AppShell() {
     return () => window.removeEventListener('nex:open-history-search', handler);
   }, []);
 
-  // UI-04: Escape key closes the editor overlay (returns to Orb view).
-  // Improves UX — no need to click the small X button.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && activeFile && !historyOpen) {
-        // Don't intercept if user is typing in an input/textarea
-        const target = e.target as HTMLElement;
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-          return;
-        }
-        closeFile(activeFile);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [activeFile, closeFile, historyOpen]);
+  // UI-15: Escape editor handler removed — EditorPanel now lives in WorkspacePanel
+  // which handles its own keyboard shortcuts internally.
 
   // Phase 31: Watch for theme changes → re-resolve orb colors
   useEffect(() => {
@@ -204,26 +178,24 @@ export default function AppShell() {
   }, []);
 
   // Left workspace content based on active view
+  // UI-15: Consolidated to 5 views — Chat, Workspace, Memory, Knowledge, Settings.
+  // All other panels (Git/Diagnostics/Plugins/Hardware/Agents/Tools) accessible
+  // via Settings or Workspace tabs (no separate nav items).
   const leftPanel = () => {
-    if (!projectPath && view !== 'terminal' && view !== 'settings' && view !== 'home') {
-      return <NoProject />;
-    }
     switch (view) {
-      case 'home': return <Suspense fallback={<PanelLoading />}><OverviewPanel onNavigate={navigate as any} /></Suspense>;
-      case 'terminal': return <Suspense fallback={<PanelLoading />}><TerminalSessionPanel /></Suspense>;
-      case 'files':
-      case 'code': return <Suspense fallback={<PanelLoading />}><WorkspaceExplorer /></Suspense>;
-      case 'agents': return <Suspense fallback={<PanelLoading />}><AgentsPanel /></Suspense>;
-      case 'tools': return <Suspense fallback={<PanelLoading />}><ToolsPanel /></Suspense>;
-      case 'git': return <Suspense fallback={<PanelLoading />}><GitPanel /></Suspense>;
+      case 'chat': return null; // Chat is rendered as the right panel
+      case 'workspace': return <Suspense fallback={<PanelLoading />}><WorkspacePanel /></Suspense>;
       case 'knowledge': return <Suspense fallback={<PanelLoading />}><KnowledgePanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
-      case 'plugins': return <Suspense fallback={<PanelLoading />}><PluginsPanel /></Suspense>;
-      case 'monitor': return <Suspense fallback={<PanelLoading />}><HardwareMonitorPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
       default: return <NoProject />;
     }
   };
+
+  // UI-15 §2: When view === 'chat', the left workspace area shows the orb
+  // (not a panel). When view !== 'chat', the orb is hidden and the selected
+  // panel fills the center. Chat panel stays on the right always.
+  const showOrb = view === 'chat';
 
   return (
     <div
@@ -249,55 +221,15 @@ export default function AppShell() {
           <div className="flex-1 overflow-hidden">{leftPanel()}</div>
         </div>
 
-        {/* Center: NEX AI Orb (or EditorPanel overlay when a file is open) */}
+        {/* Center: Orb (when chat view) OR panel content (when other views).
+            UI-15 §2: Orb is the visual heart when in Chat mode. When user
+            navigates to Workspace/Memory/Knowledge/Settings, the panel fills
+            the center area. Chat panel stays on the right always. */}
         <div
           className="flex-1 flex flex-col items-center justify-center relative"
           style={{ minWidth: 0 }}
         >
-          {/* UI-04: EditorPanel overlay — shown when a file is open, hides the
-              Orb + branding. Closing all files returns to the Orb view.
-              EditorPanel reads openFiles/activeFile directly from the store. */}
-          {activeFile ? (
-            <div
-              className="absolute inset-0 nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
-              style={{
-                borderRadius: 'var(--nex-radius-lg)',
-                margin: '8px 4px',
-                border: '1px solid var(--nex-panel-border)',
-              }}
-            >
-              {/* Editor header with close button */}
-              <div
-                className="flex items-center justify-between px-3 py-2 shrink-0"
-                style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
-              >
-                <span
-                  className="text-[10px] font-medium tracking-wider truncate"
-                  style={{ color: 'var(--nex-accent-text)' }}
-                  title={activeFile}
-                >
-                  {activeFile.split(/[\\/]/).pop() || activeFile}
-                </span>
-                <button
-                  onClick={() => closeFile(activeFile)}
-                  className="nex-click nex-focus p-1 rounded transition-colors hover:bg-white/[0.06]"
-                  style={{ color: 'var(--nex-text-muted)' }}
-                  aria-label="Close editor and return to Orb"
-                  title="Close editor (Esc)"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              {/* Editor body */}
-              <div className="flex-1 overflow-hidden">
-                <Suspense fallback={<PanelLoading />}>
-                  <EditorPanel />
-                </Suspense>
-              </div>
-            </div>
-          ) : (
+          {showOrb ? (
             <>
               {/* UI-14 §2: Compact header — was text-4xl/5xl/6xl + mb-8 (huge).
                   Now text-base/sm + mb-2 (minimal). Subtitle is subtle one-liner.
@@ -352,6 +284,22 @@ export default function AppShell() {
                 </Suspense>
               </div>
             </>
+          ) : (
+            /* UI-15: Non-chat views render their panel in the center (full width).
+               The left workspace panel is hidden when not in chat mode — center
+               fills the available space for Memory/Knowledge/Settings panels. */
+            <div
+              className="absolute inset-0 nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
+              style={{
+                borderRadius: 'var(--nex-radius-lg)',
+                margin: '8px 4px',
+                border: '1px solid var(--nex-panel-border)',
+              }}
+            >
+              <div className="flex-1 overflow-hidden">
+                {leftPanel()}
+              </div>
+            </div>
           )}
         </div>
 

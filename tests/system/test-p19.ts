@@ -61,17 +61,15 @@ assert('5-min staleness pin intact', /5 \* 60 \* 1000/.test(rt));
 
 console.log('\nB) command palette coverage:');
 const palette = fs.readFileSync(path.join(__dirname, '../../src/renderer/components/CommandPalette.tsx'), 'utf-8');
-// UI-06 INTEGRATION FIX: palette commands now use navigateTo(view) which
-// dispatches nex:navigate CustomEvent (was setSidebarView — dead store call
-// that AppShell never read). The mapping changed:
-//   view-system-monitor → navigateTo('monitor')  (was setSidebarView('system'))
-//   view-knowledge → navigateTo('knowledge')
-//   view-memory → navigateTo('memory')
-//   view-plugins → navigateTo('plugins')
-for (const [id, view] of [['view-knowledge', 'knowledge'], ['view-memory', 'memory'], ['view-system-monitor', 'monitor'], ['view-plugins', 'plugins']] as const) {
+// UI-15 INTEGRATION FIX: palette commands consolidated to 5 main views.
+// view-system-monitor and view-plugins removed (Hardware/Plugins now in Settings).
+// view-knowledge and view-memory preserved (they're main nav items).
+for (const [id, view] of [['view-knowledge', 'knowledge'], ['view-memory', 'memory']] as const) {
   assert(`palette: '${id}' → ${view}`, palette.includes(`id: '${id}'`) && palette.includes(`navigateTo('${view}')`));
 }
-assert('palette: labels human-readable', ['Knowledge Base', 'System Monitor', 'Plugins'].every((l) => palette.includes(l)));
+// UI-15: workspace command added (replaces terminal/files/etc.)
+assert('palette: open-workspace → workspace', palette.includes("id: 'open-workspace'") && palette.includes("navigateTo('workspace')"));
+assert('palette: labels human-readable', ['Knowledge Base'].every((l) => palette.includes(l)));
 const storeSrc = fs.readFileSync(path.join(__dirname, '../../src/renderer/store/useStore.ts'), 'utf-8');
 assert("SidebarView includes all 4", ["'knowledge'", "'memory'", "'system'", "'plugins'"].every((v) => storeSrc.includes(v)));
 

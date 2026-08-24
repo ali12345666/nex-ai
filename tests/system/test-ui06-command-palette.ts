@@ -43,13 +43,12 @@ async function main(): Promise<void> {
   assert('setTerminalVisible NOT in useStore destructuring', !/setTerminalVisible,/.test(cpSrc));
 
   console.log('\n3) All original commands now use navigateTo or focusChat:');
-  assert('toggle-terminal uses navigateTo(terminal)', /id: 'toggle-terminal'[\s\S]*?navigateTo\('terminal'\)/.test(cpSrc));
+  // UI-15: toggle-terminal replaced with open-workspace (consolidated).
+  assert('open-workspace uses navigateTo(workspace)', /id: 'open-workspace'[\s\S]*?navigateTo\('workspace'\)/.test(cpSrc));
   assert('open-chat uses focusChat()', /id: 'open-chat'[\s\S]*?focusChat\(\)/.test(cpSrc));
   assert('open-settings uses navigateTo(settings)', /id: 'open-settings'[\s\S]*?navigateTo\('settings'\)/.test(cpSrc));
   assert('view-knowledge uses navigateTo(knowledge)', /id: 'view-knowledge'[\s\S]*?navigateTo\('knowledge'\)/.test(cpSrc));
   assert('view-memory uses navigateTo(memory)', /id: 'view-memory'[\s\S]*?navigateTo\('memory'\)/.test(cpSrc));
-  assert('view-system-monitor uses navigateTo(monitor)', /id: 'view-system-monitor'[\s\S]*?navigateTo\('monitor'\)/.test(cpSrc));
-  assert('view-plugins uses navigateTo(plugins)', /id: 'view-plugins'[\s\S]*?navigateTo\('plugins'\)/.test(cpSrc));
 
   console.log('\n4) Working commands preserved (no regression):');
   assert('open-folder still uses nexAPI.openFolder', /window\.nexAPI\.openFolder\(\)/.test(cpSrc));
@@ -57,15 +56,14 @@ async function main(): Promise<void> {
   assert('increase-font still uses updateSettings', /updateSettings\(\{ fontSize:/.test(cpSrc));
   assert('decrease-font still uses updateSettings', /updateSettings\(\{ fontSize: Math\.max\(10,/.test(cpSrc));
 
-  console.log('\n5) New navigation commands added (UI-06 bonus):');
-  assert('view-home command added', /id: 'view-home'/.test(cpSrc));
-  assert('view-home navigates to home', /id: 'view-home'[\s\S]*?navigateTo\('home'\)/.test(cpSrc));
-  assert('view-files command added', /id: 'view-files'/.test(cpSrc));
-  assert('view-files navigates to files', /id: 'view-files'[\s\S]*?navigateTo\('files'\)/.test(cpSrc));
-  assert('view-agents command added', /id: 'view-agents'/.test(cpSrc));
-  assert('view-agents navigates to agents', /id: 'view-agents'[\s\S]*?navigateTo\('agents'\)/.test(cpSrc));
-  assert('view-tools command added', /id: 'view-tools'/.test(cpSrc));
-  assert('view-tools navigates to tools', /id: 'view-tools'[\s\S]*?navigateTo\('tools'\)/.test(cpSrc));
+  console.log('\n5) UI-15: New nav commands added (consolidated):');
+  assert('open-workspace command added', /id: 'open-workspace'/.test(cpSrc));
+  assert('open-workspace navigates to workspace', /id: 'open-workspace'[\s\S]*?navigateTo\('workspace'\)/.test(cpSrc));
+  // UI-15: old sub-nav commands removed (consolidated into workspace)
+  assert('NO view-home command (removed)', !/id: 'view-home'/.test(cpSrc));
+  assert('NO view-files command (removed)', !/id: 'view-files'/.test(cpSrc));
+  assert('NO view-agents command (removed)', !/id: 'view-agents'/.test(cpSrc));
+  assert('NO view-tools command (removed)', !/id: 'view-tools'/.test(cpSrc));
 
   console.log('\n6) AppShell listens for nex:navigate:');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
@@ -82,7 +80,7 @@ async function main(): Promise<void> {
   console.log('\n8) Command count check:');
   // Count command definitions — should be 12 original + 4 new = 16
   const commandCount = (cpSrc.match(/id: '[a-z-]+',/g) || []).length;
-  assert('total commands >= 15 (11 original + 4 new)', commandCount >= 15);
+  assert('total commands >= 9 (UI-15 consolidated: removed 6 sub-nav, kept essentials + workspace)', commandCount >= 9);
 
   console.log('\n9) Accessibility preserved:');
   assert('keyboard navigation preserved (ArrowDown)', /e\.key === 'ArrowDown'/.test(cpSrc));
