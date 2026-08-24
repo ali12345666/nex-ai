@@ -30,6 +30,16 @@ function assert(name: string, cond: boolean, extra?: string) {
   else { fail++; failures.push(name); console.log(`  FAIL: ${name}${extra ? ' — ' + extra : ''}`); }
 }
 
+/** Check if a commit SHA is an ancestor of another (i.e., contained in its history). */
+function gitMergeBaseIsAncestor(ancestor: string, descendant: string): boolean {
+  try {
+    execSync(`git merge-base --is-ancestor ${ancestor} ${descendant}`, { encoding: 'utf-8', stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
 
@@ -85,10 +95,12 @@ async function main(): Promise<void> {
 
   console.log('\n4) Main branch updated with UI ERA (merged):');
   // PERMANENT DIRECTIVE: main must contain all verified UI ERA changes.
-  // Main was ff-merged from ui/release-v1.2.0 integration branch.
+  // Main was ff-merged from ui/release-v1.2.0 integration branch (e70389a),
+  // then advanced with 2 more commits: test-fix (1b3d6d4) + v1.2.0 release (fee6c16).
   // The old baseline c76936b is preserved in backup/ui-baseline-v1.1.0 tag.
+  // Check: main has ADVANCED past c76936b AND contains the integration commit e70389a.
   assert('main has advanced past c76936b (UI ERA merged)', !mainSha.startsWith('c76936b'));
-  assert('main is at integration commit e70389a', mainSha.startsWith('e70389a'));
+  assert('main contains integration commit e70389a (UI ERA in history)', gitMergeBaseIsAncestor('e70389a', 'main'));
 
   console.log('\n5) Core architecture intact (no Phase 27-37 regressions):');
   const shellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
