@@ -717,6 +717,15 @@ function setupIPC(): void {
   ipcMain.handle('ai-chat-stream', async (_event, config: any, messages: AIMessage[]) => {
     const replyId = `chat-${Date.now()}`;
     try {
+      // UI-02: enforce persisted aiMode (defense-in-depth — stream path was
+      // previously unchecked, allowing a compromised renderer to bypass
+      // the 'local' mode restriction via the streaming endpoint).
+      const { enforceAiMode, getCurrentAiMode } = await import('./ai/ai-mode');
+      const blocked = enforceAiMode(getCurrentAiMode(), config.provider);
+      if (blocked) {
+        return { success: false, replyId, error: blocked.error };
+      }
+
       const { createTokenStreamer } = await import('./agent/stream-emit');
       let runtime: import('./ai/runtime').AIRuntime | null = null;
       if (config.provider === 'local') {
