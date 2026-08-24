@@ -17,6 +17,7 @@ import {
   Activity,
   Puzzle,
 } from 'lucide-react';
+import type { NexView } from './layout/NavigationRail';
 
 interface Command {
   id: string;
@@ -27,13 +28,23 @@ interface Command {
   category: string;
 }
 
+/**
+ * UI-06: dispatch a `nex:navigate` CustomEvent that AppShell listens for.
+ * Replaces the dead setActivePanel/setSidebarView store calls that AppShell
+ * never read — 9 of 12 commands were silent no-ops before this fix.
+ */
+function navigateTo(view: NexView): void {
+  window.dispatchEvent(new CustomEvent('nex:navigate', { detail: { view } }));
+}
+
+/** UI-06: focus the always-visible chat input (replaces dead 'open-chat'). */
+function focusChat(): void {
+  window.dispatchEvent(new CustomEvent('nex:focus-chat'));
+}
+
 export default function CommandPalette() {
   const {
     toggleCommandPalette,
-    setActivePanel,
-    setSidebarView,
-    setTerminalVisible,
-    toggleTerminal,
     saveFile,
     activeFile,
     updateSettings,
@@ -72,22 +83,22 @@ export default function CommandPalette() {
     {
       id: 'toggle-terminal',
       label: 'Toggle Terminal',
-      description: 'Show or hide the integrated terminal',
+      description: 'Open the integrated terminal panel',
       icon: <Terminal size={16} />,
       category: 'View',
       action: () => {
-        toggleTerminal();
+        navigateTo('terminal');
         toggleCommandPalette();
       },
     },
     {
       id: 'open-chat',
       label: 'AI Chat',
-      description: 'Open the AI assistant chat',
+      description: 'Focus the AI assistant chat input',
       icon: <Sparkles size={16} />,
       category: 'View',
       action: () => {
-        setActivePanel('chat');
+        focusChat();
         toggleCommandPalette();
       },
     },
@@ -98,11 +109,13 @@ export default function CommandPalette() {
       icon: <Settings size={16} />,
       category: 'Preferences',
       action: () => {
-        setActivePanel('settings');
+        navigateTo('settings');
         toggleCommandPalette();
       },
     },
     // Phase 19 / P19-B: new panels in the palette
+    // UI-06: these were silent no-ops (setSidebarView + setActivePanel were
+    // never read by AppShell). Now dispatch nex:navigate CustomEvent.
     {
       id: 'view-knowledge',
       label: 'Knowledge Base',
@@ -110,8 +123,7 @@ export default function CommandPalette() {
       icon: <BookOpen size={16} />,
       category: 'View',
       action: () => {
-        setSidebarView('knowledge');
-        setActivePanel('editor');
+        navigateTo('knowledge');
         toggleCommandPalette();
       },
     },
@@ -122,8 +134,7 @@ export default function CommandPalette() {
       icon: <Brain size={16} />,
       category: 'View',
       action: () => {
-        setSidebarView('memory');
-        setActivePanel('editor');
+        navigateTo('memory');
         toggleCommandPalette();
       },
     },
@@ -134,8 +145,7 @@ export default function CommandPalette() {
       icon: <Activity size={16} />,
       category: 'View',
       action: () => {
-        setSidebarView('system');
-        setActivePanel('editor');
+        navigateTo('monitor');
         toggleCommandPalette();
       },
     },
@@ -146,8 +156,52 @@ export default function CommandPalette() {
       icon: <Puzzle size={16} />,
       category: 'View',
       action: () => {
-        setSidebarView('plugins');
-        setActivePanel('editor');
+        navigateTo('plugins');
+        toggleCommandPalette();
+      },
+    },
+    // UI-06: new navigation commands (previously missing from palette)
+    {
+      id: 'view-home',
+      label: 'Home Overview',
+      description: 'Project overview + quick actions',
+      icon: <Sparkles size={16} />,
+      category: 'View',
+      action: () => {
+        navigateTo('home');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-files',
+      label: 'File Explorer',
+      description: 'Browse workspace files',
+      icon: <FolderOpen size={16} />,
+      category: 'View',
+      action: () => {
+        navigateTo('files');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-agents',
+      label: 'Agent Tasks',
+      description: 'List running + completed agent tasks',
+      icon: <Sparkles size={16} />,
+      category: 'View',
+      action: () => {
+        navigateTo('agents');
+        toggleCommandPalette();
+      },
+    },
+    {
+      id: 'view-tools',
+      label: 'Agent Tools',
+      description: 'List available agent tools',
+      icon: <Terminal size={16} />,
+      category: 'View',
+      action: () => {
+        navigateTo('tools');
         toggleCommandPalette();
       },
     },

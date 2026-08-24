@@ -79,6 +79,32 @@ export default function AppShell() {
 
   const navigate = useCallback((v: NexView) => setView(v), []);
 
+  // UI-06: Listen for nex:navigate CustomEvent from CommandPalette.
+  // Replaces the dead setActivePanel/setSidebarView store calls that AppShell
+  // never read — 9 of 12 commands were silent no-ops before this fix.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { view: NexView } | undefined;
+      if (detail?.view) {
+        setView(detail.view);
+      }
+    };
+    window.addEventListener('nex:navigate', handler);
+    return () => window.removeEventListener('nex:navigate', handler);
+  }, []);
+
+  // UI-06: Listen for nex:focus-chat — focuses the always-visible chat input.
+  // Dispatched by CommandPalette's 'AI Chat' command.
+  useEffect(() => {
+    const handler = () => {
+      // Re-dispatch so NexChatPanel (which is lazy-loaded) can listen.
+      // Use a second event so we don't couple AppShell to chat internals.
+      window.dispatchEvent(new CustomEvent('nex:focus-chat-input'));
+    };
+    window.addEventListener('nex:focus-chat', handler);
+    return () => window.removeEventListener('nex:focus-chat', handler);
+  }, []);
+
   // Phase 34: Ctrl+K → open history + focus search
   useEffect(() => {
     const handler = () => {
