@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   assert('floating panel uses nex-glass-strong', /nex-glass-strong/.test(shellSrc));
   assert('floating panel uses nex-animate-in', /nex-animate-in/.test(shellSrc));
   assert('panel is absolute overlay (not flex)', /absolute/.test(shellSrc));
-  assert('panel has fixed width', /width: 420/.test(shellSrc));
+  assert('panel has conditional width (settings wider)', /view === 'settings'/.test(shellSrc) || /width: 420/.test(shellSrc));
 
   console.log('\n4) Orb always visible (UI-16):');
   assert('NEX AI branding present', /NEX AI/.test(shellSrc));

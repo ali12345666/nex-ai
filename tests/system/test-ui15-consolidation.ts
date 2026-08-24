@@ -116,7 +116,7 @@ async function main(): Promise<void> {
   console.log('\n7) §2 AppShell shows Orb when view=chat, panel otherwise:');
   assert('showOrb variable defined', /const showOrb = view === 'chat'/.test(shellSrc));
   assert('Orb always rendered with showOrb sizing', /showOrb/.test(shellSrc));
-  assert('Non-chat panel is absolute overlay', /absolute/.test(shellSrc) && /width: 420/.test(shellSrc));
+  assert('Non-chat panel is absolute overlay', /absolute/.test(shellSrc) && (/width: 420/.test(shellSrc) || /width: view/.test(shellSrc)));
 
   console.log('\n8) §6 Voice toggle removed, Always-Ready preserved:');
   assert('NO voice toggle button', !/voiceController\.toggle\(\)/.test(shellSrc));

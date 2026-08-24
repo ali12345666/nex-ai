@@ -57,7 +57,7 @@ function Card({ title, description, children }: { title: string; description?: s
     >
       <div className="mb-3">
         <h3 className="text-xs font-semibold" style={{ color: 'var(--nex-text)' }}>{title}</h3>
-        {description && <p className="text-[10px] mt-0.5" style={{ color: 'var(--nex-text-muted)' }}>{description}</p>}
+        {description && <p className="text-xs mt-0.5" style={{ color: 'var(--nex-text-muted)' }}>{description}</p>}
       </div>
       {children}
     </div>
@@ -88,9 +88,9 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 function Row({ label, value, mono }: { label: string; value: string | number | undefined; mono?: boolean }) {
   return (
     <div className="flex items-center justify-between py-1">
-      <span className="text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>{label}</span>
+      <span className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>{label}</span>
       <span
-        className={`text-[11px] font-medium ${mono ? 'font-mono' : ''}`}
+        className={`text-xs font-medium ${mono ? 'font-mono' : ''}`}
         style={{ color: value !== undefined && value !== null ? 'var(--nex-text-dim)' : 'var(--nex-text-muted)' }}
       >
         {value !== undefined && value !== null ? value : 'N/A'}
@@ -102,7 +102,7 @@ function Row({ label, value, mono }: { label: string; value: string | number | u
 function Slider({ label, value, min, max, step, onChange, unit }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; unit?: string }) {
   return (
     <div className="py-1.5">
-      <label className="flex items-center justify-between text-[11px] mb-1" style={{ color: 'var(--nex-text-dim)' }}>
+      <label className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>
         <span>{label}</span>
         <span className="font-mono" style={{ color: 'var(--nex-accent-text)' }}>{value}{unit}</span>
       </label>
@@ -119,11 +119,11 @@ function Slider({ label, value, min, max, step, onChange, unit }: { label: strin
 function Select({ label, value, options, onChange }: { label: string; value: string; options: Array<{ value: string; label: string }>; onChange: (v: string) => void }) {
   return (
     <div className="py-1.5">
-      <label className="block text-[11px] mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
+      <label className="block text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none nex-click"
+        className="w-full rounded-md px-2 py-1.5 text-xs outline-none nex-click"
         style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text)' }}
         aria-label={label}
       >
@@ -138,13 +138,13 @@ function Select({ label, value, options, onChange }: { label: string; value: str
 function Input({ label, value, onChange, type = 'text', placeholder }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string }) {
   return (
     <div className="py-1.5">
-      <label className="block text-[11px] mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
+      <label className="block text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none nex-click font-mono"
+        className="w-full rounded-md px-2 py-1.5 text-xs outline-none nex-click font-mono"
         style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text)' }}
         aria-label={label}
       />
@@ -156,7 +156,7 @@ function ActionButton({ onClick, children, variant = 'default' }: { onClick: () 
   return (
     <button
       onClick={onClick}
-      className="nex-click nex-focus px-3 py-1.5 rounded-md text-[10px] font-medium transition-all"
+      className="nex-click nex-focus px-3 py-1.5 rounded-md text-xs font-medium transition-all"
       style={{
         background: variant === 'danger' ? 'rgba(239,68,68,0.1)' : 'var(--nex-accent-dim)',
         color: variant === 'danger' ? 'rgb(248,113,113)' : 'var(--nex-accent-text)',
@@ -170,11 +170,11 @@ function ActionButton({ onClick, children, variant = 'default' }: { onClick: () 
 
 function StatusBadge({ status, label }: { status: boolean | null; label: string }) {
   if (status === null) {
-    return <span className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Checking…</span>;
+    return <span className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Checking…</span>;
   }
   return (
     <span
-      className="text-[10px] px-1.5 py-0.5 rounded-full"
+      className="text-xs px-1.5 py-0.5 rounded-full"
       style={{
         background: status ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
         color: status ? 'rgb(74,222,128)' : 'rgb(248,113,113)',
@@ -277,16 +277,16 @@ export default function SettingsPanel() {
 
   return (
     <div className="h-full flex" style={{ background: 'var(--nex-bg)' }}>
-      {/* Sidebar */}
+      {/* Sidebar — wider for readability (was 180px) */}
       <div
-        className="w-[180px] shrink-0 flex flex-col"
+        className="w-[200px] shrink-0 flex flex-col"
         style={{ borderRight: '1px solid var(--nex-glass-border)', background: 'var(--nex-panel-solid)' }}
       >
         <div
           className="h-9 flex items-center px-3 shrink-0"
           style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
         >
-          <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--nex-text-dim)' }}>
+          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--nex-text-dim)' }}>
             Settings
           </span>
         </div>
@@ -295,7 +295,7 @@ export default function SettingsPanel() {
             <button
               key={section.id}
               onClick={() => setActiveSection(section.id)}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] transition-all nex-click nex-focus"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-all nex-click nex-focus"
               style={{
                 color: activeSection === section.id ? 'var(--nex-accent)' : 'var(--nex-text-dim)',
                 background: activeSection === section.id ? 'var(--nex-accent-dim)' : 'transparent',
@@ -312,7 +312,7 @@ export default function SettingsPanel() {
         <div className="p-2 shrink-0" style={{ borderTop: '1px solid var(--nex-glass-border)' }}>
           <button
             onClick={handleSave}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-[10px] font-medium transition-all nex-click nex-focus"
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-all nex-click nex-focus"
             style={{
               background: 'var(--nex-accent)',
               color: 'var(--nex-bg)',
@@ -323,14 +323,14 @@ export default function SettingsPanel() {
             {saved ? 'Saved' : 'Save'}
           </button>
           {saveError && (
-            <p className="text-[9px] mt-1" style={{ color: 'rgb(248,113,113)' }}>{saveError}</p>
+            <p className="text-xs mt-1" style={{ color: 'rgb(248,113,113)' }}>{saveError}</p>
           )}
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto nex-scrollbar p-4">
-        <div className="max-w-xl space-y-3">
+      {/* Content — wider max-width + more padding for readability */}
+      <div className="flex-1 overflow-y-auto nex-scrollbar p-5">
+        <div className="max-w-2xl space-y-4">
 
           {/* ═══ GENERAL ═══ */}
           {activeSection === 'general' && (
@@ -385,7 +385,7 @@ export default function SettingsPanel() {
               </Card>
 
               <Card title="Startup" description="Launch behavior (requires backend support)">
-                <p className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>
+                <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
                   Startup behavior (start-with-OS, restore session) requires Electron
                   auto-launch integration. Not yet wired — accessible via Agent.
                 </p>
@@ -409,7 +409,7 @@ export default function SettingsPanel() {
                       }}
                       aria-label={`Set AI mode to ${mode}`}
                     >
-                      <div className="text-[11px] font-medium capitalize" style={{ color: aiMode === mode ? 'var(--nex-accent-text)' : 'var(--nex-text-dim)' }}>
+                      <div className="text-xs font-medium capitalize" style={{ color: aiMode === mode ? 'var(--nex-accent-text)' : 'var(--nex-text-dim)' }}>
                         {mode}
                       </div>
                     </button>
@@ -452,11 +452,11 @@ export default function SettingsPanel() {
                     className="inline-block w-2 h-2 rounded-full animate-pulse"
                     style={{ background: 'var(--nex-success)' }}
                   />
-                  <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>
+                  <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>
                     Always Listening (auto-starts on boot)
                   </span>
                 </div>
-                <p className="text-[10px] mt-1" style={{ color: 'var(--nex-text-muted)' }}>
+                <p className="text-xs mt-1" style={{ color: 'var(--nex-text-muted)' }}>
                   Voice auto-restarts after each command. Interrupt with "stop" or "cancel".
                 </p>
               </Card>
@@ -490,7 +490,7 @@ export default function SettingsPanel() {
                 <Row label="Echo Cancellation" value="Enabled" />
                 <Row label="Noise Suppression" value="Enabled" />
                 <Row label="Auto Gain Control" value="Enabled" />
-                <p className="text-[10px] mt-1" style={{ color: 'var(--nex-text-muted)' }}>
+                <p className="text-xs mt-1" style={{ color: 'var(--nex-text-muted)' }}>
                   STT pauses during TTS to prevent self-hearing. Auto-resumes after.
                 </p>
               </Card>
@@ -506,7 +506,7 @@ export default function SettingsPanel() {
                     <button
                       key={mode}
                       onClick={() => setAIMode(mode)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-[11px] font-medium transition-all nex-click nex-focus"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-all nex-click nex-focus"
                       style={{
                         background: aiMode === mode ? 'var(--nex-accent-dim)' : 'transparent',
                         border: `1px solid ${aiMode === mode ? 'var(--nex-accent)' : 'var(--nex-glass-border)'}`,
@@ -519,7 +519,7 @@ export default function SettingsPanel() {
                     </button>
                   ))}
                 </div>
-                <p className="text-[10px] mt-2" style={{ color: 'var(--nex-text-muted)' }}>
+                <p className="text-xs mt-2" style={{ color: 'var(--nex-text-muted)' }}>
                   Mode is enforced server-side (src/main/ai/ai-mode.ts). Persists across restarts.
                 </p>
               </Card>
@@ -547,7 +547,7 @@ export default function SettingsPanel() {
                       />
                       <button
                         onClick={() => setShowGlmKey(!showGlmKey)}
-                        className="text-[10px] flex items-center gap-1 mt-1 nex-click"
+                        className="text-xs flex items-center gap-1 mt-1 nex-click"
                         style={{ color: 'var(--nex-text-muted)' }}
                       >
                         {showGlmKey ? <EyeOff size={10} /> : <Eye size={10} />}
@@ -650,7 +650,7 @@ export default function SettingsPanel() {
             <>
               <Card title="Plugins" description="Sandboxed plugin management (Phase 15-16)">
                 {plugins.length === 0 ? (
-                  <p className="text-[10px] py-2" style={{ color: 'var(--nex-text-muted)' }}>
+                  <p className="text-xs py-2" style={{ color: 'var(--nex-text-muted)' }}>
                     No plugins discovered. Place plugin folders in userData/plugins/.
                   </p>
                 ) : (
@@ -662,10 +662,10 @@ export default function SettingsPanel() {
                         style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="text-[11px] font-medium truncate" style={{ color: 'var(--nex-text)' }}>
+                          <div className="text-xs font-medium truncate" style={{ color: 'var(--nex-text)' }}>
                             {p.name}
                           </div>
-                          <div className="text-[9px]" style={{ color: 'var(--nex-text-muted)' }}>
+                          <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
                             v{p.version} · {p.enabled ? 'Enabled' : 'Disabled'}
                           </div>
                         </div>
@@ -694,27 +694,27 @@ export default function SettingsPanel() {
               <Card title="Security Features" description="Real status from backend">
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>Content Security Policy</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Content Security Policy</span>
                     <StatusBadge status={true} label="CSP" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>Context Isolation</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Context Isolation</span>
                     <StatusBadge status={true} label="Isolated" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>Node Integration</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Node Integration</span>
                     <StatusBadge status={true} label="Disabled" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>Path Jail (fs-service)</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Path Jail (fs-service)</span>
                     <StatusBadge status={true} label="Enforced" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>Knowledge Ingest Guard</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Knowledge Ingest Guard</span>
                     <StatusBadge status={true} label="Active" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px]" style={{ color: 'var(--nex-text-dim)' }}>API Key Encryption</span>
+                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>API Key Encryption</span>
                     <StatusBadge status={secretsAvailable} label="safeStorage" />
                   </div>
                 </div>
@@ -753,7 +753,7 @@ export default function SettingsPanel() {
                     <Row label="VRAM" value={snap.gpus[0].vramPercent !== undefined ? `${Math.round(snap.gpus[0].vramPercent)}%` : 'N/A'} />
                   </>
                 ) : (
-                  <p className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>
+                  <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
                     GPU: N/A (no GPU detected or backend unavailable)
                   </p>
                 )}
@@ -791,7 +791,7 @@ export default function SettingsPanel() {
                     </div>
                     <div>
                       <div className="text-sm font-bold" style={{ color: 'var(--nex-text)' }}>NEX AI</div>
-                      <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Local-First AI Workstation</div>
+                      <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Local-First AI Workstation</div>
                     </div>
                   </div>
                 </div>

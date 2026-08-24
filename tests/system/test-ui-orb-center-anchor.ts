@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   console.log('\n3) Workspace panel is ABSOLUTE OVERLAY (not in flex flow):');
   assert('panel uses absolute positioning', /absolute.*nex-glass-strong/.test(shellSrc));
   assert('panel has fixed top/bottom/left (not right/full)', /top: 8,/.test(shellSrc) && /bottom: 8,/.test(shellSrc) && /left: 8,/.test(shellSrc));
-  assert('panel has fixed width', /width: 420/.test(shellSrc));
+  assert('panel has width for non-settings', /width: view === 'settings'/.test(shellSrc) || /width: 420/.test(shellSrc));
   assert('panel has maxWidth constraint', /maxWidth:/.test(shellSrc));
   assert('panel has zIndex', /zIndex: 5/.test(shellSrc));
   assert('panel does NOT use flex-1 or shrink-0', !/flex-1.*nex-glass-strong/.test(shellSrc) && !/shrink-0.*nex-glass-strong/.test(shellSrc));

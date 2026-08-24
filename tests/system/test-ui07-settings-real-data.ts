@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   assert('StatusBadge component defined', /function StatusBadge/.test(settingsSrc));
 
   console.log('\n9) Sidebar is compact:');
-  assert('sidebar width 180px (compact)', /w-\[180px\]/.test(settingsSrc));
+  assert('sidebar width 200px (wider for readability)', /w-\[200px\]/.test(settingsSrc));
   assert('sidebar has section buttons', /SECTIONS\.map/.test(settingsSrc));
   assert('active section has accent border-left', /borderLeft:.*accent/.test(settingsSrc) || /border-r-2 border-r-nex-accent/.test(settingsSrc));
 

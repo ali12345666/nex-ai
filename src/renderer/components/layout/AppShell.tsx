@@ -272,7 +272,9 @@ export default function AppShell() {
           {/* Workspace / Panel — ABSOLUTE OVERLAY. Floats independently.
               Does NOT push Orb. Does NOT participate in flex layout.
               Positioned left side of center area, with gap from Chat.
-              pointer-events enabled so panel is interactive. */}
+              pointer-events enabled so panel is interactive.
+              UI-16 Settings Fix: Settings panel gets wider width (760px) for
+              readability. Other panels keep 420px. */}
           {!showOrb && leftPanel() && (
             <div
               className="absolute nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
@@ -280,8 +282,8 @@ export default function AppShell() {
                 top: 8,
                 bottom: 8,
                 left: 8,
-                width: 420,
-                maxWidth: '42%',
+                width: view === 'settings' ? 'min(760px, 70%)' : 420,
+                maxWidth: view === 'settings' ? '70%' : '42%',
                 borderRadius: 'var(--nex-radius-lg)',
                 border: '1px solid var(--nex-panel-border)',
                 zIndex: 5,
