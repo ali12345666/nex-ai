@@ -2178,6 +2178,104 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 54: Agent Skills & Tool Execution Layer ──
+  const { getNexAgentExecutor } = await import('./ai/nex-agent-executor');
+  const { getSkillRegistry, getSkill, getSkillsByDomain } = await import('./ai/agent-skill-registry');
+
+  // Agent executor: create execution plan
+  ipcMain.handle('agent-create-plan', async (_event, request: string) => {
+    try {
+      const executor = getNexAgentExecutor();
+      const plan = executor.createPlan(request);
+      return { success: true, plan };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Agent executor: execute plan (with permission checks)
+  ipcMain.handle('agent-execute-plan', async (_event, plan: any) => {
+    try {
+      const executor = getNexAgentExecutor();
+      const result = await executor.executePlan(plan);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message, plan, completedSteps: 0, failedSteps: 0, deniedSteps: 0, message: err.message, messageFa: 'خطا', log: [] };
+    }
+  });
+
+  // Agent executor: respond to permission (chat)
+  ipcMain.handle('agent-respond-permission', async (_event, userResponse: string) => {
+    try {
+      const executor = getNexAgentExecutor();
+      executor.respondToPermission(userResponse);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Agent executor: respond via voice (Phase 41)
+  ipcMain.handle('agent-respond-voice', async () => {
+    try {
+      const executor = getNexAgentExecutor();
+      await executor.respondViaVoice();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Agent executor: get pending permission
+  ipcMain.handle('agent-pending-permission', async () => {
+    try {
+      const executor = getNexAgentExecutor();
+      return { success: true, hasPending: executor.hasPendingPermission(), permission: executor.getPendingPermission() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Agent executor: generate Persian permission message
+  ipcMain.handle('agent-permission-message', async (_event, action: string, details?: string) => {
+    try {
+      const executor = getNexAgentExecutor();
+      const message = executor.generatePermissionMessageFa(action, details);
+      return { success: true, message };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Skill registry: get all skills
+  ipcMain.handle('skill-all', async () => {
+    try {
+      return { success: true, skills: getSkillRegistry() };
+    } catch (err: any) {
+      return { success: false, error: err.message, skills: [] };
+    }
+  });
+
+  // Skill registry: get skill by ID
+  ipcMain.handle('skill-get', async (_event, id: string) => {
+    try {
+      const skill = getSkill(id);
+      if (!skill) return { success: false, error: 'Skill not found' };
+      return { success: true, skill };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Skill registry: get skills by expert domain
+  ipcMain.handle('skill-by-domain', async (_event, domain: string) => {
+    try {
+      return { success: true, skills: getSkillsByDomain(domain as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, skills: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

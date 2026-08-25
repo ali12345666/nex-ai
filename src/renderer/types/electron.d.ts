@@ -239,6 +239,17 @@ export interface NexAPI {
   expertDescription: (lang?: string) => Promise<{ success: boolean; description?: string; error?: string }>;
   expertDomains: () => Promise<{ success: boolean; domains?: string[]; error?: string }>;
 
+  // Phase 54: Agent Skills & Tool Execution Layer
+  agentCreatePlan: (request: string) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  agentExecutePlan: (plan: any) => Promise<{ success: boolean; plan?: any; completedSteps?: number; failedSteps?: number; deniedSteps?: number; message?: string; messageFa?: string; log?: string[]; error?: string }>;
+  agentRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
+  agentRespondVoice: () => Promise<{ success: boolean; error?: string }>;
+  agentPendingPermission: () => Promise<{ success: boolean; hasPending?: boolean; permission?: any; error?: string }>;
+  agentPermissionMessage: (action: string, details?: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  skillAll: () => Promise<{ success: boolean; skills?: any[]; error?: string }>;
+  skillGet: (id: string) => Promise<{ success: boolean; skill?: any; error?: string }>;
+  skillByDomain: (domain: string) => Promise<{ success: boolean; skills?: any[]; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

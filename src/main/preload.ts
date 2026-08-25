@@ -233,6 +233,17 @@ contextBridge.exposeInMainWorld('nexAPI', {
   expertDescription: (lang?: string) => ipcRenderer.invoke('expert-description', lang),
   expertDomains: () => ipcRenderer.invoke('expert-domains'),
 
+  // ── Phase 54: Agent Skills & Tool Execution Layer ──
+  agentCreatePlan: (request: string) => ipcRenderer.invoke('agent-create-plan', request),
+  agentExecutePlan: (plan: any) => ipcRenderer.invoke('agent-execute-plan', plan),
+  agentRespondPermission: (userResponse: string) => ipcRenderer.invoke('agent-respond-permission', userResponse),
+  agentRespondVoice: () => ipcRenderer.invoke('agent-respond-voice'),
+  agentPendingPermission: () => ipcRenderer.invoke('agent-pending-permission'),
+  agentPermissionMessage: (action: string, details?: string) => ipcRenderer.invoke('agent-permission-message', action, details),
+  skillAll: () => ipcRenderer.invoke('skill-all'),
+  skillGet: (id: string) => ipcRenderer.invoke('skill-get', id),
+  skillByDomain: (domain: string) => ipcRenderer.invoke('skill-by-domain', domain),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
