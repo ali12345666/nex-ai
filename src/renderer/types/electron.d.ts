@@ -129,6 +129,17 @@ export interface NexAPI {
   visionUnloadModel: () => Promise<{ success: boolean; error?: string }>;
   visionFindBinary: () => Promise<{ success: boolean; binary: string | null }>;
 
+  // Phase 43: Secure Update & Permission System
+  updateCheck: (info: any) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  updateExecute: (plan: any) => Promise<{ success: boolean; message: string }>;
+  updateRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
+  updateRespondVoice: () => Promise<{ success: boolean; error?: string }>;
+  updateAuditHistory: (limit?: number) => Promise<{ success: boolean; entries?: any[]; error?: string }>;
+  updateHistory: () => Promise<{ success: boolean; entries?: any[]; error?: string }>;
+  updateListBackups: () => Promise<{ success: boolean; backups?: any[]; error?: string }>;
+  updateRollback: (version: string) => Promise<{ success: boolean; error?: string }>;
+  updateClassifyAction: (action: any) => Promise<{ success: boolean; level?: string; description?: string; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

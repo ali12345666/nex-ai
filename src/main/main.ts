@@ -1224,6 +1224,113 @@ async function setupIPC(): Promise<void> {
     };
   });
 
+  // ── Phase 43: Secure Update & Permission System ──
+  const { getUpdateManager } = await import('./update/update-manager');
+  const { classifyAction, formatBytes } = await import('./update/permission-gate');
+
+  // Update: check for update (SAFE — no permission needed)
+  ipcMain.handle('update-check', async (_event, info: any) => {
+    try {
+      const manager = getUpdateManager();
+      const plan = await manager.checkForUpdate(info);
+      return { success: true, plan };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Update: execute update plan (requires permission for each step)
+  ipcMain.handle('update-execute', async (_event, plan: any) => {
+    try {
+      const manager = getUpdateManager();
+      const result = await manager.executeUpdate(plan);
+      return result;
+    } catch (err: any) {
+      return { success: false, message: err.message };
+    }
+  });
+
+  // Update: respond to permission request (from chat)
+  ipcMain.handle('update-respond-permission', async (_event, userResponse: string) => {
+    try {
+      const manager = getUpdateManager();
+      manager.respondToPermissionRequest(userResponse);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Update: respond via voice (Phase 41 local STT)
+  ipcMain.handle('update-respond-voice', async () => {
+    try {
+      const manager = getUpdateManager();
+      await manager.respondViaVoice();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Update: get audit history
+  ipcMain.handle('update-audit-history', async (_event, limit?: number) => {
+    try {
+      const manager = getUpdateManager();
+      const entries = manager.getAuditLogger().readRecent(limit || 50);
+      return { success: true, entries };
+    } catch (err: any) {
+      return { success: false, error: err.message, entries: [] };
+    }
+  });
+
+  // Update: get update history
+  ipcMain.handle('update-history', async () => {
+    try {
+      const manager = getUpdateManager();
+      const entries = manager.getAuditLogger().getUpdateHistory();
+      return { success: true, entries };
+    } catch (err: any) {
+      return { success: false, error: err.message, entries: [] };
+    }
+  });
+
+  // Update: list available backups
+  ipcMain.handle('update-list-backups', async () => {
+    try {
+      const manager = getUpdateManager();
+      const backups = manager.getRollbackManager().listBackups();
+      return { success: true, backups };
+    } catch (err: any) {
+      return { success: false, error: err.message, backups: [] };
+    }
+  });
+
+  // Update: rollback to a specific version
+  ipcMain.handle('update-rollback', async (_event, version: string) => {
+    try {
+      const manager = getUpdateManager();
+      const ok = manager.getRollbackManager().rollbackTo(version);
+      manager.getAuditLogger().log({
+        action: ok ? 'rollback-completed' : 'rollback-failed',
+        description: `Rollback to v${version}`,
+        metadata: { version },
+      });
+      return { success: ok };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Update: classify an action (for UI display)
+  ipcMain.handle('update-classify-action', async (_event, action: any) => {
+    try {
+      const level = classifyAction(action);
+      return { success: true, level, description: action.description };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

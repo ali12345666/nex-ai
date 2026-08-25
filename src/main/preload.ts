@@ -121,6 +121,18 @@ contextBridge.exposeInMainWorld('nexAPI', {
   visionUnloadModel: () => ipcRenderer.invoke('vision-unload-model'),
   visionFindBinary: () => ipcRenderer.invoke('vision-find-binary'),
 
+  // ── Phase 43: Secure Update & Permission System ──
+  updateCheck: (info: any) => ipcRenderer.invoke('update-check', info),
+  updateExecute: (plan: any) => ipcRenderer.invoke('update-execute', plan),
+  updateRespondPermission: (userResponse: string) =>
+    ipcRenderer.invoke('update-respond-permission', userResponse),
+  updateRespondVoice: () => ipcRenderer.invoke('update-respond-voice'),
+  updateAuditHistory: (limit?: number) => ipcRenderer.invoke('update-audit-history', limit),
+  updateHistory: () => ipcRenderer.invoke('update-history'),
+  updateListBackups: () => ipcRenderer.invoke('update-list-backups'),
+  updateRollback: (version: string) => ipcRenderer.invoke('update-rollback', version),
+  updateClassifyAction: (action: any) => ipcRenderer.invoke('update-classify-action', action),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
