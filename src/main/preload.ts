@@ -226,6 +226,13 @@ contextBridge.exposeInMainWorld('nexAPI', {
   ltmPendingPermission: () => ipcRenderer.invoke('ltm-pending-permission'),
   ltmRespondPermission: (approved: boolean, reason?: string) => ipcRenderer.invoke('ltm-respond-permission', approved, reason),
 
+  // ── Phase 53: Universal Expert System ──
+  expertRoute: (request: string) => ipcRenderer.invoke('expert-route', request),
+  expertAll: () => ipcRenderer.invoke('expert-all'),
+  expertGet: (id: string) => ipcRenderer.invoke('expert-get', id),
+  expertDescription: (lang?: string) => ipcRenderer.invoke('expert-description', lang),
+  expertDomains: () => ipcRenderer.invoke('expert-domains'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

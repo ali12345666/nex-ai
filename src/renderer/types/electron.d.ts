@@ -232,6 +232,13 @@ export interface NexAPI {
   ltmPendingPermission: () => Promise<{ success: boolean; hasPending?: boolean; permission?: any; error?: string }>;
   ltmRespondPermission: (approved: boolean, reason?: string) => Promise<{ success: boolean; error?: string }>;
 
+  // Phase 53: Universal Expert System
+  expertRoute: (request: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  expertAll: () => Promise<{ success: boolean; experts?: any[]; error?: string }>;
+  expertGet: (id: string) => Promise<{ success: boolean; expert?: any; error?: string }>;
+  expertDescription: (lang?: string) => Promise<{ success: boolean; description?: string; error?: string }>;
+  expertDomains: () => Promise<{ success: boolean; domains?: string[]; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

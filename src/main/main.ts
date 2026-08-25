@@ -2122,6 +2122,62 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 53: Universal Expert System ──
+  const { getExpertRouter } = await import('./ai/expert-router');
+  const { getExpertProfiles, getExpertProfile } = await import('./ai/nex-expert-system');
+
+  // Expert: route a request to the best expert
+  ipcMain.handle('expert-route', async (_event, request: string) => {
+    try {
+      const router = getExpertRouter();
+      const result = router.route(request);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Expert: get all expert profiles
+  ipcMain.handle('expert-all', async () => {
+    try {
+      return { success: true, experts: getExpertProfiles() };
+    } catch (err: any) {
+      return { success: false, error: err.message, experts: [] };
+    }
+  });
+
+  // Expert: get a specific expert profile
+  ipcMain.handle('expert-get', async (_event, id: string) => {
+    try {
+      const expert = getExpertProfile(id);
+      if (!expert) return { success: false, error: 'Expert not found' };
+      return { success: true, expert };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Expert: get expertise description (Persian)
+  ipcMain.handle('expert-description', async (_event, lang?: string) => {
+    try {
+      const router = getExpertRouter();
+      const desc = lang === 'fa' ? router.getExpertiseDescriptionFa() : router.getExpertiseDescription();
+      return { success: true, description: desc };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Expert: get all domains
+  ipcMain.handle('expert-domains', async () => {
+    try {
+      const router = getExpertRouter();
+      return { success: true, domains: router.getAllDomains() };
+    } catch (err: any) {
+      return { success: false, error: err.message, domains: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {
