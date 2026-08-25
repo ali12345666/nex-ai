@@ -43,6 +43,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import 'xterm/css/xterm.css';
 import {
   Terminal as TerminalIcon, Trash2, Loader2, Circle,
 } from 'lucide-react';
@@ -241,15 +242,29 @@ export default function TerminalSessionPanel() {
   // create/open the Terminal, fit to actual geometry, and spawn the PTY at
   // that correct geometry from byte zero.
   const createXterm = useCallback((): boolean => {
-    if (xtermCreatedRef.current) return true; // already created
+    if (xtermCreatedRef.current) {
+      if (XT_DEBUG) console.log('[NEX-XT createXterm] SKIP — already created');
+      return true;
+    }
     const container = containerRef.current;
-    if (!container || !isVisible(container)) return false;
+    if (!container || !isVisible(container)) {
+      if (XT_DEBUG) console.log('[NEX-XT createXterm] SKIP — container not visible');
+      return false;
+    }
+
+    if (XT_DEBUG) {
+      console.log(
+        `[NEX-XT createXterm] START ` +
+        `containerW=${container.clientWidth} containerH=${container.clientHeight} ` +
+        `display=${window.getComputedStyle(container).display}`,
+      );
+    }
 
     const term = new Terminal({
       theme: {
         background: '#060a12',
         foreground: '#c8d0e0',
-        cursor: 'var(--nex-accent)',
+        cursor: '#00e5ff',
         cursorAccent: '#060a12',
         selectionBackground: 'rgba(0, 229, 255, 0.25)',
       },
@@ -264,9 +279,33 @@ export default function TerminalSessionPanel() {
       rows: 24,
     });
 
+    if (XT_DEBUG) console.log('[NEX-XT createXterm] Terminal constructed');
+
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container); // container is GUARANTEED visible here — no 0×0
+
+    if (XT_DEBUG) {
+      // Dump the buffer AFTER open() to verify it's empty (no stale data).
+      const buf = term.buffer.active;
+      let nonEmpty = 0;
+      for (let r = 0; r < buf.length; r++) {
+        const line = buf.getLine(r);
+        if (line) {
+          for (let c = 0; c < term.cols; c++) {
+            const ch = line.getCell(c)?.getChars();
+            if (ch && ch !== ' ' && ch !== '') { nonEmpty++; break; }
+          }
+        }
+      }
+      console.log(
+        `[NEX-XT createXterm] AFTER open() ` +
+        `cols=${term.cols} rows=${term.rows} ` +
+        `bufferLen=${buf.length} nonEmptyCells=${nonEmpty} ` +
+        `(nonEmpty=0 means buffer is clean — no stale data)`,
+      );
+    }
+
     xtermRef.current = term;
     fitRef.current = fit;
     xtermCreatedRef.current = true;
@@ -344,14 +383,18 @@ export default function TerminalSessionPanel() {
 
     // Initial fit NOW (container is visible) — sets correct cols/rows.
     const dims = safeFit();
+    if (XT_DEBUG) console.log(`[NEX-XT createXterm] AFTER fit dims=${JSON.stringify(dims)}`);
+
     // Spawn the PTY at the correct geometry from byte zero.
     if (!hasSpawnedRef.current) {
       const spawnCwd = projectPath ||
         (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
+      if (XT_DEBUG) console.log(`[NEX-XT createXterm] spawning PTY cwd=${spawnCwd} cols=${dims?.cols} rows=${dims?.rows}`);
       spawnSession(spawnCwd, dims?.cols, dims?.rows);
     }
 
     term.focus();
+    if (XT_DEBUG) console.log('[NEX-XT createXterm] DONE');
     return true;
   }, [projectPath, safeFit, sendResizeIfChanged, spawnSession]);
 

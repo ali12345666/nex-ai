@@ -77,7 +77,8 @@ async function main(): Promise<void> {
   // a createXterm() function checks isVisible(container) first.
   assert('createXterm() function present', tpSrc.includes('createXterm'));
   assert('isVisible() guard present', tpSrc.includes('isVisible'));
-  assert('createXterm checks isVisible before open', /if \(!container \|\| !isVisible\(container\)\) return false/.test(tpSrc));
+  assert('createXterm checks isVisible before open',
+    /!container \|\| !isVisible\(container\)/.test(tpSrc));
   assert('xtermCreatedRef one-shot guard', tpSrc.includes('xtermCreatedRef'));
 
   // The mount effect does NOT call term.open() directly — it calls
