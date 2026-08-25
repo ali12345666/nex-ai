@@ -146,6 +146,10 @@ interface AppState {
   // Files
   openFiles: OpenFile[];
   activeFile: string | null;
+  /** Increments every time openFile() is called — used by WorkspacePanel
+   *  to detect "user opened a file" and switch to the editor tab, even if
+   *  activeFile didn't change (clicking an already-open file). */
+  openFileNonce: number;
   openFile: (filePath: string) => Promise<void>;
   closeFile: (filePath: string) => void;
   setActiveFile: (filePath: string) => void;
@@ -238,10 +242,14 @@ export const useStore = create<AppState>((set, get) => ({
   // Files
   openFiles: [],
   activeFile: null,
+  openFileNonce: 0,
   openFile: async (filePath) => {
     const existing = get().openFiles.find((f) => f.path === filePath);
     if (existing) {
-      set({ activeFile: filePath, activePanel: 'editor' });
+      // Even if the file is already open, we bump the nonce so WorkspacePanel
+      // can switch to the editor tab (the user clicked the file — they want
+      // to see it, even if activeFile is already this path).
+      set((s) => ({ activeFile: filePath, activePanel: 'editor', openFileNonce: s.openFileNonce + 1 }));
       return;
     }
     const result = await window.nexAPI.readFile(filePath);
@@ -258,7 +266,11 @@ export const useStore = create<AppState>((set, get) => ({
         openFiles: [...s.openFiles, file],
         activeFile: filePath,
         activePanel: 'editor',
+        openFileNonce: s.openFileNonce + 1,
       }));
+    } else {
+      // Read failed — still bump nonce so the UI can show an error state.
+      set((s) => ({ openFileNonce: s.openFileNonce + 1 }));
     }
   },
   closeFile: (filePath) => {

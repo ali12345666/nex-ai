@@ -74,26 +74,26 @@ function NoProject() {
 }
 
 export default function WorkspacePanel() {
-  const { projectPath, activeFile } = useStore();
+  const { projectPath, activeFile, openFileNonce } = useStore();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(activeFile ? 'editor' : 'files');
   const editorContainerRef = useRef<HTMLDivElement>(null);
-  // Track the previous activeFile so we only auto-switch to the editor tab
-  // when a NEW file is opened/activated — NOT when the user manually clicks
-  // a different tab. The previous implementation depended on [activeFile,
-  // activeTab] which fired on every tab click and snapped the tab back to
-  // 'editor' (the "tab lock" bug).
-  const prevActiveFileRef = useRef<string | null>(activeFile);
+  // Track the previous nonce so we only switch to the editor tab when a NEW
+  // openFile() call happens — NOT when the user manually clicks a different
+  // tab. The nonce increments every time openFile() is called (even if the
+  // file is already open), so clicking a file in the explorer ALWAYS
+  // switches to the editor tab. A manual tab click does NOT change the
+  // nonce, so this effect does not fire and does not snap back.
+  const prevNonceRef = useRef<number>(openFileNonce);
 
-  // Auto-switch to editor tab ONLY when activeFile changes to a new value.
-  // This runs on activeFile change only — a manual tab click changes
-  // activeTab but NOT activeFile, so this effect does not fire and does
-  // not override the user's tab selection.
+  // Auto-switch to editor tab when openFile() is called (nonce bumps).
   useEffect(() => {
-    if (activeFile && activeFile !== prevActiveFileRef.current) {
-      setActiveTab('editor');
+    if (openFileNonce !== prevNonceRef.current) {
+      prevNonceRef.current = openFileNonce;
+      if (activeFile) {
+        setActiveTab('editor');
+      }
     }
-    prevActiveFileRef.current = activeFile;
-  }, [activeFile]);
+  }, [openFileNonce, activeFile]);
 
   const showNoProject = !projectPath && activeTab !== 'terminal';
 

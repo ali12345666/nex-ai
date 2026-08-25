@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import { useStore } from '../store/useStore';
 import {
@@ -12,6 +12,33 @@ import {
   WrapText,
   Maximize2,
 } from 'lucide-react';
+
+/**
+ * Convert a filesystem path to a Monaco-compatible URI string.
+ *
+ * @monaco-editor/react's `path` prop is passed to `monaco.Uri.parse()`.
+ * On Windows, a path like `C:\Users\...\file.ts` gets mis-parsed — the `C:`
+ * is interpreted as a URI scheme, causing model creation to fail silently.
+ *
+ * This converts the path to a proper `file://` URI:
+ *   C:\Users\AliK\file.ts  →  file:///C:/Users/AliK/file.ts
+ *   /home/alik/file.ts     →  file:///home/alik/file.ts
+ *
+ * Monaco uses the URI as a unique model identifier — the exact format
+ * doesn't matter as long as it's consistent and valid.
+ */
+function pathToMonacoUri(p: string): string {
+  // Already a URI?
+  if (/^[a-z]+:\/\//i.test(p)) return p;
+  // Windows: C:\... → file:///C:/...
+  const isWindows = /^[A-Za-z]:[\\/]/.test(p);
+  if (isWindows) {
+    const normalized = p.replace(/\\/g, '/');
+    return `file:///${normalized}`;
+  }
+  // POSIX: /home/... → file:///home/...
+  return `file://${p}`;
+}
 
 function FileTab({
   file,
@@ -64,6 +91,23 @@ export default function EditorPanel() {
   const editorRef = useRef<any>(null);
 
   const activeFileData = openFiles.find((f) => f.path === activeFile);
+
+  // Debug: log file selection for diagnosis.
+  // Enable: localStorage.setItem('nex:editor-debug', '1')
+  const ED_DEBUG = (() => {
+    try { return typeof localStorage !== 'undefined' && localStorage.getItem('nex:editor-debug') === '1'; }
+    catch { return false; }
+  })();
+  useEffect(() => {
+    if (!ED_DEBUG) return;
+    console.log(
+      `[EDITOR] file selected: path=${activeFile} ` +
+      `size=${activeFileData?.content?.length ?? 0} ` +
+      `language=${activeFileData?.language} ` +
+      `contentLoaded=${!!activeFileData} ` +
+      `openFiles=${openFiles.length}`,
+    );
+  }, [activeFile, activeFileData, openFiles.length, ED_DEBUG]);
 
   const handleEditorMount = useCallback((editor: any) => {
     editorRef.current = editor;
@@ -140,7 +184,7 @@ export default function EditorPanel() {
         <div className="flex-1 overflow-hidden">
           <Editor
             height="100%"
-            path={activeFileData.path}
+            path={pathToMonacoUri(activeFileData.path)}
             language={activeFileData.language}
             value={activeFileData.content}
             onChange={handleChange}
