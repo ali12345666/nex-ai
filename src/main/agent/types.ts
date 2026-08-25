@@ -83,6 +83,18 @@ export interface AgentStep {
   error?: string;
   // Optional retry count
   retryCount?: number;
+  // Phase 38: optional verification criteria (emitted by the planner or
+  // populated by rePlanAfterObservation). When present, verifyToolResult is
+  // called after the tool executes.
+  verificationCriteria?: {
+    expectedExitCode?: number;
+    expectedOutputContains?: string[];
+    expectedOutputRegex?: string;
+    forbiddenOutputContains?: string[];
+  };
+  // Phase 38: marks a step as injected by the ReAct re-planner (mid-loop),
+  // distinguishing it from planner-emitted steps. Used for telemetry.
+  injectedByReAct?: boolean;
 }
 
 export interface AgentContext {
@@ -315,7 +327,11 @@ export type AgentEventType =
   | 'task_cancelled'
   // Phase 8 / P8-E-1: streamed model tokens (planning/final response)
   | 'agent_token'
-  | 'log';
+  | 'log'
+  // Phase 38: ReAct closed-loop events
+  | 'react_decision'
+  | 'replan_started'
+  | 'replan_completed';
 
 export interface AgentEvent {
   type: AgentEventType;
@@ -328,3 +344,73 @@ export interface AgentEvent {
 }
 
 export type AgentEventListener = (event: AgentEvent) => void;
+
+// ─── Phase 38: ReAct Closed-Loop Decision Types ─────────────────────────────
+
+/**
+ * The decision returned by the ReAct re-planner after observing a tool result.
+ *
+ * - 'continue'      : proceed to the next planned step (the observation matched
+ *                     expectations or was harmless — no re-plan needed).
+ * - 'replan'        : discard the remaining plan and append new steps emitted
+ *                     by the LLM. The new steps are inserted AFTER the current
+ *                     step; the current step is marked completed.
+ * - 'complete'      : the task is done — finalize immediately, skip remaining
+ *                     steps. Use when the LLM judges the goal achieved early.
+ * - 'abort'         : the task cannot succeed — fail immediately with the
+ *                     given reason. Use when the LLM detects an unrecoverable
+ *                     situation (e.g. wrong project, missing dependency).
+ */
+export type ReActAction = 'continue' | 'replan' | 'complete' | 'abort';
+
+export interface ReActDecision {
+  action: ReActAction;
+  /** Human-readable reason for the decision (shown in UI + logged). */
+  reason: string;
+  /** Confidence 0..1 that this decision is correct. */
+  confidence: number;
+  /** When action='replan', the new steps to append to the plan. */
+  newSteps?: Array<{
+    description: string;
+    tool?: string;
+    params?: Record<string, any>;
+    requiresPermission?: ToolPermission;
+    verificationCriteria?: AgentStep['verificationCriteria'];
+  }>;
+  /** When action='complete', an optional final answer for the user. */
+  finalAnswer?: string;
+}
+
+/**
+ * Request payload for the re-planner LLM call.
+ * Contains everything the LLM needs to decide the next action.
+ */
+export interface ReActRequest {
+  /** The original user request (for context). */
+  userRequest: string;
+  /** The original intent detected by the planner. */
+  intent?: string;
+  /** Description of the step that just executed. */
+  lastStepDescription: string;
+  /** Name of the tool that just executed (if any). */
+  lastToolName?: string;
+  /** The tool result (success/error, output, data). */
+  toolResult?: ToolResult;
+  /** The observation built from the tool result (signals, modified files). */
+  observation: Observation;
+  /** The remaining planned steps (so the LLM knows what's left). */
+  remainingSteps: Array<{ description: string; toolName?: string }>;
+  /** How many steps have executed so far (for budget awareness). */
+  stepsExecuted: number;
+  /** Max steps allowed (for budget awareness). */
+  maxSteps: number;
+  /** Recent observations (the last few, for continuity). */
+  recentObservations: Observation[];
+  /** Project path (for tool selection context). */
+  projectPath?: string;
+  /** Available tools (so the LLM knows what it can call in a replan). */
+  tools: ToolDefinition[];
+  /** Streamed token callback (optional — for UI streaming). */
+  onToken?: (chunk: string) => void;
+}
+

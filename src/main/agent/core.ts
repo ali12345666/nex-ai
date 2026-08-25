@@ -56,6 +56,8 @@ import { createTokenStreamer } from './stream-emit';
 import { redactSecrets } from './logger';
 import { prepareToolCall } from './tool-selector';
 import { verifyToolResult } from './verification';
+// Phase 38: ReAct closed-loop — re-planner that feeds observations back to the LLM
+import { rePlanAfterObservation, shouldInvokeRePlanner } from './react-loop';
 // Phase 14: trust levels + classified retries
 import { assessTrust, corroborate, decideRetry, sleep } from './trust-retry';
 import { buildContext } from './context-manager';
@@ -77,6 +79,7 @@ import {
   type PermissionGrantRecord,
   type VerificationResult,
   type AgentTaskStatus,
+  type ReActDecision,
 } from './types';
 import * as fs from 'fs';
 
@@ -810,8 +813,196 @@ async function executeStep(
         }
       }
 
-      // Verify the result
-      if (result.success) {
+      // ── Phase 38: VERIFICATION (was imported but never called) ───────────
+      // If the step has verification criteria, run verifyToolResult against
+      // the tool result. This produces a VerificationResult that is recorded
+      // on task.verification and can gate the ReAct decision.
+      let verificationPassed = true;
+      if (step.verificationCriteria) {
+        emit({
+          type: 'verification_started',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Verifying step ${step.index + 1}...`,
+        });
+        const verification = verifyToolResult({
+          stepId: step.id,
+          description: step.description,
+          expectedExitCode: step.verificationCriteria.expectedExitCode,
+          expectedOutputContains: step.verificationCriteria.expectedOutputContains,
+          expectedOutputRegex: step.verificationCriteria.expectedOutputRegex,
+          forbiddenOutputContains: step.verificationCriteria.forbiddenOutputContains,
+          toolResult: result,
+        });
+        task.verification.push(verification);
+        verificationPassed = verification.status === 'verified';
+        emit({
+          type: 'verification_completed',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Verification ${verification.status}: ${verification.details}`,
+          data: { status: verification.status, details: verification.details },
+        });
+      }
+
+      // ── Phase 38: ReAct CLOSED LOOP ─────────────────────────────────────
+      // Feed the observation back to the LLM to decide: continue, replan,
+      // complete, or abort. This is the SECOND LLM call in the agent loop
+      // (the first was the planner). It closes the open-loop gap.
+      //
+      // Fast path: skip the LLM call when the step succeeded cleanly and
+      // isn't the last step (see shouldInvokeRePlanner). This keeps routine
+      // successful steps fast (no extra LLM call).
+      const isLastStep = task.currentStepIndex >= task.plan.length - 1;
+      let reactDecision: ReActDecision = {
+        action: 'continue',
+        reason: 'Fast path: step succeeded, no concerning signals',
+        confidence: 1.0,
+      };
+
+      if (shouldInvokeRePlanner(result, step, observation, isLastStep)) {
+        // Cancellation checkpoint 6: before ReAct LLM call
+        token.throwIfCancelled();
+
+        emit({
+          type: 'replan_started',
+          taskId: task.id,
+          stepId: step.id,
+          message: `ReAct: analyzing observation (tool: ${step.toolName}, success: ${result.success})...`,
+        });
+
+        // Build the remaining steps (for the re-planner to know what's left).
+        const remainingSteps = task.plan
+          .slice(task.currentStepIndex + 1)
+          .map((s) => ({ description: s.description, toolName: s.toolName }));
+
+        reactDecision = await rePlanAfterObservation(runtime, model, {
+          userRequest: task.userRequest,
+          intent: task.intent,
+          lastStepDescription: step.description,
+          lastToolName: step.toolName,
+          toolResult: result,
+          observation,
+          remainingSteps,
+          stepsExecuted: task.currentStepIndex + 1,
+          maxSteps: task.maxSteps,
+          recentObservations: task.observations.slice(-5),
+          projectPath: task.context.projectPath,
+          tools: listToolDefinitions(),
+        });
+
+        // Cancellation checkpoint 7: after ReAct LLM call
+        token.throwIfCancelled();
+
+        emit({
+          type: 'react_decision',
+          taskId: task.id,
+          stepId: step.id,
+          message: `ReAct: ${reactDecision.action} — ${reactDecision.reason}`,
+          data: {
+            action: reactDecision.action,
+            confidence: reactDecision.confidence,
+            newSteps: reactDecision.newSteps?.length || 0,
+          },
+        });
+        emit({
+          type: 'replan_completed',
+          taskId: task.id,
+          stepId: step.id,
+          message: `ReAct decision: ${reactDecision.action}`,
+        });
+      }
+
+      // ── Apply the ReAct decision ────────────────────────────────────────
+      if (reactDecision.action === 'abort') {
+        // Fail the task immediately with the ReAct reason.
+        step.status = 'failed';
+        step.error = reactDecision.reason;
+        const error: AgentError = {
+          id: `err-${Date.now()}`,
+          stepId: step.id,
+          type: 'tool_error',
+          message: `ReAct abort: ${reactDecision.reason}`,
+          timestamp: Date.now(),
+        };
+        task.errors.push(error);
+        task.status = 'failed';
+        emit({
+          type: 'task_failed',
+          taskId: task.id,
+          message: `Task aborted by ReAct: ${reactDecision.reason}`,
+          data: { error },
+        });
+        return; // exits executeStep — runTask loop sees status='failed'
+      }
+
+      if (reactDecision.action === 'complete') {
+        // Mark the step completed and signal the runTask loop to finalize.
+        step.status = 'completed';
+        step.completedAt = Date.now();
+        // Mark ALL remaining steps as 'skipped' (the ReAct decided we're done).
+        for (let i = task.currentStepIndex + 1; i < task.plan.length; i++) {
+          task.plan[i].status = 'skipped';
+        }
+        // If the LLM gave a final answer, emit it as a token stream.
+        if (reactDecision.finalAnswer) {
+          emit({
+            type: 'agent_token',
+            taskId: task.id,
+            message: 'ReAct final answer',
+            data: { content: reactDecision.finalAnswer, phase: 'react-final' },
+          });
+        }
+        emit({
+          type: 'step_completed',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Step ${step.index + 1} completed (ReAct: task complete)`,
+          data: { durationMs: step.completedAt - (step.startedAt || 0) },
+        });
+        return; // exits executeStep — runTask loop sees remaining steps skipped
+      }
+
+      if (reactDecision.action === 'replan' && reactDecision.newSteps) {
+        // Phase 38: discard remaining steps, append the new ones.
+        // Re-index the new steps so they continue from currentStepIndex+1.
+        const oldRemaining = task.plan.length - (task.currentStepIndex + 1);
+        const newSteps: AgentStep[] = reactDecision.newSteps.map((s, idx) => ({
+          id: `react-step-${idx + 1}-${Date.now().toString(36)}`,
+          index: task.currentStepIndex + 1 + idx,
+          description: s.description,
+          toolName: s.tool,
+          toolParams: s.params || {},
+          requiresPermission: s.requiresPermission,
+          requiresDiffApproval: s.tool === 'write_file' || s.tool === 'edit_file',
+          verificationCriteria: s.verificationCriteria,
+          status: 'pending',
+          retryCount: 0,
+          injectedByReAct: true,
+        }));
+        // Replace remaining steps with the new ones.
+        task.plan = [
+          ...task.plan.slice(0, task.currentStepIndex + 1),
+          ...newSteps,
+        ];
+        AgentLogger.info(
+          `ReAct replan: discarded ${oldRemaining} remaining steps, ` +
+          `appended ${newSteps.length} new steps (injectedByReAct=true)`,
+          { taskId: task.id, stepId: step.id },
+        );
+        emit({
+          type: 'replan_completed',
+          taskId: task.id,
+          stepId: step.id,
+          message: `ReAct replan: ${newSteps.length} new steps replace ${oldRemaining} old`,
+          data: { newStepCount: newSteps.length, discardedCount: oldRemaining },
+        });
+      }
+
+      // ── Step completion / failure ──────────────────────────────────────
+      // (applies to 'continue' and 'replan' decisions — 'complete' and
+      // 'abort' already returned above)
+      if (result.success && verificationPassed) {
         step.status = 'completed';
         step.completedAt = Date.now();
         emit({
@@ -821,9 +1012,51 @@ async function executeStep(
           message: `Step ${step.index + 1} completed`,
           data: { durationMs: step.completedAt - (step.startedAt || 0) },
         });
-      } else {
-        // Tool failed — handle retry or fail the step
-        await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model);
+      } else if (!result.success) {
+        // Tool failed — handle retry or fail the step.
+        // (Only retry if ReAct didn't already replan — if it replanned,
+        // the failure was expected and new steps are already in place.)
+        if (reactDecision.action === 'replan') {
+          // The re-planner already emitted corrective steps. Mark this step
+          // as completed (it "completed" in the sense that we observed it
+          // and decided to replan, not that the tool succeeded).
+          step.status = 'completed';
+          step.completedAt = Date.now();
+          emit({
+            type: 'step_completed',
+            taskId: task.id,
+            stepId: step.id,
+            message: `Step ${step.index + 1} completed (tool failed, ReAct replanned)`,
+            data: { durationMs: step.completedAt - (step.startedAt || 0) },
+          });
+        } else {
+          await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model);
+        }
+      } else if (!verificationPassed) {
+        // Tool succeeded but verification failed — treat as failure.
+        // The ReAct decision (continue/replan) already happened above.
+        // If the ReAct said 'continue', we still mark the step as failed
+        // because verification didn't pass.
+        if (reactDecision.action === 'replan') {
+          step.status = 'completed';
+          step.completedAt = Date.now();
+          emit({
+            type: 'step_completed',
+            taskId: task.id,
+            stepId: step.id,
+            message: `Step ${step.index + 1} completed (verification failed, ReAct replanned)`,
+            data: { durationMs: step.completedAt - (step.startedAt || 0) },
+          });
+        } else {
+          step.status = 'failed';
+          step.error = 'Verification failed';
+          emit({
+            type: 'step_failed',
+            taskId: task.id,
+            stepId: step.id,
+            message: `Step ${step.index + 1} failed: verification failed`,
+          });
+        }
       }
     } else {
       // Non-tool step (reasoning / observation / verification step)
