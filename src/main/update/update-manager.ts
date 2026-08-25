@@ -18,6 +18,12 @@ import { DownloadVerifier } from './download-verifier';
 import { RollbackManager } from './rollback-manager';
 import { AuditLogger, type AuditEntry } from './audit-logger';
 import { UpdatePlanner, type UpdateInfo, type UpdatePlan } from './update-planner';
+// Phase 44: real download + signature + install + model + history
+import { SecureDownloader } from './secure-downloader';
+import { SignatureVerifier } from './signature-verifier';
+import { UpdateInstaller } from './update-installer';
+import { ModelUpdater } from './model-updater';
+import { UpdateHistory, type UpdateHistoryEntry } from './update-history';
 
 export interface UpdateManagerCallbacks {
   /** Called when an update plan is ready (for UI display). */
@@ -42,6 +48,12 @@ export class UpdateManager {
   private rollbackManager: RollbackManager;
   private auditLogger: AuditLogger;
   private planner: UpdatePlanner;
+  // Phase 44 components
+  private secureDownloader: SecureDownloader;
+  private signatureVerifier: SignatureVerifier;
+  private updateInstaller: UpdateInstaller;
+  private modelUpdater: ModelUpdater;
+  private updateHistory: UpdateHistory;
   private callbacks: UpdateManagerCallbacks = {};
 
   constructor() {
@@ -51,6 +63,18 @@ export class UpdateManager {
     this.rollbackManager = new RollbackManager();
     this.auditLogger = new AuditLogger();
     this.planner = new UpdatePlanner();
+    // Phase 44 components
+    this.secureDownloader = new SecureDownloader();
+    this.signatureVerifier = new SignatureVerifier();
+    this.updateInstaller = new UpdateInstaller(this.rollbackManager);
+    this.updateHistory = new UpdateHistory();
+    this.modelUpdater = new ModelUpdater(
+      this.permissionGate,
+      this.secureDownloader,
+      this.signatureVerifier,
+      this.updateInstaller,
+      this.auditLogger,
+    );
 
     // Wire the permission gate callbacks
     this.permissionGate.setCallbacks({
@@ -82,6 +106,12 @@ export class UpdateManager {
   getRollbackManager(): RollbackManager { return this.rollbackManager; }
   getAuditLogger(): AuditLogger { return this.auditLogger; }
   getPlanner(): UpdatePlanner { return this.planner; }
+  // Phase 44 accessors
+  getSecureDownloader(): SecureDownloader { return this.secureDownloader; }
+  getSignatureVerifier(): SignatureVerifier { return this.signatureVerifier; }
+  getUpdateInstaller(): UpdateInstaller { return this.updateInstaller; }
+  getModelUpdater(): ModelUpdater { return this.modelUpdater; }
+  getUpdateHistory(): UpdateHistory { return this.updateHistory; }
 
   // ─── Main Update Flow ────────────────────────────────────────────────
 

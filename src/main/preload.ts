@@ -133,6 +133,23 @@ contextBridge.exposeInMainWorld('nexAPI', {
   updateRollback: (version: string) => ipcRenderer.invoke('update-rollback', version),
   updateClassifyAction: (action: any) => ipcRenderer.invoke('update-classify-action', action),
 
+  // ── Phase 44: Production Update Execution Layer ──
+  updateDownload: (opts: { url: string; expectedSize?: number; filename?: string }) =>
+    ipcRenderer.invoke('update-download', opts),
+  updateVerifySignature: (opts: {
+    filePath: string; expectedHash: string; signature?: string;
+    publicKey?: string; currentVersion: string; targetVersion: string;
+  }) => ipcRenderer.invoke('update-verify-signature', opts),
+  updateInstall: (opts: {
+    method: string; sourcePath: string; targetDir: string;
+    currentVersion: string; newVersion: string; createBackup: boolean; verifyAfterInstall: boolean;
+  }) => ipcRenderer.invoke('update-install', opts),
+  updateModel: (info: any) => ipcRenderer.invoke('update-model', info),
+  updateModelExplanation: (info: any) => ipcRenderer.invoke('update-model-explanation', info),
+  updateGetHistory: (limit?: number) => ipcRenderer.invoke('update-get-history', limit),
+  updateAddHistory: (entry: any) => ipcRenderer.invoke('update-add-history', entry),
+  updateLastSuccessful: () => ipcRenderer.invoke('update-last-successful'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

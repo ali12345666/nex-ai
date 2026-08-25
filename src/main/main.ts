@@ -1331,6 +1331,127 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 44: Production Update Execution Layer ──
+
+  // Secure download (HTTPS only, sandbox, resume, progress)
+  ipcMain.handle('update-download', async (_event, opts: {
+    url: string;
+    expectedSize?: number;
+    filename?: string;
+  }) => {
+    try {
+      const manager = getUpdateManager();
+      const downloader = manager.getSecureDownloader();
+      const result = await downloader.download({
+        url: opts.url,
+        expectedSize: opts.expectedSize,
+        filename: opts.filename,
+      });
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message, hash: '', bytesDownloaded: 0, durationMs: 0, resumed: false };
+    }
+  });
+
+  // Signature verification (Ed25519 + RSA)
+  ipcMain.handle('update-verify-signature', async (_event, opts: {
+    filePath: string;
+    expectedHash: string;
+    signature?: string;
+    publicKey?: string;
+    currentVersion: string;
+    targetVersion: string;
+  }) => {
+    try {
+      const manager = getUpdateManager();
+      const verifier = manager.getSignatureVerifier();
+      const result = verifier.verifyForInstallation(opts);
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Install update (NSIS / portable / model)
+  ipcMain.handle('update-install', async (_event, opts: {
+    method: string;
+    sourcePath: string;
+    targetDir: string;
+    currentVersion: string;
+    newVersion: string;
+    createBackup: boolean;
+    verifyAfterInstall: boolean;
+  }) => {
+    try {
+      const manager = getUpdateManager();
+      const installer = manager.getUpdateInstaller();
+      const result = await installer.install(opts as any);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model update (download + verify + install a model)
+  ipcMain.handle('update-model', async (_event, info: any) => {
+    try {
+      const manager = getUpdateManager();
+      const modelUpdater = manager.getModelUpdater();
+      const result = await modelUpdater.updateModel(info);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message, durationMs: 0 };
+    }
+  });
+
+  // Get model update explanation (Persian text)
+  ipcMain.handle('update-model-explanation', async (_event, info: any) => {
+    try {
+      const manager = getUpdateManager();
+      const modelUpdater = manager.getModelUpdater();
+      const explanation = modelUpdater.generateModelExplanation(info);
+      return { success: true, explanation };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get update history
+  ipcMain.handle('update-get-history', async (_event, limit?: number) => {
+    try {
+      const manager = getUpdateManager();
+      const history = manager.getUpdateHistory();
+      const entries = limit ? history.getRecent(limit) : history.getEntries();
+      return { success: true, entries };
+    } catch (err: any) {
+      return { success: false, error: err.message, entries: [] };
+    }
+  });
+
+  // Add update history entry
+  ipcMain.handle('update-add-history', async (_event, entry: any) => {
+    try {
+      const manager = getUpdateManager();
+      const history = manager.getUpdateHistory();
+      const result = history.addEntry(entry);
+      return { success: true, entry: result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get last successful update
+  ipcMain.handle('update-last-successful', async () => {
+    try {
+      const manager = getUpdateManager();
+      const history = manager.getUpdateHistory();
+      const entry = history.getLastSuccessfulUpdate();
+      return { success: true, entry };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

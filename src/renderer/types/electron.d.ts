@@ -140,6 +140,23 @@ export interface NexAPI {
   updateRollback: (version: string) => Promise<{ success: boolean; error?: string }>;
   updateClassifyAction: (action: any) => Promise<{ success: boolean; level?: string; description?: string; error?: string }>;
 
+  // Phase 44: Production Update Execution Layer
+  updateDownload: (opts: { url: string; expectedSize?: number; filename?: string }) =>
+    Promise<{ success: boolean; sandboxPath?: string; hash: string; bytesDownloaded: number; durationMs: number; error?: string; resumed: boolean }>;
+  updateVerifySignature: (opts: {
+    filePath: string; expectedHash: string; signature?: string;
+    publicKey?: string; currentVersion: string; targetVersion: string;
+  }) => Promise<{ success: boolean; canInstall?: boolean; hashVerified?: boolean; signatureVerified?: boolean; versionCompatible?: boolean; errors?: string[]; error?: string }>;
+  updateInstall: (opts: {
+    method: string; sourcePath: string; targetDir: string;
+    currentVersion: string; newVersion: string; createBackup: boolean; verifyAfterInstall: boolean;
+  }) => Promise<{ success: boolean; method?: string; backupPath?: string; rolledBack?: boolean; durationMs?: number; error?: string; log?: string[] }>;
+  updateModel: (info: any) => Promise<{ success: boolean; modelPath?: string; hash?: string; error?: string; durationMs: number }>;
+  updateModelExplanation: (info: any) => Promise<{ success: boolean; explanation?: string; error?: string }>;
+  updateGetHistory: (limit?: number) => Promise<{ success: boolean; entries?: any[]; error?: string }>;
+  updateAddHistory: (entry: any) => Promise<{ success: boolean; entry?: any; error?: string }>;
+  updateLastSuccessful: () => Promise<{ success: boolean; entry?: any; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
