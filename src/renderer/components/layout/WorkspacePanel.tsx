@@ -1,14 +1,18 @@
 /**
- * NEX AI — Workspace Panel (UI-15)
+ * NEX AI — Workspace Panel (UI-15 + Flow Fix)
  *
  * Unified workspace container with 5 tabs: Editor, Terminal, Preview, Files, Logs.
- * Each tab renders its real panel — no placeholders, no fake data.
  *
- * UI-15 §3: Terminal/Editor/Preview/Files/Logs consolidated into one workspace.
- * Previously these were separate nav items (cluttered). Now accessible via tabs.
+ * FLOW FIX:
+ *   - Panels are kept mounted but hidden via CSS display:none
+ *   - This prevents unmount/remount cycles that caused:
+ *     * Terminal session duplication on tab switch
+ *     * Editor Monaco re-initialization on tab switch
+ *     * Lost state when switching tabs
+ *   - Only the active tab is visible; others are display:none
  */
 
-import React, { useState, Suspense, lazy } from 'react';
+import React, { useState, Suspense, lazy, useRef, useEffect } from 'react';
 import { Code2, Terminal, Eye, FolderOpen, ScrollText } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import type { WorkspaceTab } from './NavigationRail';
@@ -72,34 +76,16 @@ function NoProject() {
 export default function WorkspacePanel() {
   const { projectPath, activeFile } = useStore();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(activeFile ? 'editor' : 'files');
+  const editorContainerRef = useRef<HTMLDivElement>(null);
 
-  // UI-15 §3: If no project, show NoProject prompt (except for terminal which
-  // can work in cwd). Auto-switch to editor tab when a file is opened.
-  React.useEffect(() => {
+  // Auto-switch to editor tab when a file is opened
+  useEffect(() => {
     if (activeFile && activeTab !== 'editor') {
       setActiveTab('editor');
     }
   }, [activeFile, activeTab]);
 
-  const renderTab = () => {
-    if (!projectPath && activeTab !== 'terminal') {
-      return <NoProject />;
-    }
-    switch (activeTab) {
-      case 'editor':
-        return <Suspense fallback={<PanelLoading />}><EditorPanel /></Suspense>;
-      case 'terminal':
-        return <Suspense fallback={<PanelLoading />}><TerminalSessionPanel /></Suspense>;
-      case 'files':
-        return <Suspense fallback={<PanelLoading />}><WorkspaceExplorer /></Suspense>;
-      case 'preview':
-        return <PreviewPanel projectPath={projectPath} />;
-      case 'logs':
-        return <LogsPanel />;
-      default:
-        return <NoProject />;
-    }
-  };
+  const showNoProject = !projectPath && activeTab !== 'terminal';
 
   return (
     <div className="flex flex-col h-full">
@@ -133,20 +119,50 @@ export default function WorkspacePanel() {
         })}
       </div>
 
-      {/* Tab Content */}
+      {/* Tab Content — panels kept mounted, hidden via display:none */}
       <div className="flex-1 overflow-hidden">
-        {renderTab()}
+        {showNoProject ? (
+          <NoProject />
+        ) : (
+          <>
+            {/* Editor tab — kept mounted, hidden when inactive */}
+            <div style={{ display: activeTab === 'editor' ? 'flex' : 'none' }} className="h-full flex-col">
+              <Suspense fallback={<PanelLoading />}>
+                <EditorPanel />
+              </Suspense>
+            </div>
+
+            {/* Terminal tab — kept mounted, hidden when inactive */}
+            <div style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }} className="h-full flex-col">
+              <Suspense fallback={<PanelLoading />}>
+                <TerminalSessionPanel />
+              </Suspense>
+            </div>
+
+            {/* Files tab — kept mounted, hidden when inactive */}
+            <div style={{ display: activeTab === 'files' ? 'flex' : 'none' }} className="h-full flex-col">
+              <Suspense fallback={<PanelLoading />}>
+                <WorkspaceExplorer />
+              </Suspense>
+            </div>
+
+            {/* Preview tab — lightweight, conditional is fine */}
+            <div style={{ display: activeTab === 'preview' ? 'flex' : 'none' }} className="h-full flex-col">
+              <PreviewPanel projectPath={projectPath} />
+            </div>
+
+            {/* Logs tab — lightweight, conditional is fine */}
+            <div style={{ display: activeTab === 'logs' ? 'flex' : 'none' }} className="h-full flex-col">
+              <LogsPanel />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── Preview Panel ────────────────────────────────────────────────────────────
-/**
- * UI-15 §3: Preview panel — shows real project preview.
- * Uses Electron's shell.openExternal for HTML files, or shows project info.
- * No fake data — if no previewable content, shows honest message.
- */
 function PreviewPanel({ projectPath }: { projectPath: string | null }) {
   if (!projectPath) return <NoProject />;
   const projectName = projectPath.split(/[\\/]/).pop() || projectPath;
@@ -190,14 +206,8 @@ function PreviewPanel({ projectPath }: { projectPath: string | null }) {
 }
 
 // ─── Logs Panel ────────────────────────────────────────────────────────────────
-/**
- * UI-15 §3: Logs panel — shows real runtime/agent logs.
- * Uses system-snapshot IPC (already exists) to show agent activity.
- * No fake logs — shows real telemetry data from backend.
- */
 function LogsPanel() {
   const [logs, setLogs] = React.useState<Array<{ time: string; level: string; msg: string }>>([]);
-  const [snap, setSnap] = React.useState<any>(null);
 
   React.useEffect(() => {
     let mounted = true;
@@ -205,45 +215,23 @@ function LogsPanel() {
       try {
         const r = await window.nexAPI.systemSnapshot();
         if (mounted && r.success && r.snapshot) {
-          setSnap(r.snapshot);
-          // Build log entries from real telemetry (agent state, runtime state)
           const newLogs: Array<{ time: string; level: string; msg: string }> = [];
           const agent = r.snapshot.agent;
           if (agent?.currentTask) {
-            newLogs.push({
-              time: new Date().toLocaleTimeString(),
-              level: 'INFO',
-              msg: `Agent task: ${agent.currentTask}`,
-            });
+            newLogs.push({ time: new Date().toLocaleTimeString(), level: 'INFO', msg: `Agent task: ${agent.currentTask}` });
           }
           if (agent?.activeTool) {
-            newLogs.push({
-              time: new Date().toLocaleTimeString(),
-              level: 'TOOL',
-              msg: `Tool running: ${agent.activeTool}`,
-            });
+            newLogs.push({ time: new Date().toLocaleTimeString(), level: 'TOOL', msg: `Tool running: ${agent.activeTool}` });
           }
           const rt = r.snapshot.aiRuntime;
           if (rt?.inferenceActive) {
-            newLogs.push({
-              time: new Date().toLocaleTimeString(),
-              level: 'INFER',
-              msg: `Inference active — ${rt.activeModelName || 'model'}`,
-            });
+            newLogs.push({ time: new Date().toLocaleTimeString(), level: 'INFER', msg: `Inference active — ${rt.activeModelName || 'model'}` });
           }
           if (rt?.lastTokensPerSecond && rt.lastTokensPerSecond > 0) {
-            newLogs.push({
-              time: new Date().toLocaleTimeString(),
-              level: 'PERF',
-              msg: `${Math.round(rt.lastTokensPerSecond)} tok/s`,
-            });
+            newLogs.push({ time: new Date().toLocaleTimeString(), level: 'PERF', msg: `${Math.round(rt.lastTokensPerSecond)} tok/s` });
           }
           if (agent?.queueState === 'running') {
-            newLogs.push({
-              time: new Date().toLocaleTimeString(),
-              level: 'WORK',
-              msg: `Queue: running`,
-            });
+            newLogs.push({ time: new Date().toLocaleTimeString(), level: 'WORK', msg: `Queue: running` });
           }
           setLogs((prev) => [...newLogs, ...prev].slice(0, 50));
         }
@@ -256,50 +244,25 @@ function LogsPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <div
-        className="flex items-center justify-between px-3 py-2 shrink-0"
-        style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
-      >
-        <span className="text-[10px] font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
-          RUNTIME LOGS
-        </span>
-        <span className="text-[9px]" style={{ color: 'var(--nex-text-muted)' }}>
-          {logs.length} entries
-        </span>
+      <div className="flex items-center justify-between px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+        <span className="text-[10px] font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>RUNTIME LOGS</span>
+        <span className="text-[9px]" style={{ color: 'var(--nex-text-muted)' }}>{logs.length} entries</span>
       </div>
       <div className="flex-1 overflow-y-auto nex-scrollbar p-2">
         {logs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-4">
             <ScrollText size={24} style={{ color: 'var(--nex-text-muted)', opacity: 0.4 }} />
-            <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
-              No active log entries.
-            </p>
-            <p className="text-[10px]" style={{ color: 'var(--nex-text-muted)', opacity: 0.7 }}>
-              Logs appear when the agent runs tasks or inference is active.
-            </p>
+            <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>No active log entries.</p>
+            <p className="text-[10px]" style={{ color: 'var(--nex-text-muted)', opacity: 0.7 }}>Logs appear when the agent runs tasks or inference is active.</p>
           </div>
         ) : (
           <ul className="flex flex-col gap-1 font-mono">
             {logs.map((entry, i) => (
-              <li
-                key={i}
-                className="flex items-start gap-2 px-2 py-1 rounded text-[10px]"
-                style={{ background: 'var(--nex-glass-bg)' }}
-              >
+              <li key={i} className="flex items-start gap-2 px-2 py-1 rounded text-[10px]" style={{ background: 'var(--nex-glass-bg)' }}>
                 <span style={{ color: 'var(--nex-text-muted)' }}>{entry.time}</span>
-                <span
-                  className="shrink-0 px-1 rounded font-bold"
-                  style={{
-                    color:
-                      entry.level === 'ERROR' ? 'rgb(248,113,113)' :
-                      entry.level === 'WARN' ? 'rgb(251,191,36)' :
-                      entry.level === 'TOOL' ? 'var(--nex-accent-text)' :
-                      entry.level === 'INFER' ? 'rgb(167,139,250)' :
-                      'var(--nex-text-dim)',
-                  }}
-                >
-                  {entry.level}
-                </span>
+                <span className="shrink-0 px-1 rounded font-bold" style={{
+                  color: entry.level === 'ERROR' ? 'rgb(248,113,113)' : entry.level === 'WARN' ? 'rgb(251,191,36)' : entry.level === 'TOOL' ? 'var(--nex-accent-text)' : entry.level === 'INFER' ? 'rgb(167,139,250)' : 'var(--nex-text-dim)',
+                }}>{entry.level}</span>
                 <span style={{ color: 'var(--nex-text)' }}>{entry.msg}</span>
               </li>
             ))}

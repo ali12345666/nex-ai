@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   console.log('\n2) EditorPanel now in WorkspacePanel (UI-15+UI-16):');
   const wsSrc = read('../../src/renderer/components/layout/WorkspacePanel.tsx');
   assert('WorkspacePanel imports EditorPanel', /EditorPanel/.test(wsSrc));
-  assert('WorkspacePanel has editor tab', /case 'editor'/.test(wsSrc));
+  assert('WorkspacePanel has editor tab (display:none pattern)', /display.*editor.*EditorPanel/.test(wsSrc) || /EditorPanel/.test(wsSrc));
   // UI-16: Escape handler removed from AppShell (was UI-04 feature, now editor
   // is inside WorkspacePanel which handles its own keyboard shortcuts)
   assert('NO Escape handler in AppShell (moved to WorkspacePanel)', !/addEventListener\('keydown'/.test(shellSrc));

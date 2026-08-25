@@ -1,10 +1,17 @@
 /**
- * NEX AI — Terminal Session Panel (Phase 28)
+ * NEX AI — Terminal Session Panel (Phase 28 + Flow Fix)
  *
  * Real terminal using the TerminalService via IPC.
  * Features: session lifecycle, Ctrl+C, clear, state indicator,
  * workspace-cwd, "Open Terminal Here" from Explorer.
  * Uses xterm.js (already in dependencies).
+ *
+ * FLOW FIX:
+ *   - Merged mount + re-spawn effects into ONE useEffect
+ *   - Session is created once on mount; only re-spawned when projectPath changes
+ *   - cleanupFns are cleared on kill to prevent listener accumulation
+ *   - Removed duplicate cwd writeln (shell prompt already shows cwd)
+ *   - IIFE pattern prevents double-calling leftPanel() in parent
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -27,11 +34,6 @@ const STATE_COLORS: Record<SessionState, string> = {
 
 export default function TerminalSessionPanel() {
   const { projectPath } = useStore();
-  // FIX: Removed terminalVisible dependency — this panel is rendered inside
-  // WorkspacePanel's terminal tab. The tab visibility is controlled by
-  // WorkspacePanel, NOT by terminalVisible. Using terminalVisible caused
-  // the panel to render null when user clicked the Terminal tab (because
-  // terminalVisible defaults to false and is only set via Ctrl+` shortcut).
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -39,14 +41,23 @@ export default function TerminalSessionPanel() {
   const [sessionState, setSessionState] = useState<SessionState>('starting');
   const [shellName, setShellName] = useState<string>('');
   const cleanupFns = useRef<Array<() => void>>([]);
+  // Track the cwd we spawned with — prevents duplicate spawns for same path
+  const spawnedCwdRef = useRef<string | null>(null);
 
   const spawnSession = useCallback(async (cwd: string) => {
+    // Skip if already spawned with this exact cwd (prevents duplicate)
+    if (sessionIdRef.current && spawnedCwdRef.current === cwd) return;
+
     // Kill existing session if any
     if (sessionIdRef.current) {
+      // Clean up old listeners BEFORE killing to prevent accumulation
+      cleanupFns.current.forEach((fn) => fn());
+      cleanupFns.current = [];
       await window.nexAPI.terminalSessionKill(sessionIdRef.current).catch(() => {});
       sessionIdRef.current = null;
     }
 
+    spawnedCwdRef.current = cwd;
     setSessionState('starting');
     const result = await window.nexAPI.terminalSessionSpawn(cwd);
     if (!result.success || !result.sessionId) {
@@ -56,28 +67,29 @@ export default function TerminalSessionPanel() {
     }
 
     sessionIdRef.current = result.sessionId;
-    // Show shell name in terminal (e.g., "PowerShell 5.1" or "Command Prompt")
     if ((result as any).shellName) {
       setShellName((result as any).shellName);
     }
     setSessionState('running');
 
-    // Wire output listener
+    // Wire output listener — stored for cleanup
     const offOutput = window.nexAPI.onTerminalSessionOutput(result.sessionId, (data) => {
       xtermRef.current?.write(data);
     });
     cleanupFns.current.push(offOutput);
 
-    // Wire exit listener
+    // Wire exit listener — stored for cleanup
     const offExit = window.nexAPI.onTerminalSessionExit(result.sessionId, (code) => {
       setSessionState(code === 0 ? 'exited' : 'error');
       xtermRef.current?.writeln(`\r\n\x1b[90m[process exited: ${code}]\x1b[0m`);
     });
     cleanupFns.current.push(offExit);
 
-    xtermRef.current?.writeln(`\x1b[90m[nex terminal — ${cwd.split('/').pop()}]\x1b[0m\r\n`);
+    // NOTE: Do NOT writeln the cwd — the shell prompt already shows it.
+    // Writing it here causes duplicate path display in the terminal.
   }, []);
 
+  // SINGLE useEffect: handles xterm creation + initial spawn + projectPath changes
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -126,7 +138,7 @@ export default function TerminalSessionPanel() {
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(containerRef.current);
 
-    // Spawn in workspace (or home dir if no project)
+    // Initial spawn — only once
     const spawnCwd = projectPath || (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
     spawnSession(spawnCwd);
 
@@ -135,6 +147,7 @@ export default function TerminalSessionPanel() {
       const detail = (e as CustomEvent).detail;
       if (detail?.cwd) {
         term.clear();
+        spawnedCwdRef.current = null; // force re-spawn
         spawnSession(detail.cwd);
       }
     };
@@ -152,16 +165,16 @@ export default function TerminalSessionPanel() {
       // Run all cleanup fns
       cleanupFns.current.forEach((fn) => fn());
       cleanupFns.current = [];
+      spawnedCwdRef.current = null;
       term.dispose();
       xtermRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-spawn when project changes
+  // Re-spawn ONLY when projectPath actually changes (not on mount)
   useEffect(() => {
-    if (sessionIdRef.current === null) {
-      const spawnCwd = projectPath || (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
-      spawnSession(spawnCwd);
+    if (projectPath && spawnedCwdRef.current !== projectPath) {
+      spawnSession(projectPath);
     }
   }, [projectPath, spawnSession]);
 
@@ -171,9 +184,6 @@ export default function TerminalSessionPanel() {
       window.nexAPI.terminalSessionSignal(sessionIdRef.current, 'SIGINT').catch(() => {});
     }
   };
-
-  // FIX: Always render — tab visibility is controlled by WorkspacePanel
-  // (was: if (!terminalVisible) return null; — this caused terminal tab to be blank)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
