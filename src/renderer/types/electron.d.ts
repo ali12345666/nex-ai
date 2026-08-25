@@ -186,6 +186,16 @@ export interface NexAPI {
   componentRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
   componentRespondVoice: () => Promise<{ success: boolean; error?: string }>;
 
+  // Phase 49: First Run Intelligence & Model Catalog
+  firstrunCatalog: (type?: string) => Promise<{ success: boolean; catalog?: any[]; error?: string }>;
+  firstrunModelsByTier: (tier: string) => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  firstrunPersianModels: () => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  firstrunAnalyze: () => Promise<{ success: boolean; setup?: any; error?: string }>;
+  firstrunSummary: () => Promise<{ success: boolean; summary?: string; setup?: any; error?: string }>;
+  firstrunInstallPlan: (modelIds: string[], tier: string) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  firstrunRecommendedPackage: () => Promise<{ success: boolean; package?: any; setup?: any; error?: string }>;
+  firstrunAlternatives: () => Promise<{ success: boolean; alternatives?: any[]; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

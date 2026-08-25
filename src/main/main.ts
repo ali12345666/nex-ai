@@ -1708,6 +1708,98 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 49: First Run Intelligence & Model Catalog ──
+  const { getHardwareSetupAdvisor } = await import('./ai/model-intelligence/hardware-setup-advisor');
+  const { getAdvancedCatalog, getAdvancedCatalogByType, getAdvancedCatalogEntry, getModelsByHardwareTier, getModelsByPersianSupport } =
+    await import('./ai/model-intelligence/advanced-model-catalog');
+
+  // Get advanced model catalog
+  ipcMain.handle('firstrun-catalog', async (_event, type?: string) => {
+    try {
+      const catalog = type ? getAdvancedCatalogByType(type as any) : getAdvancedCatalog();
+      return { success: true, catalog };
+    } catch (err: any) {
+      return { success: false, error: err.message, catalog: [] };
+    }
+  });
+
+  // Get models by hardware tier
+  ipcMain.handle('firstrun-models-by-tier', async (_event, tier: string) => {
+    try {
+      const models = getModelsByHardwareTier(tier as any);
+      return { success: true, models };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Get Persian-supporting models
+  ipcMain.handle('firstrun-persian-models', async () => {
+    try {
+      const models = getModelsByPersianSupport();
+      return { success: true, models };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Analyze hardware and generate setup recommendation
+  ipcMain.handle('firstrun-analyze', async () => {
+    try {
+      const advisor = getHardwareSetupAdvisor();
+      const setup = advisor.analyze();
+      return { success: true, setup };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get first-launch summary (Persian text)
+  ipcMain.handle('firstrun-summary', async () => {
+    try {
+      const advisor = getHardwareSetupAdvisor();
+      const setup = advisor.analyze();
+      const summary = advisor.generateFirstLaunchSummary(setup);
+      return { success: true, summary, setup };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Generate install plan from selected models
+  ipcMain.handle('firstrun-install-plan', async (_event, modelIds: string[], tier: string) => {
+    try {
+      const advisor = getHardwareSetupAdvisor();
+      const pkg = advisor.createCustomPackage(modelIds, tier as any);
+      const plan = advisor.generateInstallPlan(pkg);
+      return { success: true, plan };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get recommended package for hardware
+  ipcMain.handle('firstrun-recommended-package', async () => {
+    try {
+      const advisor = getHardwareSetupAdvisor();
+      const setup = advisor.analyze();
+      return { success: true, package: setup.recommendedPackage, setup };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get alternative packages
+  ipcMain.handle('firstrun-alternatives', async () => {
+    try {
+      const advisor = getHardwareSetupAdvisor();
+      const setup = advisor.analyze();
+      return { success: true, alternatives: setup.alternativePackages };
+    } catch (err: any) {
+      return { success: false, error: err.message, alternatives: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

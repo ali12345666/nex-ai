@@ -180,6 +180,16 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.invoke('component-respond-permission', userResponse),
   componentRespondVoice: () => ipcRenderer.invoke('component-respond-voice'),
 
+  // ── Phase 49: First Run Intelligence & Model Catalog ──
+  firstrunCatalog: (type?: string) => ipcRenderer.invoke('firstrun-catalog', type),
+  firstrunModelsByTier: (tier: string) => ipcRenderer.invoke('firstrun-models-by-tier', tier),
+  firstrunPersianModels: () => ipcRenderer.invoke('firstrun-persian-models'),
+  firstrunAnalyze: () => ipcRenderer.invoke('firstrun-analyze'),
+  firstrunSummary: () => ipcRenderer.invoke('firstrun-summary'),
+  firstrunInstallPlan: (modelIds: string[], tier: string) => ipcRenderer.invoke('firstrun-install-plan', modelIds, tier),
+  firstrunRecommendedPackage: () => ipcRenderer.invoke('firstrun-recommended-package'),
+  firstrunAlternatives: () => ipcRenderer.invoke('firstrun-alternatives'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
