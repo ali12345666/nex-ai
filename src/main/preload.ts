@@ -171,6 +171,15 @@ contextBridge.exposeInMainWorld('nexAPI', {
   runtimeRecommendations: () => ipcRenderer.invoke('runtime-recommendations'),
   runtimeFindMissing: () => ipcRenderer.invoke('runtime-find-missing'),
 
+  // ── Phase 47: Component Installation Assistant ──
+  componentInstall: (componentId: string) => ipcRenderer.invoke('component-install', componentId),
+  componentExplanation: (componentId: string) => ipcRenderer.invoke('component-explanation', componentId),
+  componentHealthCheck: (componentId: string, installedPath: string) =>
+    ipcRenderer.invoke('component-health-check', componentId, installedPath),
+  componentRespondPermission: (userResponse: string) =>
+    ipcRenderer.invoke('component-respond-permission', userResponse),
+  componentRespondVoice: () => ipcRenderer.invoke('component-respond-voice'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

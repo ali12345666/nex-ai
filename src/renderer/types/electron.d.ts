@@ -178,6 +178,14 @@ export interface NexAPI {
   runtimeRecommendations: () => Promise<{ success: boolean; recommendations?: any[]; error?: string }>;
   runtimeFindMissing: () => Promise<{ success: boolean; missing?: any[]; essentialMissing?: number; optionalMissing?: number; error?: string }>;
 
+  // Phase 47: Component Installation Assistant
+  componentInstall: (componentId: string) =>
+    Promise<{ success: boolean; componentId: string; componentName: string; stage: string; installedPath?: string; hash?: string; durationMs: number; error?: string; log: string[] }>;
+  componentExplanation: (componentId: string) => Promise<{ success: boolean; explanation?: any; error?: string }>;
+  componentHealthCheck: (componentId: string, installedPath: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  componentRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
+  componentRespondVoice: () => Promise<{ success: boolean; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

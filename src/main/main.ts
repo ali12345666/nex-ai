@@ -1640,6 +1640,74 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 47: Component Installation Assistant ──
+  const { getComponentInstaller } = await import('./runtime/component-installer');
+
+  // Install a component (full flow: permission → download → verify → install → health check)
+  ipcMain.handle('component-install', async (_event, componentId: string) => {
+    try {
+      const installer = getComponentInstaller();
+      const result = await installer.installComponent(componentId);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message, componentId, componentName: '', stage: 'idle', durationMs: 0, log: [] };
+    }
+  });
+
+  // Get Persian explanation for a component
+  ipcMain.handle('component-explanation', async (_event, componentId: string) => {
+    try {
+      const { getCatalogEntry } = await import('./runtime/component-catalog');
+      const { getComponentInstaller } = await import('./runtime/component-installer');
+      const entry = getCatalogEntry(componentId);
+      if (!entry) return { success: false, error: 'Component not found' };
+      const installer = getComponentInstaller();
+      const explanation = installer.generatePersianExplanation(entry);
+      return { success: true, explanation };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Health check for a component
+  ipcMain.handle('component-health-check', async (_event, componentId: string, installedPath: string) => {
+    try {
+      const { getCatalogEntry } = await import('./runtime/component-catalog');
+      const { getComponentInstaller } = await import('./runtime/component-installer');
+      const entry = getCatalogEntry(componentId);
+      if (!entry) return { success: false, error: 'Component not found' };
+      const installer = getComponentInstaller();
+      const result = await installer.getHealthChecker().check(entry, installedPath);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Respond to permission request (from chat)
+  ipcMain.handle('component-respond-permission', async (_event, userResponse: string) => {
+    try {
+      const { getComponentInstaller } = await import('./runtime/component-installer');
+      const installer = getComponentInstaller();
+      installer.getPermissionGate().respondToPermissionRequest(userResponse);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Respond via voice (Phase 41)
+  ipcMain.handle('component-respond-voice', async () => {
+    try {
+      const { getComponentInstaller } = await import('./runtime/component-installer');
+      const installer = getComponentInstaller();
+      await installer.getPermissionGate().respondViaVoice();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {
