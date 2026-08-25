@@ -110,6 +110,17 @@ contextBridge.exposeInMainWorld('nexAPI', {
   voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
   voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
 
+  // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
+  visionStatus: () => ipcRenderer.invoke('vision-status'),
+  visionLoadModel: (modelPath: string, mmprojPath?: string) =>
+    ipcRenderer.invoke('vision-load-model', modelPath, mmprojPath),
+  visionAnalyzeImage: (imagePath: string, prompt?: string, question?: string) =>
+    ipcRenderer.invoke('vision-analyze-image', imagePath, prompt, question),
+  visionAnalyzeScreen: (prompt?: string) =>
+    ipcRenderer.invoke('vision-analyze-screen', prompt),
+  visionUnloadModel: () => ipcRenderer.invoke('vision-unload-model'),
+  visionFindBinary: () => ipcRenderer.invoke('vision-find-binary'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

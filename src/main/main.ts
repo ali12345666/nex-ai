@@ -1108,6 +1108,122 @@ async function setupIPC(): Promise<void> {
     };
   });
 
+  // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
+  const { getVisionEngine } = await import('./vision/vision-engine');
+  const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');
+
+  // Auto-detect llama.cpp binary on startup
+  try {
+    const llamaBin = findLlamaBinary();
+    if (llamaBin) {
+      const engine = getVisionEngine();
+      // Model path will be set later via vision-load-model IPC
+      engine.setProvider(new LocalLlavaProvider({ binaryPath: llamaBin }));
+      console.log(`[NEX AI] Phase 42: LLaVA vision provider registered (binary: ${llamaBin})`);
+    } else {
+      console.log('[NEX AI] Phase 42: No llama.cpp binary found — vision will need manual setup');
+    }
+  } catch (err: any) {
+    console.warn(`[NEX AI] Phase 42: Vision engine init failed (non-blocking): ${err.message}`);
+  }
+
+  // Vision: get engine status
+  ipcMain.handle('vision-status', async () => {
+    const engine = getVisionEngine();
+    return {
+      success: true,
+      hasProvider: engine.hasProvider,
+      hasLocalProvider: engine.hasLocalProvider,
+      providerName: engine.getProvider()?.name || null,
+      state: engine.currentState,
+    };
+  });
+
+  // Vision: load a vision model (LLaVA GGUF + optional mmproj)
+  ipcMain.handle('vision-load-model', async (_event, modelPath: string, mmprojPath?: string) => {
+    try {
+      const engine = getVisionEngine();
+      const { LocalLlavaProvider } = await import('./vision/local-llava-provider');
+      const llamaBin = findLlamaBinary();
+      if (!llamaBin) return { success: false, error: 'llama.cpp binary not found' };
+      engine.setProvider(new LocalLlavaProvider({
+        binaryPath: llamaBin,
+        modelPath,
+        mmprojPath,
+      }));
+      // Persist the model path for next session
+      try {
+        const { loadState, updateState } = await import('./persistence');
+        const state = loadState();
+        const settings = state.settings || {};
+        (settings as any).visionModelPath = modelPath;
+        if (mmprojPath) (settings as any).visionMmprojPath = mmprojPath;
+        updateState({ settings });
+      } catch { /* best-effort */ }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Vision: analyze an image file
+  ipcMain.handle('vision-analyze-image', async (_event, imagePath: string, prompt?: string, question?: string) => {
+    try {
+      const engine = getVisionEngine();
+      const result = await engine.analyzeImage({ imagePath, prompt, question });
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Vision: analyze a screenshot (capture screen → analyze)
+  ipcMain.handle('vision-analyze-screen', async (_event, prompt?: string) => {
+    try {
+      const { desktopCapturer } = await import('electron');
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1920, height: 1080 },
+      });
+      if (sources.length === 0) {
+        return { success: false, error: 'No screen source found' };
+      }
+      const source = sources[0];
+      const tmpDir = os.tmpdir();
+      const screenshotPath = path.join(tmpDir, `nex-screenshot-${Date.now()}.png`);
+      fs.writeFileSync(screenshotPath, source.thumbnail.toPNG());
+      const engine = getVisionEngine();
+      const result = await engine.analyzeImage({
+        imagePath: screenshotPath,
+        prompt: prompt || 'Analyze this screenshot. Describe the UI, any text visible, and the overall layout.',
+      });
+      // Clean up temp file
+      try { fs.unlinkSync(screenshotPath); } catch { /* */ }
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Vision: unload the vision model
+  ipcMain.handle('vision-unload-model', async () => {
+    try {
+      const engine = getVisionEngine();
+      await engine.dispose();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Vision: find llama.cpp binary (for UI diagnostics)
+  ipcMain.handle('vision-find-binary', async () => {
+    return {
+      success: true,
+      binary: findLlamaBinary(),
+    };
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

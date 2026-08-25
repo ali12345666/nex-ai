@@ -116,6 +116,19 @@ export interface NexAPI {
   voiceListVoices: () => Promise<{ success: boolean; voices?: Array<{ name: string; language: string; gender?: string }>; error?: string }>;
   voiceFindBinaries: () => Promise<{ success: boolean; whisper: string | null; piper: string | null }>;
 
+  // Phase 42: Local Vision Engine
+  visionStatus: () => Promise<{
+    success: boolean; hasProvider: boolean; hasLocalProvider: boolean;
+    providerName: string | null; state: string;
+  }>;
+  visionLoadModel: (modelPath: string, mmprojPath?: string) => Promise<{ success: boolean; error?: string }>;
+  visionAnalyzeImage: (imagePath: string, prompt?: string, question?: string) =>
+    Promise<{ success: boolean; text?: string; error?: string; durationMs?: number }>;
+  visionAnalyzeScreen: (prompt?: string) =>
+    Promise<{ success: boolean; text?: string; error?: string; durationMs?: number }>;
+  visionUnloadModel: () => Promise<{ success: boolean; error?: string }>;
+  visionFindBinary: () => Promise<{ success: boolean; binary: string | null }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
