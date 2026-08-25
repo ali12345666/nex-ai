@@ -80,6 +80,59 @@ function isVisible(el: HTMLElement | null): boolean {
   return style.display !== 'none' && style.visibility !== 'hidden';
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// DEBUG INSTRUMENTATION — TEMPORARY
+// ════════════════════════════════════════════════════════════════════════════
+// Goal: find the producer of "WWWWW" characters that appear BEFORE the first
+// PowerShell prompt on Windows.
+//
+// Enable: open DevTools console and run:
+//   localStorage.setItem('nex:terminal-debug', '1')
+// Then reload the page (Ctrl+R) and open the Terminal tab.
+//
+// Every xterm.write / xterm.writeln call is logged with:
+//   - sequence number
+//   - timestamp
+//   - source tag (pty-output | spawn-error | exit | open-here)
+//   - length
+//   - escaped data (JSON.stringify, truncated to 200 chars)
+//   - hex of first 64 bytes (to catch non-printable / VT escape sequences)
+//   - stack trace for the first 5 writes (to catch unknown write paths)
+//
+// Cross-reference with backend logs ([NEX-TERM ... OUT]):
+//   - If W's appear in BOTH → they come from the PTY (shell/ConPTY).
+//   - If W's appear ONLY here (source ≠ pty-output) → renderer write path.
+//   - If W's appear here with source=pty-output but NOT in backend logs →
+//     they're injected in the IPC bridge or preload.
+//
+// This does NOT filter, modify, or suppress any data.
+// ════════════════════════════════════════════════════════════════════════════
+const XT_DEBUG = (() => {
+  try { return typeof localStorage !== 'undefined' && localStorage.getItem('nex:terminal-debug') === '1'; }
+  catch { return false; }
+})();
+let _xtSeq = 0;
+function _dbgWrite(source: string, data: string): void {
+  if (!XT_DEBUG) return;
+  _xtSeq++;
+  const hex = Array.from(data.slice(0, 64))
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join(' ');
+  const esc = JSON.stringify(data).slice(0, 200);
+  // Capture stack for first 5 writes to catch any UNKNOWN write path.
+  const stack = _xtSeq <= 5
+    ? ' stack=' + (new Error().stack || '').split('\n').slice(2, 6).map((l) => l.trim()).join(' | ')
+    : '';
+  console.log(
+    `[NEX-XT ${_xtSeq}] t=${Date.now()} src=${source} ` +
+    `len=${data.length} esc=${esc} hex=${hex}${stack}`,
+  );
+  // Also flag suspicious data (contains many repeated W's)
+  if (data.length > 3 && /^W{3,}/.test(data)) {
+    console.warn(`[NEX-XT ⚠ WWWWW DETECTED] seq=${_xtSeq} src=${source} len=${data.length} esc=${esc} hex=${hex}`);
+  }
+}
+
 export default function TerminalSessionPanel() {
   const { projectPath } = useStore();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -120,7 +173,9 @@ export default function TerminalSessionPanel() {
     const result = await window.nexAPI.terminalSessionSpawn(cwd, cols, rows);
     if (!result.success || !result.sessionId) {
       setSessionState('error');
-      xtermRef.current?.writeln(`\r\n\x1b[31m[terminal error] ${result.error || 'failed to spawn'}\x1b[0m`);
+      const errMsg = `\r\n\x1b[31m[terminal error] ${result.error || 'failed to spawn'}\x1b[0m`;
+      _dbgWrite('spawn-error', errMsg);
+      xtermRef.current?.writeln(errMsg);
       return;
     }
 
@@ -134,6 +189,7 @@ export default function TerminalSessionPanel() {
 
     // Wire output listener (single listener per session, removed by ref).
     const offOutput = window.nexAPI.onTerminalSessionOutput(result.sessionId, (data) => {
+      _dbgWrite('pty-output', data);
       xtermRef.current?.write(data);
     });
     cleanupFns.current.push(offOutput);
@@ -141,7 +197,9 @@ export default function TerminalSessionPanel() {
     // Wire exit listener.
     const offExit = window.nexAPI.onTerminalSessionExit(result.sessionId, (code) => {
       setSessionState(code === 0 ? 'exited' : 'error');
-      xtermRef.current?.writeln(`\r\n\x1b[90m[process exited: ${code}]\x1b[0m`);
+      const exitMsg = `\r\n\x1b[90m[process exited: ${code}]\x1b[0m`;
+      _dbgWrite('exit', exitMsg);
+      xtermRef.current?.writeln(exitMsg);
     });
     cleanupFns.current.push(offExit);
   }, []);

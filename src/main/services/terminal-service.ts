@@ -96,6 +96,44 @@ try {
   pty = null;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// DEBUG INSTRUMENTATION — TEMPORARY
+// ════════════════════════════════════════════════════════════════════════════
+// Goal: find the producer of the "WWWWW" characters that appear BEFORE the
+// first PowerShell prompt on Windows.
+//
+// Enable: set env var NEX_TERM_DEBUG=1 before launching the app.
+//   Windows (PowerShell):  $env:NEX_TERM_DEBUG='1'; npm run dev
+//   Windows (cmd):         set NEX_TERM_DEBUG=1 && npm run dev
+//
+// This logs every byte flowing through the PTY in BOTH directions, with a
+// sequence number, timestamp, source, length, escaped data, and hex. It does
+// NOT filter, modify, or suppress any data.
+//
+// Cross-reference with the renderer logs ([NEX-XT ...]) to determine:
+//   - If W's appear here ([NEX-TERM n OUT]) → they come from the PTY/shell.
+//   - If W's appear ONLY in renderer logs → they come from a renderer write.
+// ════════════════════════════════════════════════════════════════════════════
+const TERM_DEBUG = process.env.NEX_TERM_DEBUG === '1';
+let _termSeq = 0;
+function _dbgTerm(
+  dir: 'OUT' | 'IN',
+  source: string,
+  id: string,
+  data: string,
+): void {
+  if (!TERM_DEBUG) return;
+  _termSeq++;
+  const hex = Array.from(data.slice(0, 64))
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join(' ');
+  const esc = JSON.stringify(data).slice(0, 200);
+  console.log(
+    `[NEX-TERM ${_termSeq} ${dir}] t=${Date.now()} src=${source} id=${id} ` +
+    `len=${data.length} esc=${esc} hex=${hex}`,
+  );
+}
+
 export type TerminalState = 'starting' | 'running' | 'exited' | 'error' | 'killed';
 
 export interface TerminalSession {
@@ -114,6 +152,10 @@ export interface TerminalSession {
   exitCode: number | null;
   createdAt: number;
   exitedAt?: number;
+  /** Buffer for output emitted BEFORE onOutput() attaches the handler.
+   *  Without this, the first bytes from the PTY (including potentially
+   *  the W's we're hunting) are silently dropped. Flushed in onOutput(). */
+  earlyBuffer: string[];
 }
 
 /** Minimum sane terminal geometry — never spawn / resize below this. */
@@ -254,6 +296,7 @@ export class TerminalService {
       rows: safeRows,
       exitCode: null,
       createdAt: Date.now(),
+      earlyBuffer: [],
     };
 
     // ── Preferred: node-pty (real PTY) ────────────────────────────────────
@@ -270,11 +313,31 @@ export class TerminalService {
         session.process = ptyProc;
         session.state = 'running';
 
+        if (TERM_DEBUG) {
+          console.log(
+            `[NEX-TERM SPAWN] t=${Date.now()} id=${id} bin=${finalBin} ` +
+            `args=${JSON.stringify(finalArgs)} cwd=${resolvedCwd} ` +
+            `cols=${safeCols} rows=${safeRows} pid=${ptyProc.pid}`,
+          );
+        }
+
         // node-pty emits strings when encoding is utf-8 (default on v1+).
+        // Log every chunk AND buffer early output until onOutput() attaches.
         ptyProc.onData((data: string) => {
-          this.outputHandlers.get(id)?.(data);
+          _dbgTerm('OUT', 'pty-onData', id, data);
+          const handler = this.outputHandlers.get(id);
+          if (handler) {
+            handler(data);
+          } else {
+            // Handler not attached yet — buffer so the first bytes (which
+            // may include the W's we're hunting) are NOT lost.
+            session.earlyBuffer.push(data);
+          }
         });
         ptyProc.onExit(({ exitCode }) => {
+          if (TERM_DEBUG) {
+            console.log(`[NEX-TERM EXIT] t=${Date.now()} id=${id} code=${exitCode}`);
+          }
           session.state = 'exited';
           session.exitCode = exitCode;
           session.exitedAt = Date.now();
@@ -300,16 +363,21 @@ export class TerminalService {
     if (child.stdout) {
       child.stdout.setEncoding('utf-8');
       child.stdout.on('data', (data: string) => {
-        this.outputHandlers.get(id)?.(data);
+        _dbgTerm('OUT', 'pipe-stdout', id, data);
+        const handler = this.outputHandlers.get(id);
+        if (handler) handler(data); else session.earlyBuffer.push(data);
       });
     }
     if (child.stderr) {
       child.stderr.setEncoding('utf-8');
       child.stderr.on('data', (data: string) => {
-        this.outputHandlers.get(id)?.(data);
+        _dbgTerm('OUT', 'pipe-stderr', id, data);
+        const handler = this.outputHandlers.get(id);
+        if (handler) handler(data); else session.earlyBuffer.push(data);
       });
     }
     child.on('exit', (code) => {
+      if (TERM_DEBUG) console.log(`[NEX-TERM EXIT] t=${Date.now()} id=${id} code=${code}`);
       session.state = 'exited';
       session.exitCode = code ?? -1;
       session.exitedAt = Date.now();
@@ -329,6 +397,7 @@ export class TerminalService {
 
   /** Write data to a session's stdin (PTY or pipe). */
   write(sessionId: string, data: string): boolean {
+    _dbgTerm('IN', 'terminalService.write', sessionId, data);
     const session = this.sessions.get(sessionId);
     if (!session || session.state !== 'running') return false;
     try {
@@ -411,9 +480,25 @@ export class TerminalService {
     this.sessions.delete(sessionId);
   }
 
-  /** Register output callback (single handler per session — last one wins). */
+  /** Register output callback (single handler per session — last one wins).
+   *  Flushes any early-buffered output that arrived before this call. */
   onOutput(sessionId: string, handler: (data: string) => void): void {
     this.outputHandlers.set(sessionId, handler);
+    // Flush early buffer — output that arrived between spawn and this call.
+    const session = this.sessions.get(sessionId);
+    if (session && session.earlyBuffer.length > 0) {
+      if (TERM_DEBUG) {
+        console.log(
+          `[NEX-TERM FLUSH] t=${Date.now()} id=${sessionId} ` +
+          `chunks=${session.earlyBuffer.length} totalLen=${session.earlyBuffer.reduce((a, c) => a + c.length, 0)}`,
+        );
+      }
+      for (const chunk of session.earlyBuffer) {
+        _dbgTerm('OUT', 'earlyBuffer-flush', sessionId, chunk);
+        handler(chunk);
+      }
+      session.earlyBuffer = [];
+    }
   }
 
   /** Register exit callback (single handler per session — last one wins). */

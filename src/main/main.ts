@@ -1363,10 +1363,22 @@ function setupIPC(): void {
   });
 
   // ── Phase 28: Terminal Session IPC ──
+  const _TERM_DBG = process.env.NEX_TERM_DEBUG === '1';
+  let _ipcSeq = 0;
   ipcMain.handle('terminal-session-spawn', async (_event, cwd: string, cols?: number, rows?: number) => {
     try {
+      if (_TERM_DBG) console.log(`[NEX-TERM IPC-SPAWN] cwd=${cwd} cols=${cols} rows=${rows} pty=${terminalService.hasPty}`);
       const session = terminalService.spawnSession(cwd, cols ?? 80, rows ?? 24);
       terminalService.onOutput(session.id, (data) => {
+        if (_TERM_DBG) {
+          _ipcSeq++;
+          const hex = Array.from(data.slice(0, 64))
+            .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+          console.log(
+            `[NEX-TERM IPC-SEND ${_ipcSeq}] t=${Date.now()} id=${session.id} ` +
+            `len=${data.length} esc=${JSON.stringify(data).slice(0, 200)} hex=${hex}`,
+          );
+        }
         mainWindow?.webContents.send(`terminal-output:${session.id}`, data);
       });
       terminalService.onExit(session.id, (code) => {
