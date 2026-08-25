@@ -44,13 +44,6 @@ export interface NexAPI {
   openFolder: () => Promise<{ canceled?: boolean; path?: string }>;
   openFile: () => Promise<{ canceled?: boolean; path?: string }>;
 
-  // Terminal
-  terminalSpawn: (cwd: string) => void;
-  terminalWrite: (data: string) => void;
-  terminalResize: (cols: number, rows: number) => void;
-  onTerminalOutput: (callback: (data: string) => void) => () => void;
-  onTerminalExit: (callback: (code: number | null) => void) => () => void;
-
   // Exec
   runTscCheck: (cwd: string) => Promise<{ success: boolean; output?: string; error?: string; exitCode?: number | null }>;
 
@@ -117,9 +110,14 @@ export interface NexAPI {
   conversationRename: (id: string, title: string) => Promise<{ success: boolean; error?: string }>;
   conversationSearch: (query: string) => Promise<{ success: boolean; results?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; messageCount: number }>; error?: string }>;
 
-  // ── Phase 28: Terminal Sessions ──
-  terminalSessionSpawn: (cwd: string) => Promise<{ success: boolean; sessionId?: string; state?: string; error?: string }>;
+  // ── Phase 28: Terminal Sessions (PTY-backed) ──
+  terminalSessionSpawn: (cwd: string, cols?: number, rows?: number) => Promise<{
+    success: boolean; sessionId?: string; state?: string; error?: string;
+    shellName?: string; shellPath?: string; cwd?: string;
+    cols?: number; rows?: number; pty?: boolean;
+  }>;
   terminalSessionWrite: (sessionId: string, data: string) => Promise<{ success: boolean }>;
+  terminalSessionResize: (sessionId: string, cols: number, rows: number) => Promise<{ success: boolean }>;
   terminalSessionSignal: (sessionId: string, signal: string) => Promise<{ success: boolean }>;
   terminalSessionKill: (sessionId: string) => Promise<{ success: boolean }>;
   terminalSessionList: () => Promise<Array<{ id: string; state: string; cwd: string; exitCode: number | null; createdAt: number }>>;

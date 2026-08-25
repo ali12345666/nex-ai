@@ -34,20 +34,6 @@ contextBridge.exposeInMainWorld('nexAPI', {
   openFolder: () => ipcRenderer.invoke('dialog-open-folder'),
   openFile: () => ipcRenderer.invoke('dialog-open-file'),
 
-  // ── Terminal ──
-  terminalSpawn: (cwd: string) => ipcRenderer.send('terminal-spawn', cwd),
-  terminalWrite: (data: string) => ipcRenderer.send('terminal-write', data),
-  terminalResize: (cols: number, rows: number) =>
-    ipcRenderer.send('terminal-resize', cols, rows),
-  onTerminalOutput: (callback: (data: string) => void) => {
-    ipcRenderer.on('terminal-output', (_event, data) => callback(data));
-    return () => ipcRenderer.removeAllListeners('terminal-output');
-  },
-  onTerminalExit: (callback: (code: number | null) => void) => {
-    ipcRenderer.on('terminal-exit', (_event, code) => callback(code));
-    return () => ipcRenderer.removeAllListeners('terminal-exit');
-  },
-
   // ── System ──
   systemInfo: () => ipcRenderer.invoke('system-info'),
   // Phase 26: safe tsc check (replaces removed execCommand)
@@ -125,9 +111,12 @@ contextBridge.exposeInMainWorld('nexAPI', {
   conversationRename: (id: string, title: string) => ipcRenderer.invoke('conversation-rename', id, title),
   conversationSearch: (query: string) => ipcRenderer.invoke('conversation-search', query),
 
-  // ── Phase 28: Terminal Sessions ──
-  terminalSessionSpawn: (cwd: string) => ipcRenderer.invoke('terminal-session-spawn', cwd),
+  // ── Phase 28: Terminal Sessions (PTY-backed) ──
+  terminalSessionSpawn: (cwd: string, cols?: number, rows?: number) =>
+    ipcRenderer.invoke('terminal-session-spawn', cwd, cols, rows),
   terminalSessionWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal-session-write', sessionId, data),
+  terminalSessionResize: (sessionId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('terminal-session-resize', sessionId, cols, rows),
   terminalSessionSignal: (sessionId: string, signal: string) => ipcRenderer.invoke('terminal-session-signal', sessionId, signal),
   terminalSessionKill: (sessionId: string) => ipcRenderer.invoke('terminal-session-kill', sessionId),
   terminalSessionList: () => ipcRenderer.invoke('terminal-session-list'),

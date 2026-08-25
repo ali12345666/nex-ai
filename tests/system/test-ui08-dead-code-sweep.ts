@@ -84,8 +84,12 @@ async function main(): Promise<void> {
   // UI-09 deleted the file (fake data + __monacoEditor hack). The original
   // UI-08 test expected all 15 files to still exist; after merging UI-09,
   // SnippetPanel no longer exists.
+  // TERMINAL REWRITE FIX: TerminalPanel.tsx was removed from this list because
+  // the PTY rewrite deleted it — it was the old pipe-based terminal panel
+  // superseded by TerminalSessionPanel (now PTY-backed). The old non-session
+  // terminal IPC (terminal-spawn/write/output) was also removed.
   const componentFiles = [
-    'TitleBar.tsx', 'Sidebar.tsx', 'ChatPanel.tsx', 'TerminalPanel.tsx',
+    'TitleBar.tsx', 'Sidebar.tsx', 'ChatPanel.tsx',
     'FileExplorer.tsx', 'SearchPanel.tsx', 'DiagnosticsPanel.tsx',
     'ModelsPanel.tsx', 'WelcomeScreen.tsx', 'StatusBar.tsx', 'EditorPanel.tsx',
     'GitPanel.tsx', 'InputDialog.tsx', 'RecentProjects.tsx',

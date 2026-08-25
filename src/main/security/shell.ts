@@ -127,8 +127,14 @@ export function safeExecFile(
 }
 
 /**
- * Spawn a long-running process (terminal PTY replacement).
+ * Spawn a long-running process (terminal PTY replacement fallback).
  * Returns the ChildProcess so caller can write to stdin and listen to stdout.
+ *
+ * NOTE: pipe-based spawn (this function) does NOT create a real PTY. It is
+ * only used as a fallback when node-pty is unavailable. The real terminal
+ * path goes through terminalService → node-pty (ConPTY on Windows), which
+ * provides proper echo, signal delivery, and resize. See:
+ *   src/main/services/terminal-service.ts
  */
 export function safeSpawn(
   bin: string,
@@ -151,19 +157,6 @@ export function safeSpawn(
     shell: resolved.useShell,
     windowsHide: false,
   });
-}
-
-/**
- * On Windows: spawn a PowerShell instance suitable for terminal use.
- * On POSIX: spawn bash.
- *
- * Uses safeSpawn internally — never string commands.
- */
-export function spawnInteractiveShell(cwd: string): ChildProcess {
-  if (os.platform() === 'win32') {
-    return safeSpawn('powershell.exe', ['-NoLogo', '-NoProfile'], { cwd });
-  }
-  return safeSpawn('bash', ['-i'], { cwd });
 }
 
 /**

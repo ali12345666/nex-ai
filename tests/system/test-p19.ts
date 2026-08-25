@@ -76,7 +76,7 @@ assert("SidebarView includes all 4", ["'knowledge'", "'memory'", "'system'", "'p
 console.log('\npurity:');
 assert('ZERO network attempts', attempts.length === 0, attempts.join(','));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
-assert('deps count verified (15 after Phase 27)', Object.keys(pkg.dependencies).length === 15);
+assert('deps count verified (16 after Phase 27 + node-pty)', Object.keys(pkg.dependencies).length === 16);
 assert('agent core untouched', !/noteInferenceStats/.test(fs.readFileSync(path.join(__dirname, '../../src/main/agent/core.ts'), 'utf-8')));
 
 console.log('\n══════════════════════════════════════');

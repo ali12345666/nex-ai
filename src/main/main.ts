@@ -16,7 +16,7 @@ import type { AIMessage, AIConfig } from './ai-service';
 import { chatCompletion, getSystemPrompt, getDefaultConfig } from './ai-service';
 
 import { CSP, ALLOWED_AI_ORIGINS, isAllowedAIOrigin, assertPathInside } from './security';
-import { safeExecFile, safeSpawn, spawnInteractiveShell, searchFileContents } from './security/shell';
+import { safeExecFile, searchFileContents } from './security/shell';
 import {
   initPersistence,
   loadState,
@@ -65,7 +65,6 @@ const BLOCKED_PERMISSIONS = new Set([
 ]);
 
 let mainWindow: BrowserWindow | null = null;
-let terminalProcess: import('child_process').ChildProcess | null = null;
 const isDev = !app.isPackaged;
 
 // ─── Portable Mode Detection ──────────────────────────────────────────────
@@ -214,7 +213,7 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-    cleanupTerminal();
+    terminalService.killAll();
   });
 
   setupSecurity(mainWindow);
@@ -519,31 +518,6 @@ function setupIPC(): void {
     });
     if (result.canceled) return { canceled: true };
     return { path: result.filePaths[0] };
-  });
-
-  // ── Terminal (using safeSpawn — no shell interpolation) ──
-  ipcMain.on('terminal-write', (_event, data: string) => {
-    if (terminalProcess && terminalProcess.stdin) {
-      terminalProcess.stdin.write(data);
-    }
-  });
-
-  ipcMain.on('terminal-spawn', (_event, cwd: string) => {
-    cleanupTerminal();
-    terminalProcess = spawnInteractiveShell(cwd || os.homedir());
-    terminalProcess.stdout?.on('data', (data: Buffer) => {
-      mainWindow?.webContents.send('terminal-output', data.toString());
-    });
-    terminalProcess.stderr?.on('data', (data: Buffer) => {
-      mainWindow?.webContents.send('terminal-output', data.toString());
-    });
-    terminalProcess.on('exit', (code) => {
-      mainWindow?.webContents.send('terminal-exit', code);
-    });
-  });
-
-  ipcMain.on('terminal-resize', (_event, _cols: number, _rows: number) => {
-    // Resize handled by xterm addon in renderer (PTY resize is non-critical for v1)
   });
 
   // ── Code Execution (now requires allow-list of binaries) ──
@@ -1389,9 +1363,9 @@ function setupIPC(): void {
   });
 
   // ── Phase 28: Terminal Session IPC ──
-  ipcMain.handle('terminal-session-spawn', async (_event, cwd: string) => {
+  ipcMain.handle('terminal-session-spawn', async (_event, cwd: string, cols?: number, rows?: number) => {
     try {
-      const session = terminalService.spawnSession(cwd);
+      const session = terminalService.spawnSession(cwd, cols ?? 80, rows ?? 24);
       terminalService.onOutput(session.id, (data) => {
         mainWindow?.webContents.send(`terminal-output:${session.id}`, data);
       });
@@ -1405,6 +1379,9 @@ function setupIPC(): void {
         shellName: session.shellName,
         shellPath: session.shellPath,
         cwd: session.cwd,
+        cols: session.cols,
+        rows: session.rows,
+        pty: terminalService.hasPty,
       };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1416,6 +1393,13 @@ function setupIPC(): void {
       return { success: false, error: 'Invalid payload' };
     }
     return { success: terminalService.write(sessionId, data) };
+  });
+
+  ipcMain.handle('terminal-session-resize', async (_event, sessionId: string, cols: number, rows: number) => {
+    if (typeof sessionId !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') {
+      return { success: false, error: 'Invalid payload' };
+    }
+    return { success: terminalService.resize(sessionId, cols, rows) };
   });
 
   ipcMain.handle('terminal-session-signal', async (_event, sessionId: string, signal: string) => {
@@ -1627,13 +1611,6 @@ function setupIPC(): void {
   });
 }
 
-function cleanupTerminal(): void {
-  if (terminalProcess) {
-    try { terminalProcess.kill(); } catch {}
-    terminalProcess = null;
-  }
-}
-
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   // Initialize persistence before anything else
@@ -1655,7 +1632,7 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  cleanupTerminal();
+  terminalService.killAll();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -1674,7 +1651,7 @@ app.on('before-quit', (event) => {
   shutdownLlama()
     .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
     .finally(() => {
-      cleanupTerminal();
+      terminalService.killAll();
       // Force-exit now — engine is disposed
       app.exit(0);
     });
