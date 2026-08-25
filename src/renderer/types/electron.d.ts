@@ -157,6 +157,20 @@ export interface NexAPI {
   updateAddHistory: (entry: any) => Promise<{ success: boolean; entry?: any; error?: string }>;
   updateLastSuccessful: () => Promise<{ success: boolean; entry?: any; error?: string }>;
 
+  // Phase 45: Intelligent Model Advisor + Smart Router
+  modelAdvisorStatus: () => Promise<{ success: boolean; analysis?: any; error?: string }>;
+  modelRecommendations: () => Promise<{ success: boolean; recommendations?: any[]; error?: string }>;
+  modelCompare: (modelAId: string, modelBId: string) => Promise<{ success: boolean; comparison?: any; error?: string }>;
+  modelRouterDecision: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+    Promise<{ success: boolean; decision?: any; error?: string }>;
+  modelRouterStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  usageStats: () => Promise<{ success: boolean; stats?: any; error?: string }>;
+  usageRecord: (record: any) => Promise<{ success: boolean; error?: string }>;
+  advisorPreferences: () => Promise<{ success: boolean; preferences?: any; error?: string }>;
+  advisorRejectRecommendation: (recommendationId: string) => Promise<{ success: boolean; error?: string }>;
+  advisorSetPreferredModel: (category: string, modelId: string) => Promise<{ success: boolean; error?: string }>;
+  advisorInstalledHistory: () => Promise<{ success: boolean; history?: any[]; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

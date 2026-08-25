@@ -150,6 +150,20 @@ contextBridge.exposeInMainWorld('nexAPI', {
   updateAddHistory: (entry: any) => ipcRenderer.invoke('update-add-history', entry),
   updateLastSuccessful: () => ipcRenderer.invoke('update-last-successful'),
 
+  // ── Phase 45: Intelligent Model Advisor + Smart Router ──
+  modelAdvisorStatus: () => ipcRenderer.invoke('model-advisor-status'),
+  modelRecommendations: () => ipcRenderer.invoke('model-recommendations'),
+  modelCompare: (modelAId: string, modelBId: string) => ipcRenderer.invoke('model-compare', modelAId, modelBId),
+  modelRouterDecision: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+    ipcRenderer.invoke('model-router-decision', request),
+  modelRouterStatus: () => ipcRenderer.invoke('model-router-status'),
+  usageStats: () => ipcRenderer.invoke('usage-stats'),
+  usageRecord: (record: any) => ipcRenderer.invoke('usage-record', record),
+  advisorPreferences: () => ipcRenderer.invoke('advisor-preferences'),
+  advisorRejectRecommendation: (recommendationId: string) => ipcRenderer.invoke('advisor-reject-recommendation', recommendationId),
+  advisorSetPreferredModel: (category: string, modelId: string) => ipcRenderer.invoke('advisor-set-preferred-model', category, modelId),
+  advisorInstalledHistory: () => ipcRenderer.invoke('advisor-installed-history'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

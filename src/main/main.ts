@@ -1452,6 +1452,134 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 45: Intelligent Model Advisor + Smart Router ──
+  const { getModelAdvisor } = await import('./ai/model-intelligence/model-advisor');
+  const { getSmartModelRouter } = await import('./ai/model-intelligence/smart-model-router');
+  const { getUsageAnalyzer } = await import('./ai/model-intelligence/usage-analyzer');
+  const { getAdvisorPersistence } = await import('./ai/model-intelligence/advisor-persistence');
+
+  // Model advisor: analyze hardware + recommend models
+  ipcMain.handle('model-advisor-status', async () => {
+    try {
+      const advisor = getModelAdvisor();
+      const analysis = advisor.analyzeHardware();
+      return { success: true, analysis };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model advisor: get recommendations
+  ipcMain.handle('model-recommendations', async () => {
+    try {
+      const advisor = getModelAdvisor();
+      const analysis = advisor.analyzeHardware();
+      return { success: true, recommendations: analysis.recommendations };
+    } catch (err: any) {
+      return { success: false, error: err.message, recommendations: [] };
+    }
+  });
+
+  // Model advisor: compare two models
+  ipcMain.handle('model-compare', async (_event, modelAId: string, modelBId: string) => {
+    try {
+      const advisor = getModelAdvisor();
+      const comparison = advisor.compareModels(modelAId, modelBId);
+      if (!comparison) return { success: false, error: 'Models not found in catalog' };
+      return { success: true, comparison };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Smart router: get routing decision for a task
+  ipcMain.handle('model-router-decision', async (_event, request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) => {
+    try {
+      const router = getSmartModelRouter();
+      const decision = router.selectModel(request);
+      return { success: true, decision };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Smart router: get status
+  ipcMain.handle('model-router-status', async () => {
+    try {
+      const router = getSmartModelRouter();
+      const status = router.getStatus();
+      return { success: true, status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Usage analyzer: get usage stats
+  ipcMain.handle('usage-stats', async () => {
+    try {
+      const analyzer = getUsageAnalyzer();
+      const stats = analyzer.getStats();
+      return { success: true, stats };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Usage analyzer: record a task
+  ipcMain.handle('usage-record', async (_event, record: any) => {
+    try {
+      const analyzer = getUsageAnalyzer();
+      analyzer.record(record);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Advisor preferences
+  ipcMain.handle('advisor-preferences', async () => {
+    try {
+      const persistence = getAdvisorPersistence();
+      const prefs = persistence.getPreferences();
+      return { success: true, preferences: prefs };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Advisor: reject a recommendation
+  ipcMain.handle('advisor-reject-recommendation', async (_event, recommendationId: string) => {
+    try {
+      const persistence = getAdvisorPersistence();
+      persistence.rejectRecommendation(recommendationId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Advisor: set preferred model
+  ipcMain.handle('advisor-set-preferred-model', async (_event, category: string, modelId: string) => {
+    try {
+      const persistence = getAdvisorPersistence();
+      persistence.setPreferredModel(category, modelId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Advisor: get installed model history
+  ipcMain.handle('advisor-installed-history', async () => {
+    try {
+      const persistence = getAdvisorPersistence();
+      const history = persistence.getInstalledHistory();
+      return { success: true, history };
+    } catch (err: any) {
+      return { success: false, error: err.message, history: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {
