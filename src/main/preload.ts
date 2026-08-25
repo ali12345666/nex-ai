@@ -81,6 +81,26 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelGet: (id: string) => ipcRenderer.invoke('model-get', id),
   modelPickFile: () => ipcRenderer.invoke('model-pick-file'),
 
+  // ── Phase 39: Professional Model Manager (versioning, hash, hardware, backup) ──
+  modelComputeHash: (modelId: string) =>
+    ipcRenderer.invoke('model-compute-hash', modelId),
+  modelVerifyIntegrity: (modelId: string) =>
+    ipcRenderer.invoke('model-verify-integrity', modelId),
+  modelVerifyAllIntegrity: () =>
+    ipcRenderer.invoke('model-verify-all-integrity'),
+  modelRegistryRollback: () =>
+    ipcRenderer.invoke('model-registry-rollback'),
+  modelRegistryBackupInfo: () =>
+    ipcRenderer.invoke('model-registry-backup-info'),
+  modelRegistryMigrate: () =>
+    ipcRenderer.invoke('model-registry-migrate'),
+  modelDetectHardware: () =>
+    ipcRenderer.invoke('model-detect-hardware'),
+  modelRecommend: (criteria?: { capability?: string; category?: string; preferSmaller?: boolean }) =>
+    ipcRenderer.invoke('model-recommend', criteria),
+  modelCanRun: (modelId: string) =>
+    ipcRenderer.invoke('model-can-run', modelId),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

@@ -82,6 +82,12 @@ export interface PersistedState {
     license?: string;
     source?: string;
     sourceUrl?: string;
+    // Phase 39: integrity + versioning fields
+    schemaVersion?: number;
+    hash?: string;
+    hashAlgorithm?: string;
+    verifiedAt?: number;
+    integrityStatus?: string;
   }>;
 }
 

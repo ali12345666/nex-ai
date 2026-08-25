@@ -85,6 +85,24 @@ export interface NexAPI {
   modelGet: (id: string) => Promise<any>;
   modelPickFile: () => Promise<{ canceled?: boolean; path?: string }>;
 
+  // Phase 39: Professional Model Manager
+  modelComputeHash: (modelId: string) => Promise<{ success: boolean; hash?: string; algorithm?: string; error?: string }>;
+  modelVerifyIntegrity: (modelId: string) => Promise<{ success: boolean; status?: 'verified' | 'mismatch' | 'unknown' | 'missing'; error?: string }>;
+  modelVerifyAllIntegrity: () => Promise<{ success: boolean; results?: Array<{ modelId: string; modelName: string; status: string; message: string }>; error?: string }>;
+  modelRegistryRollback: () => Promise<{ success: boolean }>;
+  modelRegistryBackupInfo: () => Promise<{ success: boolean; hasBackup: boolean; info?: { backedUpAt: number; modelCount: number } | null }>;
+  modelRegistryMigrate: () => Promise<{ success: boolean; migrated: number; fromVersion: number; toVersion: number }>;
+  modelDetectHardware: () => Promise<{ success: boolean; profile?: any; error?: string }>;
+  modelRecommend: (criteria?: { capability?: string; category?: string; preferSmaller?: boolean }) =>
+    Promise<{ success: boolean; recommendations?: Array<{
+      modelId: string; modelName: string; score: number; rank: number;
+      canRun: boolean; reason: string;
+      suggestedGpuLayers: number; suggestedThreads: number; suggestedContextSize: number;
+      estimatedLoadSeconds: number; capabilityMatch: boolean;
+      parameterCount?: string; sizeBytes: number;
+    }>; error?: string }>;
+  modelCanRun: (modelId: string) => Promise<{ success: boolean; verdict?: any; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

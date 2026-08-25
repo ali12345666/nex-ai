@@ -15,6 +15,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { loadState, updateState } from '../persistence';
+// Phase 39: versioning, hash, backup, portable path resolution
+import {
+  backupModelRegistry,
+  resolveModelPath,
+  normalizeModelPathForStorage,
+  CURRENT_MODEL_SCHEMA_VERSION,
+  type ModelIntegrityInfo,
+} from './model-versioning';
 
 export type ModelCategory =
   | 'general'      // general-purpose chat
@@ -47,14 +55,14 @@ export type ModelCapability =
 export interface LocalModelInfo {
   id: string;            // internal uuid
   name: string;          // user-friendly name
-  path: string;          // absolute path to .gguf file
+  path: string;          // path to .gguf file (may be relative in portable mode)
   sizeBytes: number;
   contextSize: number;   // default 2048
   gpuLayers: number;     // -1 = auto, 0 = CPU only, >0 = N layers offloaded
   category: ModelCategory;
   addedAt: number;
   lastUsedAt?: number;
-  fileExists: boolean;    // verified at load time
+  fileExists: boolean;    // verified at load time (after path resolution)
   // Hardware requirements (estimated, user-editable)
   minRamBytes?: number;       // minimum RAM to load
   minVramBytes?: number;      // minimum VRAM (0 if CPU-only)
@@ -70,6 +78,12 @@ export interface LocalModelInfo {
   // Source
   source?: 'huggingface' | 'local' | 'custom';
   sourceUrl?: string;
+  // Phase 39: integrity + versioning fields
+  schemaVersion?: number;             // model registry schema version
+  hash?: string;                      // SHA-256 of the .gguf file (hex)
+  hashAlgorithm?: 'sha256';
+  verifiedAt?: number;                // when the hash was last verified
+  integrityStatus?: 'verified' | 'mismatch' | 'pending' | 'unknown';
 }
 
 export interface AddModelOptions {
@@ -107,24 +121,42 @@ export function defaultCapabilitiesForCategory(category: ModelCategory): ModelCa
 }
 
 /**
- * Get all registered models. Verifies that each .gguf file still exists.
+ * Get all registered models. Verifies that each .gguf file still exists
+ * (after resolving portable paths). Phase 39: resolves model paths for
+ * portable mode compatibility.
  */
 export function listModels(): LocalModelInfo[] {
   const state = loadState();
   const models = state.localModels || [];
-  return models.map((m): LocalModelInfo => ({
-    ...m,
-    category: ((m.category as string) || 'general') as ModelCategory,
-    capabilities: ((m.capabilities as any) || defaultCapabilitiesForCategory(((m.category as string) || 'general') as ModelCategory)) as ModelCapability[],
-    source: ((m.source as string) || 'local') as 'huggingface' | 'local' | 'custom',
-    fileExists: fs.existsSync(m.path),
-  }));
+  return models.map((m): LocalModelInfo => {
+    const resolvedPath = resolveModelPath(m.path);
+    return {
+      ...m,
+      // Phase 39: store the RESOLVED path so callers get an absolute path.
+      // The ORIGINAL (possibly relative) path is preserved in the registry.
+      path: resolvedPath,
+      category: ((m.category as string) || 'general') as ModelCategory,
+      capabilities: ((m.capabilities as any) || defaultCapabilitiesForCategory(((m.category as string) || 'general') as ModelCategory)) as ModelCapability[],
+      source: ((m.source as string) || 'local') as 'huggingface' | 'local' | 'custom',
+      fileExists: fs.existsSync(resolvedPath),
+      // Phase 39: ensure integrity fields have defaults for v1 models
+      schemaVersion: m.schemaVersion || CURRENT_MODEL_SCHEMA_VERSION,
+      hashAlgorithm: (m.hashAlgorithm || 'sha256') as 'sha256',
+      integrityStatus: (m.integrityStatus || 'unknown') as 'verified' | 'mismatch' | 'pending' | 'unknown',
+    };
+  });
 }
 
 /**
  * Add a .gguf file to the registry.
  * Returns the new model entry, or throws if the file doesn't exist or
  * isn't a .gguf file.
+ *
+ * Phase 39:
+ *   - Creates a backup of the registry BEFORE the mutation (rollback safety).
+ *   - Stores a portable-friendly path (relative if under app dir).
+ *   - Sets schemaVersion = 2 and integrityStatus = 'pending' (hash computed
+ *     async by a separate verify call).
  */
 export function addModel(filePath: string, opts: AddModelOptions = {}): LocalModelInfo {
   if (!filePath) throw new Error('File path is required');
@@ -146,10 +178,14 @@ export function addModel(filePath: string, opts: AddModelOptions = {}): LocalMod
     throw new Error(`Model already registered as "${existing.name}"`);
   }
 
+  // Phase 39: backup before mutation
+  backupModelRegistry();
+
   const model: LocalModelInfo = {
     id: crypto.randomUUID(),
     name,
-    path: absPath,
+    // Phase 39: store portable-friendly path
+    path: normalizeModelPathForStorage(absPath),
     sizeBytes: stat.size,
     contextSize: opts.contextSize ?? 2048,
     gpuLayers: opts.gpuLayers ?? -1,  // auto
@@ -164,6 +200,10 @@ export function addModel(filePath: string, opts: AddModelOptions = {}): LocalMod
     license: opts.license,
     source: opts.source || 'local',
     sourceUrl: opts.sourceUrl,
+    // Phase 39: integrity fields
+    schemaVersion: CURRENT_MODEL_SCHEMA_VERSION,
+    hashAlgorithm: 'sha256',
+    integrityStatus: 'pending', // hash will be computed async by verify
   };
 
   const state = loadState();
@@ -175,12 +215,15 @@ export function addModel(filePath: string, opts: AddModelOptions = {}): LocalMod
 
 /**
  * Remove a model from the registry (does NOT delete the file on disk).
+ * Phase 39: creates a backup before removal (rollback safety).
  */
 export function removeModel(id: string): boolean {
   const state = loadState();
   const models = state.localModels || [];
   const idx = models.findIndex((m) => m.id === id);
   if (idx === -1) return false;
+  // Phase 39: backup before mutation
+  backupModelRegistry();
   models.splice(idx, 1);
   updateState({ localModels: models });
   return true;
@@ -188,15 +231,19 @@ export function removeModel(id: string): boolean {
 
 /**
  * Update a model's metadata (name, contextSize, gpuLayers, category).
+ * Phase 39: creates a backup before update (rollback safety).
  */
 export function updateModel(id: string, patch: Partial<Omit<LocalModelInfo, 'id' | 'path' | 'sizeBytes' | 'addedAt'>>): LocalModelInfo | null {
   const state = loadState();
   const models = state.localModels || [];
   const idx = models.findIndex((m) => m.id === id);
   if (idx === -1) return null;
+  // Phase 39: backup before mutation
+  backupModelRegistry();
   models[idx] = { ...models[idx], ...patch } as any;
   updateState({ localModels: models });
-  return { ...models[idx], fileExists: fs.existsSync(models[idx].path) } as LocalModelInfo;
+  const resolved = resolveModelPath(models[idx].path);
+  return { ...models[idx], path: resolved, fileExists: fs.existsSync(resolved) } as LocalModelInfo;
 }
 
 /**

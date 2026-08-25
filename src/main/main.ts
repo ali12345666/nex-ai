@@ -366,7 +366,7 @@ function createMenu(): void {
 }
 
 // ─── IPC Handlers ───────────────────────────────────────────────────────────
-function setupIPC(): void {
+async function setupIPC(): Promise<void> {
   // ── Window Controls ──
   ipcMain.on('window-minimize', () => mainWindow?.minimize());
   ipcMain.on('window-maximize', () => {
@@ -811,6 +811,185 @@ function setupIPC(): void {
     });
     if (result.canceled) return { canceled: true };
     return { path: result.filePaths[0] };
+  });
+
+  // ── Phase 39: Professional Model Manager (versioning, hash, hardware, backup) ──
+  const {
+    computeFileHash,
+    verifyModelIntegrity,
+    verifyAllModelsIntegrity,
+    backupModelRegistry,
+    rollbackModelRegistry,
+    hasModelRegistryBackup,
+    getModelRegistryBackupInfo,
+    migrateModelRegistry,
+  } = await import('./ai/model-versioning');
+  const {
+    detectHardwareProfile,
+    recommendModelsForHardware,
+    recommendBestModel,
+    canModelRunOnHardware,
+  } = await import('./ai/hardware-model-recommender');
+
+  // Compute the SHA-256 hash of a model file (async, streaming).
+  ipcMain.handle('model-compute-hash', async (_event, modelId: string) => {
+    try {
+      const model = getModel(modelId);
+      if (!model) return { success: false, error: 'Model not found' };
+      if (!model.fileExists) return { success: false, error: 'Model file not found' };
+      const hash = await computeFileHash(model.path);
+      // Store the hash on the model record.
+      updateModel(modelId, {
+        hash,
+        hashAlgorithm: 'sha256',
+        verifiedAt: Date.now(),
+        integrityStatus: 'verified',
+      });
+      return { success: true, hash, algorithm: 'sha256' };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Verify a single model's integrity (re-hash and compare).
+  ipcMain.handle('model-verify-integrity', async (_event, modelId: string) => {
+    try {
+      const model = getModel(modelId);
+      if (!model) return { success: false, error: 'Model not found' };
+      const status = await verifyModelIntegrity(model.path, model.hash);
+      // Update the model's integrity status.
+      updateModel(modelId, {
+        integrityStatus: status === 'verified' ? 'verified' : (status === 'mismatch' ? 'mismatch' : 'unknown'),
+        verifiedAt: Date.now(),
+      });
+      return { success: true, status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Verify ALL models' integrity (batch, async).
+  ipcMain.handle('model-verify-all-integrity', async () => {
+    try {
+      const models = listModels();
+      const results = await verifyAllModelsIntegrity(
+        models.map((m) => ({ id: m.id, name: m.name, path: m.path, hash: m.hash })),
+      );
+      // Update each model's integrity status in the registry.
+      for (const r of results) {
+        if (r.status === 'verified' || r.status === 'mismatch') {
+          updateModel(r.modelId, {
+            integrityStatus: r.status,
+            verifiedAt: Date.now(),
+          });
+        }
+      }
+      return { success: true, results };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Rollback the model registry to the last backup.
+  ipcMain.handle('model-registry-rollback', async () => {
+    const ok = rollbackModelRegistry();
+    return { success: ok };
+  });
+
+  // Get backup info (without restoring).
+  ipcMain.handle('model-registry-backup-info', async () => {
+    const info = getModelRegistryBackupInfo();
+    return { success: true, hasBackup: hasModelRegistryBackup(), info };
+  });
+
+  // Migrate the model registry to the current schema version.
+  ipcMain.handle('model-registry-migrate', async () => {
+    const result = migrateModelRegistry();
+    return { success: true, ...result };
+  });
+
+  // Detect the current hardware profile.
+  ipcMain.handle('model-detect-hardware', async () => {
+    try {
+      // Read from the system monitor if available, else fallback to os module.
+      let detectedBackend = 'cpu';
+      try {
+        const { getRuntimeMonitorStats } = await import('./ai/runtime');
+        const monitorStats = getRuntimeMonitorStats();
+        const firstWithGpu = monitorStats.stats.find((s: any) => s.gpuBackend);
+        if (firstWithGpu?.gpuBackend) detectedBackend = firstWithGpu.gpuBackend;
+      } catch { /* fallback to 'cpu' */ }
+
+      const os = require('os');
+      const cpus = os.cpus();
+      const hw = detectHardwareProfile(
+        {
+          cpu: { cores: cpus.length, threads: cpus.length },
+          memory: { totalBytes: os.totalmem(), freeBytes: os.freemem() },
+          gpus: [], // GPU detection requires the async system monitor; the
+          // UI can call system-snapshot for full GPU info.
+        },
+        detectedBackend,
+      );
+      return { success: true, profile: hw };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get hardware-aware model recommendations.
+  ipcMain.handle('model-recommend', async (_event, criteria?: {
+    capability?: string;
+    category?: string;
+    preferSmaller?: boolean;
+  }) => {
+    try {
+      const recs = recommendModelsForHardware({
+        capability: criteria?.capability as any,
+        category: criteria?.category,
+        preferSmaller: criteria?.preferSmaller,
+      });
+      return {
+        success: true,
+        recommendations: recs.map((r) => ({
+          modelId: r.model.id,
+          modelName: r.model.name,
+          score: r.score,
+          rank: r.rank,
+          canRun: r.verdict.canRun,
+          reason: r.verdict.reason,
+          suggestedGpuLayers: r.verdict.suggestedGpuLayers,
+          suggestedThreads: r.verdict.suggestedThreads,
+          suggestedContextSize: r.verdict.suggestedContextSize,
+          estimatedLoadSeconds: r.verdict.estimatedLoadSeconds,
+          capabilityMatch: r.capabilityMatch,
+          parameterCount: r.model.parameterCount,
+          sizeBytes: r.model.sizeBytes,
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Check if a specific model can run on the current hardware.
+  ipcMain.handle('model-can-run', async (_event, modelId: string) => {
+    try {
+      const model = getModel(modelId);
+      if (!model) return { success: false, error: 'Model not found' };
+      const os = require('os');
+      const hw = detectHardwareProfile(
+        {
+          cpu: { cores: os.cpus().length, threads: os.cpus().length },
+          memory: { totalBytes: os.totalmem(), freeBytes: os.freemem() },
+          gpus: [],
+        },
+      );
+      const verdict = canModelRunOnHardware(model, hw);
+      return { success: true, verdict };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   });
 
   // ── Agent Core (Phase 7) ──
@@ -1628,7 +1807,7 @@ app.whenReady().then(() => {
   // Initialize persistence before anything else
   initPersistence(userDataPath);
 
-  setupIPC();
+  setupIPC().catch((err) => console.error('[NEX AI] IPC setup failed:', err));
   createWindow();
 
   app.on('activate', () => {
