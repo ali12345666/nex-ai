@@ -415,6 +415,105 @@ export default function NexChatPanel() {
     const trimmed = input.trim();
     if ((!trimmed && attachments.length === 0) || isGenerating) return;
 
+    // Phase 45: Intercept advisor chat commands
+    const lower = trimmed.toLowerCase();
+    if (lower.includes('مدل بهتر') || lower.includes('پیدا کن مدل') || lower.includes('model recommend') || lower.includes('find better model')) {
+      // Show user message + advisor response
+      const userMsg = createMessage('user', trimmed);
+      const assistantMsg = createMessage('assistant', '', { status: 'pending' });
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setInput('');
+      setIsGenerating(true);
+      try {
+        const res = await window.nexAPI.modelRecommendations();
+        if (res.success && res.recommendations && res.recommendations.length > 0) {
+          let text = 'یک مدل بهتر برای کار شما پیدا کردم:\n\n';
+          for (const rec of res.recommendations.slice(0, 3)) {
+            const e = rec.catalogEntry;
+            if (!e) continue;
+            text += `**${e.name}**\n`;
+            text += `اندازه: ${e.sizeGB} GB\n`;
+            text += `دسته: ${e.category}\n`;
+            text += `بهبود: +${rec.estimatedImprovement}%\n`;
+            text += `دلیل: ${rec.reason}\n\n`;
+          }
+          text += 'برای نصب، در چت تایید کنید یا روی Advisor در منو کلیک کنید.';
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = createMessage('assistant', text, { status: 'complete' });
+            return next;
+          });
+        } else {
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = createMessage('assistant', 'در حال حاضر مدل بهتری برای سخت‌افزار شما پیدا نکردم. مدل‌های فعلی شما مناسب هستند.', { status: 'complete' });
+            return next;
+          });
+        }
+      } catch (err: any) {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = createMessage('assistant', `خطا: ${err.message}`, { status: 'complete' });
+          return next;
+        });
+      }
+      setIsGenerating(false);
+      return;
+    }
+    if (lower.includes('این مدل بهتره') || lower.includes('مقایسه مدل') || lower.includes('compare model')) {
+      // Show comparison
+      const userMsg = createMessage('user', trimmed);
+      const assistantMsg = createMessage('assistant', '', { status: 'pending' });
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setInput('');
+      setIsGenerating(true);
+      try {
+        const advisorRes = await window.nexAPI.modelRecommendations();
+        if (advisorRes.success && advisorRes.recommendations && advisorRes.recommendations.length > 0) {
+          const rec = advisorRes.recommendations[0];
+          const entry = rec.catalogEntry;
+          if (entry) {
+            const compareRes = await window.nexAPI.modelCompare('qwen2.5-7b-q4', entry.id);
+            if (compareRes.success && compareRes.comparison) {
+              const c = compareRes.comparison;
+              let text = `مقایسه مدل‌ها:\n\n`;
+              text += `**${c.modelA.name}** vs **${c.modelB.name}**\n\n`;
+              text += `کیفیت: ${c.differences.quality?.a || 0} vs ${c.differences.quality?.b || 0}\n`;
+              text += `سرعت: ${c.differences.speed?.a || 0} vs ${c.differences.speed?.b || 0}\n`;
+              text += `کدنویسی: ${c.differences.coding?.a || 0} vs ${c.differences.coding?.b || 0}\n`;
+              text += `استدلال: ${c.differences.reasoning?.a || 0} vs ${c.differences.reasoning?.b || 0}\n\n`;
+              text += `نتیجه: ${c.recommendation}`;
+              setMessages((prev) => {
+                const next = [...prev];
+                next[next.length - 1] = createMessage('assistant', text, { status: 'complete' });
+                return next;
+              });
+            } else {
+              setMessages((prev) => {
+                const next = [...prev];
+                next[next.length - 1] = createMessage('assistant', 'مقایسه ممکن نشد. مدل‌ها در کاتالوگ نیستند.', { status: 'complete' });
+                return next;
+              });
+            }
+          }
+        } else {
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = createMessage('assistant', 'مدلی برای مقایسه پیدا نشد.', { status: 'complete' });
+            return next;
+          });
+        }
+      } catch (err: any) {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = createMessage('assistant', `خطا: ${err.message}`, { status: 'complete' });
+          return next;
+        });
+      }
+      setIsGenerating(false);
+      return;
+    }
+
     setError(null);
     setInput('');
 

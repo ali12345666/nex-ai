@@ -38,6 +38,8 @@ const WorkspacePanel = lazy(() => import('./WorkspacePanel'));
 const KnowledgePanel = lazy(() => import('../KnowledgePanel'));
 const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
+// Phase 45: Model Advisor panel (hardware analysis + recommendations + router)
+const ModelAdvisorPanel = lazy(() => import('./ModelAdvisorPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -188,6 +190,7 @@ export default function AppShell() {
       case 'knowledge': return <Suspense fallback={<PanelLoading />}><KnowledgePanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
+      case 'advisor': return <Suspense fallback={<PanelLoading />}><ModelAdvisorPanel /></Suspense>;
       default: return <NoProject />;
     }
   };
