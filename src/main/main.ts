@@ -992,6 +992,122 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 41: Local Voice Engine (STT + TTS + VAD) ──
+  const { getLocalVoiceEngine } = await import('./voice/local-voice-engine');
+  const { LocalWhisperProvider, findWhisperBinary } = await import('./voice/local-whisper-provider');
+  const { LocalPiperProvider, findPiperBinary } = await import('./voice/local-piper-provider');
+
+  // Initialize the voice engine with local providers (if available)
+  try {
+    const engine = getLocalVoiceEngine();
+    const whisperBin = findWhisperBinary();
+    const piperBin = findPiperBinary();
+    if (whisperBin) {
+      // Model path will be set later via voice-set-stt-model IPC
+      engine.setSTTProvider(new LocalWhisperProvider({ binaryPath: whisperBin }));
+      console.log(`[NEX AI] Phase 41: Whisper STT provider registered (binary: ${whisperBin})`);
+    }
+    if (piperBin) {
+      engine.setTTSProvider(new LocalPiperProvider({ binaryPath: piperBin }));
+      console.log(`[NEX AI] Phase 41: Piper TTS provider registered (binary: ${piperBin})`);
+    }
+    if (!whisperBin && !piperBin) {
+      console.log('[NEX AI] Phase 41: No local voice binaries found — will use browser fallback');
+    }
+  } catch (err: any) {
+    console.warn(`[NEX AI] Phase 41: Voice engine init failed (non-blocking): ${err.message}`);
+  }
+
+  // Voice: get engine status (which providers are available)
+  ipcMain.handle('voice-status', async () => {
+    const engine = getLocalVoiceEngine();
+    return {
+      success: true,
+      hasLocalSTT: engine.hasLocalSTT,
+      hasLocalTTS: engine.hasLocalTTS,
+      sttProvider: engine.getSTTProvider()?.name || null,
+      ttsProvider: engine.getTTSProvider()?.name || null,
+      state: engine.currentState,
+      isListening: engine.isListening,
+      isSpeaking: engine.isSpeaking,
+    };
+  });
+
+  // Voice: set STT model (whisper model path)
+  ipcMain.handle('voice-set-stt-model', async (_event, modelPath: string) => {
+    try {
+      const engine = getLocalVoiceEngine();
+      const { LocalWhisperProvider } = await import('./voice/local-whisper-provider');
+      const whisperBin = findWhisperBinary();
+      if (!whisperBin) return { success: false, error: 'whisper binary not found' };
+      engine.setSTTProvider(new LocalWhisperProvider({ binaryPath: whisperBin, modelPath }));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice: set TTS model (piper voice .onnx path)
+  ipcMain.handle('voice-set-tts-model', async (_event, voiceModelPath: string) => {
+    try {
+      const engine = getLocalVoiceEngine();
+      const { LocalPiperProvider } = await import('./voice/local-piper-provider');
+      const piperBin = findPiperBinary();
+      if (!piperBin) return { success: false, error: 'piper binary not found' };
+      engine.setTTSProvider(new LocalPiperProvider({ binaryPath: piperBin, voiceModelPath }));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice: transcribe an audio file (batch mode)
+  ipcMain.handle('voice-transcribe', async (_event, audioPath: string, opts?: any) => {
+    try {
+      const engine = getLocalVoiceEngine();
+      const result = await engine.transcribeFile(audioPath, opts);
+      return result;
+    } catch (err: any) {
+      return { success: false, text: '', error: err.message };
+    }
+  });
+
+  // Voice: synthesize text to speech (returns audio file path)
+  ipcMain.handle('voice-synthesize', async (_event, text: string, opts?: any) => {
+    try {
+      const engine = getLocalVoiceEngine();
+      const tts = engine.getTTSProvider();
+      if (!tts) return { success: false, error: 'No TTS provider registered' };
+      if (!tts.isAvailable()) await tts.init();
+      const result = await tts.synthesize(text, opts);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice: list available TTS voices
+  ipcMain.handle('voice-list-voices', async () => {
+    try {
+      const engine = getLocalVoiceEngine();
+      const tts = engine.getTTSProvider();
+      if (!tts) return { success: true, voices: [] };
+      const voices = await tts.listVoices();
+      return { success: true, voices };
+    } catch (err: any) {
+      return { success: false, error: err.message, voices: [] };
+    }
+  });
+
+  // Voice: find available binaries (for UI diagnostics)
+  ipcMain.handle('voice-find-binaries', async () => {
+    return {
+      success: true,
+      whisper: findWhisperBinary(),
+      piper: findPiperBinary(),
+    };
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

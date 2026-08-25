@@ -103,6 +103,19 @@ export interface NexAPI {
     }>; error?: string }>;
   modelCanRun: (modelId: string) => Promise<{ success: boolean; verdict?: any; error?: string }>;
 
+  // Phase 41: Local Voice Engine
+  voiceStatus: () => Promise<{
+    success: boolean; hasLocalSTT: boolean; hasLocalTTS: boolean;
+    sttProvider: string | null; ttsProvider: string | null;
+    state: string; isListening: boolean; isSpeaking: boolean;
+  }>;
+  voiceSetSTTModel: (modelPath: string) => Promise<{ success: boolean; error?: string }>;
+  voiceSetTTSModel: (voiceModelPath: string) => Promise<{ success: boolean; error?: string }>;
+  voiceTranscribe: (audioPath: string, opts?: any) => Promise<{ success: boolean; text: string; language?: string; error?: string; durationMs?: number }>;
+  voiceSynthesize: (text: string, opts?: any) => Promise<{ success: boolean; audioFilePath?: string; duration?: number; sampleRate?: number; error?: string; durationMs?: number }>;
+  voiceListVoices: () => Promise<{ success: boolean; voices?: Array<{ name: string; language: string; gender?: string }>; error?: string }>;
+  voiceFindBinaries: () => Promise<{ success: boolean; whisper: string | null; piper: string | null }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

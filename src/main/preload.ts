@@ -101,6 +101,15 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelCanRun: (modelId: string) =>
     ipcRenderer.invoke('model-can-run', modelId),
 
+  // ── Phase 41: Local Voice Engine (STT + TTS + VAD) ──
+  voiceStatus: () => ipcRenderer.invoke('voice-status'),
+  voiceSetSTTModel: (modelPath: string) => ipcRenderer.invoke('voice-set-stt-model', modelPath),
+  voiceSetTTSModel: (voiceModelPath: string) => ipcRenderer.invoke('voice-set-tts-model', voiceModelPath),
+  voiceTranscribe: (audioPath: string, opts?: any) => ipcRenderer.invoke('voice-transcribe', audioPath, opts),
+  voiceSynthesize: (text: string, opts?: any) => ipcRenderer.invoke('voice-synthesize', text, opts),
+  voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
+  voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
