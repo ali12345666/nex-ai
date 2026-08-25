@@ -40,6 +40,8 @@ const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
 // Phase 45: Model Advisor panel (hardware analysis + recommendations + router)
 const ModelAdvisorPanel = lazy(() => import('./ModelAdvisorPanel'));
+// Phase 46: Runtime Setup Center (first-run detection + component status)
+const RuntimeSetupPanel = lazy(() => import('./RuntimeSetupPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -191,6 +193,7 @@ export default function AppShell() {
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
       case 'advisor': return <Suspense fallback={<PanelLoading />}><ModelAdvisorPanel /></Suspense>;
+      case 'runtime': return <Suspense fallback={<PanelLoading />}><RuntimeSetupPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

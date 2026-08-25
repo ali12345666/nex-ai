@@ -1580,6 +1580,66 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 46: Local Runtime Setup Center ──
+  const { getRuntimeSetupManager } = await import('./runtime/runtime-setup-manager');
+
+  // Scan system for installed/missing components
+  ipcMain.handle('runtime-scan', async () => {
+    try {
+      const manager = getRuntimeSetupManager();
+      const state = manager.scanSystem();
+      return { success: true, state };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get setup summary (Persian text)
+  ipcMain.handle('runtime-setup-summary', async () => {
+    try {
+      const manager = getRuntimeSetupManager();
+      const state = manager.scanSystem();
+      const summary = manager.generateSetupSummary(state);
+      return { success: true, summary, state };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get component catalog
+  ipcMain.handle('runtime-catalog', async (_event, type?: string) => {
+    try {
+      const { getCatalog, getCatalogByType } = await import('./runtime/component-catalog');
+      const catalog = type ? getCatalogByType(type as any) : getCatalog();
+      return { success: true, catalog };
+    } catch (err: any) {
+      return { success: false, error: err.message, catalog: [] };
+    }
+  });
+
+  // Get recommendations for missing components
+  ipcMain.handle('runtime-recommendations', async () => {
+    try {
+      const manager = getRuntimeSetupManager();
+      const state = manager.scanSystem();
+      return { success: true, recommendations: state.recommendations };
+    } catch (err: any) {
+      return { success: false, error: err.message, recommendations: [] };
+    }
+  });
+
+  // Find missing components
+  ipcMain.handle('runtime-find-missing', async () => {
+    try {
+      const manager = getRuntimeSetupManager();
+      const state = manager.scanSystem();
+      const missing = state.components.filter((c) => c.status !== 'installed');
+      return { success: true, missing, essentialMissing: state.essentialMissing, optionalMissing: state.optionalMissing };
+    } catch (err: any) {
+      return { success: false, error: err.message, missing: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

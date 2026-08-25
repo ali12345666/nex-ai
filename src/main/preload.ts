@@ -164,6 +164,13 @@ contextBridge.exposeInMainWorld('nexAPI', {
   advisorSetPreferredModel: (category: string, modelId: string) => ipcRenderer.invoke('advisor-set-preferred-model', category, modelId),
   advisorInstalledHistory: () => ipcRenderer.invoke('advisor-installed-history'),
 
+  // ── Phase 46: Local Runtime Setup Center ──
+  runtimeScan: () => ipcRenderer.invoke('runtime-scan'),
+  runtimeSetupSummary: () => ipcRenderer.invoke('runtime-setup-summary'),
+  runtimeCatalog: (type?: string) => ipcRenderer.invoke('runtime-catalog', type),
+  runtimeRecommendations: () => ipcRenderer.invoke('runtime-recommendations'),
+  runtimeFindMissing: () => ipcRenderer.invoke('runtime-find-missing'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

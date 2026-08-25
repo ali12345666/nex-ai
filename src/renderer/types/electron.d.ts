@@ -171,6 +171,13 @@ export interface NexAPI {
   advisorSetPreferredModel: (category: string, modelId: string) => Promise<{ success: boolean; error?: string }>;
   advisorInstalledHistory: () => Promise<{ success: boolean; history?: any[]; error?: string }>;
 
+  // Phase 46: Local Runtime Setup Center
+  runtimeScan: () => Promise<{ success: boolean; state?: any; error?: string }>;
+  runtimeSetupSummary: () => Promise<{ success: boolean; summary?: string; state?: any; error?: string }>;
+  runtimeCatalog: (type?: string) => Promise<{ success: boolean; catalog?: any[]; error?: string }>;
+  runtimeRecommendations: () => Promise<{ success: boolean; recommendations?: any[]; error?: string }>;
+  runtimeFindMissing: () => Promise<{ success: boolean; missing?: any[]; essentialMissing?: number; optionalMissing?: number; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
