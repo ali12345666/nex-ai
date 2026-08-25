@@ -190,6 +190,16 @@ contextBridge.exposeInMainWorld('nexAPI', {
   firstrunRecommendedPackage: () => ipcRenderer.invoke('firstrun-recommended-package'),
   firstrunAlternatives: () => ipcRenderer.invoke('firstrun-alternatives'),
 
+  // ── Phase 50: Final Command Center Integration ──
+  systemStatus: () => ipcRenderer.invoke('system-status'),
+  systemStartupSummary: () => ipcRenderer.invoke('system-startup-summary'),
+  systemOrbState: () => ipcRenderer.invoke('system-orb-state'),
+  systemSetOrbState: (state: string) => ipcRenderer.invoke('system-set-orb-state', state),
+  systemNotifications: () => ipcRenderer.invoke('system-notifications'),
+  systemAddNotification: (notif: any) => ipcRenderer.invoke('system-add-notification', notif),
+  systemClearNotifications: () => ipcRenderer.invoke('system-clear-notifications'),
+  systemQuickActions: () => ipcRenderer.invoke('system-quick-actions'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

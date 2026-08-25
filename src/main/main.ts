@@ -1800,6 +1800,95 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 50: Final Command Center Integration ──
+  const { getSystemStatusManager } = await import('./system/system-status-manager');
+
+  // Get full system status (all subsystems)
+  ipcMain.handle('system-status', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      const status = await manager.checkAll();
+      return { success: true, status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get startup health summary (Persian)
+  ipcMain.handle('system-startup-summary', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      const status = await manager.checkAll();
+      return { success: true, summary: status.startupSummaryFa, summaryEn: status.startupSummary, status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get orb command state
+  ipcMain.handle('system-orb-state', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      return { success: true, orbState: manager.getOrbState() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Set orb command state
+  ipcMain.handle('system-set-orb-state', async (_event, state: string) => {
+    try {
+      const manager = getSystemStatusManager();
+      manager.setOrbState(state as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get notifications
+  ipcMain.handle('system-notifications', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      return { success: true, notifications: manager.getNotifications() };
+    } catch (err: any) {
+      return { success: false, error: err.message, notifications: [] };
+    }
+  });
+
+  // Add a notification
+  ipcMain.handle('system-add-notification', async (_event, notif: any) => {
+    try {
+      const manager = getSystemStatusManager();
+      manager.addNotification(notif);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Clear notifications
+  ipcMain.handle('system-clear-notifications', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      manager.clearNotifications();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Get quick actions
+  ipcMain.handle('system-quick-actions', async () => {
+    try {
+      const manager = getSystemStatusManager();
+      const status = await manager.checkAll();
+      return { success: true, quickActions: status.quickActions };
+    } catch (err: any) {
+      return { success: false, error: err.message, quickActions: [] };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

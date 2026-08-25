@@ -14,7 +14,7 @@
  * computeOrbVisual() is the single source of truth for visual params.
  */
 
-export type NexOrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'active' | 'error' | 'offline';
+export type NexOrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'active' | 'error' | 'offline' | 'installing';
 
 export interface NexOrbVisual {
   state: NexOrbState;
@@ -52,6 +52,7 @@ export const STATE_COLOR_PALETTE: Record<NexOrbState, string> = {
   active: '#ff2d55',       // Red/Crimson — working hard
   error: '#ef4444',        // Red — error (muted)
   offline: '#64748b',      // Slate — dormant
+  installing: '#f59e0b',   // Amber — installing/updating (Phase 50)
 };
 
 /**

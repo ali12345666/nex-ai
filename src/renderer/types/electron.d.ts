@@ -196,6 +196,16 @@ export interface NexAPI {
   firstrunRecommendedPackage: () => Promise<{ success: boolean; package?: any; setup?: any; error?: string }>;
   firstrunAlternatives: () => Promise<{ success: boolean; alternatives?: any[]; error?: string }>;
 
+  // Phase 50: Final Command Center Integration
+  systemStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  systemStartupSummary: () => Promise<{ success: boolean; summary?: string; summaryEn?: string; status?: any; error?: string }>;
+  systemOrbState: () => Promise<{ success: boolean; orbState?: string; error?: string }>;
+  systemSetOrbState: (state: string) => Promise<{ success: boolean; error?: string }>;
+  systemNotifications: () => Promise<{ success: boolean; notifications?: any[]; error?: string }>;
+  systemAddNotification: (notif: any) => Promise<{ success: boolean; error?: string }>;
+  systemClearNotifications: () => Promise<{ success: boolean; error?: string }>;
+  systemQuickActions: () => Promise<{ success: boolean; quickActions?: any[]; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
