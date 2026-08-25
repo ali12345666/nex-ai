@@ -1989,6 +1989,139 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 52: Personality Engine + Long Term Memory ──
+  const { getNexPersonalityEngine } = await import('./ai/nex-personality-engine');
+  const { getUserProfileManager } = await import('./ai/user-profile-manager');
+  const { getLongTermMemorySystem } = await import('./ai/long-term-memory-system');
+
+  // Personality: get current profile
+  ipcMain.handle('personality-get', async () => {
+    try {
+      const engine = getNexPersonalityEngine();
+      return { success: true, profile: engine.getProfile(), personality: engine.getPersonality() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Personality: set type
+  ipcMain.handle('personality-set', async (_event, type: string) => {
+    try {
+      const engine = getNexPersonalityEngine();
+      engine.setPersonality(type as any);
+      return { success: true, profile: engine.getProfile() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Personality: get all profiles
+  ipcMain.handle('personality-all', async () => {
+    try {
+      const engine = getNexPersonalityEngine();
+      return { success: true, profiles: engine.getAllPersonalities() };
+    } catch (err: any) {
+      return { success: false, error: err.message, profiles: [] };
+    }
+  });
+
+  // Personality: get system prompt prefix
+  ipcMain.handle('personality-prompt', async (_event, lang?: string) => {
+    try {
+      const engine = getNexPersonalityEngine();
+      const prompt = lang === 'fa' ? engine.getSystemPromptPrefixFa() : engine.getSystemPromptPrefix();
+      return { success: true, prompt };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // User profile: get
+  ipcMain.handle('user-profile-get', async () => {
+    try {
+      const mgr = getUserProfileManager();
+      return { success: true, profile: mgr.getProfile() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // User profile: update
+  ipcMain.handle('user-profile-update', async (_event, patch: any) => {
+    try {
+      const mgr = getUserProfileManager();
+      const updated = mgr.updateProfile(patch);
+      return { success: true, profile: updated };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Long-term memory: store (with permission for personal data)
+  ipcMain.handle('ltm-store', async (_event, category: string, key: string, value: any, opts?: any) => {
+    try {
+      const sys = getLongTermMemorySystem();
+      const result = await sys.store(category as any, key, value, opts || {});
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err.message, stored: false };
+    }
+  });
+
+  // Long-term memory: retrieve
+  ipcMain.handle('ltm-retrieve', async (_event, key: string, store?: string, projectId?: string) => {
+    try {
+      const sys = getLongTermMemorySystem();
+      const value = sys.retrieve(key, store as any || 'user', projectId);
+      return { success: true, value };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Long-term memory: list all
+  ipcMain.handle('ltm-list', async (_event, store?: string, projectId?: string) => {
+    try {
+      const sys = getLongTermMemorySystem();
+      const entries = sys.listAll(store as any, projectId);
+      return { success: true, entries };
+    } catch (err: any) {
+      return { success: false, error: err.message, entries: [] };
+    }
+  });
+
+  // Long-term memory: get stats
+  ipcMain.handle('ltm-stats', async () => {
+    try {
+      const sys = getLongTermMemorySystem();
+      return { success: true, stats: sys.getStats() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Long-term memory: get pending permission
+  ipcMain.handle('ltm-pending-permission', async () => {
+    try {
+      const sys = getLongTermMemorySystem();
+      const pending = sys.getPendingPermission();
+      return { success: true, hasPending: sys.hasPendingPermission(), permission: pending };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Long-term memory: respond to permission
+  ipcMain.handle('ltm-respond-permission', async (_event, approved: boolean, reason?: string) => {
+    try {
+      const sys = getLongTermMemorySystem();
+      sys.respondToMemoryPermission(approved, reason);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

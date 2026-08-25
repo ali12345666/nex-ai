@@ -218,6 +218,20 @@ export interface NexAPI {
   identitySetPersonality: (personality: string) => Promise<{ success: boolean; error?: string }>;
   identitySelfAwareness: () => Promise<{ success: boolean; awareness?: any; error?: string }>;
 
+  // Phase 52: Personality Engine + Long Term Memory
+  personalityGet: () => Promise<{ success: boolean; profile?: any; personality?: string; error?: string }>;
+  personalitySet: (type: string) => Promise<{ success: boolean; profile?: any; error?: string }>;
+  personalityAll: () => Promise<{ success: boolean; profiles?: any[]; error?: string }>;
+  personalityPrompt: (lang?: string) => Promise<{ success: boolean; prompt?: string; error?: string }>;
+  userProfileGet: () => Promise<{ success: boolean; profile?: any; error?: string }>;
+  userProfileUpdate: (patch: any) => Promise<{ success: boolean; profile?: any; error?: string }>;
+  ltmStore: (category: string, key: string, value: any, opts?: any) => Promise<{ success: boolean; stored?: boolean; reason?: string; error?: string }>;
+  ltmRetrieve: (key: string, store?: string, projectId?: string) => Promise<{ success: boolean; value?: any; error?: string }>;
+  ltmList: (store?: string, projectId?: string) => Promise<{ success: boolean; entries?: any[]; error?: string }>;
+  ltmStats: () => Promise<{ success: boolean; stats?: any; error?: string }>;
+  ltmPendingPermission: () => Promise<{ success: boolean; hasPending?: boolean; permission?: any; error?: string }>;
+  ltmRespondPermission: (approved: boolean, reason?: string) => Promise<{ success: boolean; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

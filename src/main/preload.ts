@@ -212,6 +212,20 @@ contextBridge.exposeInMainWorld('nexAPI', {
   identitySetPersonality: (personality: string) => ipcRenderer.invoke('identity-set-personality', personality),
   identitySelfAwareness: () => ipcRenderer.invoke('identity-self-awareness'),
 
+  // ── Phase 52: Personality Engine + Long Term Memory ──
+  personalityGet: () => ipcRenderer.invoke('personality-get'),
+  personalitySet: (type: string) => ipcRenderer.invoke('personality-set', type),
+  personalityAll: () => ipcRenderer.invoke('personality-all'),
+  personalityPrompt: (lang?: string) => ipcRenderer.invoke('personality-prompt', lang),
+  userProfileGet: () => ipcRenderer.invoke('user-profile-get'),
+  userProfileUpdate: (patch: any) => ipcRenderer.invoke('user-profile-update', patch),
+  ltmStore: (category: string, key: string, value: any, opts?: any) => ipcRenderer.invoke('ltm-store', category, key, value, opts),
+  ltmRetrieve: (key: string, store?: string, projectId?: string) => ipcRenderer.invoke('ltm-retrieve', key, store, projectId),
+  ltmList: (store?: string, projectId?: string) => ipcRenderer.invoke('ltm-list', store, projectId),
+  ltmStats: () => ipcRenderer.invoke('ltm-stats'),
+  ltmPendingPermission: () => ipcRenderer.invoke('ltm-pending-permission'),
+  ltmRespondPermission: (approved: boolean, reason?: string) => ipcRenderer.invoke('ltm-respond-permission', approved, reason),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
