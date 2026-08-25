@@ -140,6 +140,7 @@ export default function EditorPanel() {
         <div className="flex-1 overflow-hidden">
           <Editor
             height="100%"
+            path={activeFileData.path}
             language={activeFileData.language}
             value={activeFileData.content}
             onChange={handleChange}

@@ -77,13 +77,23 @@ export default function WorkspacePanel() {
   const { projectPath, activeFile } = useStore();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(activeFile ? 'editor' : 'files');
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  // Track the previous activeFile so we only auto-switch to the editor tab
+  // when a NEW file is opened/activated — NOT when the user manually clicks
+  // a different tab. The previous implementation depended on [activeFile,
+  // activeTab] which fired on every tab click and snapped the tab back to
+  // 'editor' (the "tab lock" bug).
+  const prevActiveFileRef = useRef<string | null>(activeFile);
 
-  // Auto-switch to editor tab when a file is opened
+  // Auto-switch to editor tab ONLY when activeFile changes to a new value.
+  // This runs on activeFile change only — a manual tab click changes
+  // activeTab but NOT activeFile, so this effect does not fire and does
+  // not override the user's tab selection.
   useEffect(() => {
-    if (activeFile && activeTab !== 'editor') {
+    if (activeFile && activeFile !== prevActiveFileRef.current) {
       setActiveTab('editor');
     }
-  }, [activeFile, activeTab]);
+    prevActiveFileRef.current = activeFile;
+  }, [activeFile]);
 
   const showNoProject = !projectPath && activeTab !== 'terminal';
 

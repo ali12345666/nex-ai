@@ -1,33 +1,42 @@
 /**
- * NEX AI — Terminal Session Panel (PTY Rewrite — ROOT CAUSE FIX)
+ * NEX AI — Terminal Session Panel (Lazy-Init Rewrite — Residual W Fix)
  *
  * ════════════════════════════════════════════════════════════════════════════
- *  WHAT CHANGED (vs. the version that produced WWWWW artefacts)
+ *  RESIDUAL WWWWW ROOT CAUSE (after the PTY fix in 3ec5f08)
  * ════════════════════════════════════════════════════════════════════════════
  *
- *  1. Spawn now carries real cols/rows to the backend, and the backend spawns
- *     the shell through node-pty (ConPTY on Windows). The shell starts at the
- *     correct geometry instead of 80x24-by-default-then-refit, which eliminates
- *     the early resize storm that fragmented the first prompt.
+ *  The PTY fix (3ec5f08) replaced pipes with node-pty — that was correct and
+ *  necessary, but it was NOT sufficient. A SECOND root cause remained:
  *
- *  2. fit() is GUARDED: it never runs while the container is display:none
- *     (zero dimensions) — that path previously proposed cols=2/rows=1 and
- *     corrupted xterm's buffer geometry.
+ *    term.open(container) was called on a container with clientWidth=0 /
+ *    clientHeight=0 — because the terminal tab is display:none on app boot
+ *    (activeTab starts as 'editor' or 'files', never 'terminal').
  *
- *  3. Resize de-duplication: a lastReported {cols,rows} ref skips identical
- *     resize IPC calls, breaking the ResizeObserver → fit → resize → render →
- *     ResizeObserver feedback loop.
+ *  Consequence: xterm's renderer (canvas/DOM) initialises against a 0×0
+ *  element. The renderer enters a degraded state where glyph measurement and
+ *  reflow are broken. When the terminal tab is later activated and fit()
+ *  runs, the resize is applied but the ALREADY-WRITTEN prompt output was
+ *  laid out against the degraded renderer — producing the garbled "WWWWW"
+ *  artefact next to the prompt that survived the PTY fix.
  *
- *  4. Single session per lifecycle: spawn runs ONCE. projectPath change is the
- *     only legitimate respawn trigger. Tab switches NEVER respawn.
+ *  FIX (architectural — not a patch):
  *
- *  5. Single output listener per session, removed via removeListener (never
- *     removeAllListeners) — no cross-session interference.
+ *    LAZY-INIT: do NOT create or open the xterm instance until the container
+ *    has real, non-zero dimensions. A one-time visibility observer waits for
+ *    the container to become visible, THEN creates xterm → open → fit →
+ *    spawn PTY. This guarantees the renderer ALWAYS initialises against a
+ *    properly-sized element.
  *
- *  6. No manual prompt injection — the prompt comes exclusively from the shell
- *     through the PTY.
+ *    The PTY is also spawned AFTER the first valid fit, so the shell starts
+ *    at the correct geometry from byte zero — no resize storm on the first
+ *    prompt.
  *
- *  See src/main/services/terminal-service.ts for the backend half of this fix.
+ *  Combined with the PTY fix, this closes the full pipeline:
+ *
+ *    PowerShell → ConPTY (node-pty) → IPC → renderer → xterm (opened on
+ *    real dimensions) → DOM
+ *
+ *  See src/main/services/terminal-service.ts for the backend half.
  * ════════════════════════════════════════════════════════════════════════════
  */
 
@@ -39,9 +48,10 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
-type SessionState = 'starting' | 'running' | 'exited' | 'error' | 'killed';
+type SessionState = 'idle' | 'starting' | 'running' | 'exited' | 'error' | 'killed';
 
 const STATE_COLORS: Record<SessionState, string> = {
+  idle: 'var(--nex-text-muted)',
   starting: 'var(--nex-warning)',
   running: 'var(--nex-success)',
   exited: 'var(--nex-text-muted)',
@@ -62,24 +72,33 @@ function safeDims(cols: number, rows: number): { cols: number; rows: number } | 
   return { cols: c, rows: r };
 }
 
+/** Check if a DOM element is currently visible (not display:none, has size). */
+function isVisible(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  if (el.clientWidth === 0 || el.clientHeight === 0) return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
 export default function TerminalSessionPanel() {
   const { projectPath } = useStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const [sessionState, setSessionState] = useState<SessionState>('starting');
+  const [sessionState, setSessionState] = useState<SessionState>('idle');
   const [shellName, setShellName] = useState<string>('');
   const [ptyMode, setPtyMode] = useState<boolean>(true);
+  const [xtermReady, setXtermReady] = useState<boolean>(false);
   const cleanupFns = useRef<Array<() => void>>([]);
   /** cwd of the currently-spawned session — prevents duplicate spawns. */
   const spawnedCwdRef = useRef<string | null>(null);
   /** StrictMode double-mount guard. */
   const hasSpawnedRef = useRef(false);
+  /** Has the xterm instance been created + opened? (one-shot) */
+  const xtermCreatedRef = useRef(false);
   /** Last cols/rows reported to the backend — dedupes resize IPC. */
   const lastReportedRef = useRef<{ cols: number; rows: number } | null>(null);
-  /** Whether the container currently has real (non-zero) dimensions. */
-  const hasRealDimsRef = useRef(false);
 
   // ─── Spawn helper ──────────────────────────────────────────────────────────
   const spawnSession = useCallback(async (cwd: string, cols?: number, rows?: number) => {
@@ -134,8 +153,7 @@ export default function TerminalSessionPanel() {
     const container = containerRef.current;
     if (!fit || !term || !container) return null;
     // Don't fit when the container is hidden (display:none → 0x0).
-    // FitAddon would propose cols=2/rows=1 and corrupt the buffer.
-    if (container.clientWidth === 0 || container.clientHeight === 0) return null;
+    if (!isVisible(container)) return null;
     try {
       fit.fit();
     } catch {
@@ -143,7 +161,6 @@ export default function TerminalSessionPanel() {
     }
     const dims = safeDims(term.cols, term.rows);
     if (!dims) return null;
-    hasRealDimsRef.current = true;
     return dims;
   }, []);
 
@@ -159,9 +176,16 @@ export default function TerminalSessionPanel() {
     }
   }, []);
 
-  // ─── SINGLE mount effect: xterm create + initial spawn ─────────────────────
-  useEffect(() => {
-    if (!containerRef.current) return;
+  // ─── Create + open xterm on a visible container (LAZY-INIT) ────────────────
+  //
+  // This is the core fix for the residual WWWWW: xterm is NEVER opened on a
+  // 0×0 container. We wait until the container has real dimensions, then
+  // create/open the Terminal, fit to actual geometry, and spawn the PTY at
+  // that correct geometry from byte zero.
+  const createXterm = useCallback((): boolean => {
+    if (xtermCreatedRef.current) return true; // already created
+    const container = containerRef.current;
+    if (!container || !isVisible(container)) return false;
 
     const term = new Terminal({
       theme: {
@@ -178,17 +202,17 @@ export default function TerminalSessionPanel() {
       cursorStyle: 'bar',
       allowProposedApi: true,
       scrollback: 5000,
-      // Start with a sane default geometry; the real size is applied on first
-      // safeFit() once the container has real dimensions.
       cols: 80,
       rows: 24,
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(containerRef.current);
+    term.open(container); // container is GUARANTEED visible here — no 0×0
     xtermRef.current = term;
     fitRef.current = fit;
+    xtermCreatedRef.current = true;
+    setXtermReady(true);
 
     // Wire input — onData fires ONCE per logical input chunk.
     const inputDisposable = term.onData((data) => {
@@ -196,6 +220,7 @@ export default function TerminalSessionPanel() {
         window.nexAPI.terminalSessionWrite(sessionIdRef.current, data).catch(() => {});
       }
     });
+    cleanupFns.current.push(() => inputDisposable.dispose());
 
     // Keyboard: Ctrl+C (copy if selection, else SIGINT), Ctrl+Shift+C/V.
     term.attachCustomKeyEventHandler((e) => {
@@ -220,16 +245,14 @@ export default function TerminalSessionPanel() {
         if (sel) {
           navigator.clipboard.writeText(sel).catch(() => {});
           term.clearSelection();
-          return false; // copy, don't send SIGINT
+          return false;
         }
-        return true; // no selection → let \x03 reach the shell as SIGINT
+        return true;
       }
       return true;
     });
 
     // ResizeObserver — guarded fit + deduped resize IPC.
-    // This BREAKS the old feedback loop (RO → fit → resize IPC → render → RO)
-    // because (a) we skip fit when hidden, and (b) we skip IPC when unchanged.
     let rafId = 0;
     const ro = new ResizeObserver(() => {
       if (rafId) cancelAnimationFrame(rafId);
@@ -239,9 +262,13 @@ export default function TerminalSessionPanel() {
         if (dims) sendResizeIfChanged(dims.cols, dims.rows);
       });
     });
-    ro.observe(containerRef.current);
+    ro.observe(container);
+    cleanupFns.current.push(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      ro.disconnect();
+    });
 
-    // Right-click paste (or copy if clipboard read fails and there's a selection).
+    // Right-click paste (or copy if clipboard read fails).
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -254,13 +281,64 @@ export default function TerminalSessionPanel() {
         if (sel) navigator.clipboard.writeText(sel).catch(() => {});
       });
     };
-    containerRef.current.addEventListener('contextmenu', handleContextMenu);
+    container.addEventListener('contextmenu', handleContextMenu);
+    cleanupFns.current.push(() => container.removeEventListener('contextmenu', handleContextMenu));
+
+    // Initial fit NOW (container is visible) — sets correct cols/rows.
+    const dims = safeFit();
+    // Spawn the PTY at the correct geometry from byte zero.
+    if (!hasSpawnedRef.current) {
+      const spawnCwd = projectPath ||
+        (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
+      spawnSession(spawnCwd, dims?.cols, dims?.rows);
+    }
+
+    term.focus();
+    return true;
+  }, [projectPath, safeFit, sendResizeIfChanged, spawnSession]);
+
+  // ─── MOUNT EFFECT: wait for visibility, THEN lazy-init xterm ──────────────
+  //
+  // The terminal tab may be display:none on app boot. We use a ResizeObserver
+  // (fires when display changes none→flex) + an initial check to detect the
+  // first moment the container becomes visible, then create+open xterm.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // If already visible, create immediately.
+    if (createXterm()) {
+      // xterm created — nothing more to do here; the visibility observer
+      // below handles subsequent resize/refit on tab switches.
+    }
+
+    // Visibility observer — fires when display:none → display:flex.
+    // Used both for the initial lazy-init AND for refit on tab re-activation.
+    let rafId = 0;
+    const ro = new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        // Lazy-init on first visibility.
+        if (!xtermCreatedRef.current) {
+          createXterm();
+          return;
+        }
+        // Already created — just refit + push resize + focus.
+        const dims = safeFit();
+        if (dims) {
+          sendResizeIfChanged(dims.cols, dims.rows);
+          xtermRef.current?.focus();
+        }
+      });
+    });
+    ro.observe(container);
 
     // "Open Terminal Here" from Explorer.
     const openHereHandler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.cwd) {
-        term.clear();
+      if (detail?.cwd && xtermRef.current) {
+        xtermRef.current.clear();
         spawnedCwdRef.current = null;
         hasSpawnedRef.current = false;
         const dims = safeFit();
@@ -269,25 +347,11 @@ export default function TerminalSessionPanel() {
     };
     window.addEventListener('nex:open-terminal-here', openHereHandler);
 
-    // Initial spawn — ONLY ONCE (guarded by hasSpawnedRef for StrictMode).
-    // We try to fit first so the PTY starts at the right geometry; if the
-    // container is still hidden (display:none because terminal tab isn't
-    // active), we spawn at 80x24 and the first visibility fit will resize.
-    if (!hasSpawnedRef.current) {
-      const spawnCwd = projectPath ||
-        (typeof process !== 'undefined' ? process.env?.HOME || '~' : '~');
-      const dims = safeFit();
-      spawnSession(spawnCwd, dims?.cols, dims?.rows);
-    }
-
-    term.focus();
-
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
-      inputDisposable.dispose();
       ro.disconnect();
       window.removeEventListener('nex:open-terminal-here', openHereHandler);
-      containerRef.current?.removeEventListener('contextmenu', handleContextMenu);
+      // Kill session + run all cleanup fns (input disposable, RO, contextmenu).
       if (sessionIdRef.current) {
         window.nexAPI.terminalSessionKill(sessionIdRef.current).catch(() => {});
         sessionIdRef.current = null;
@@ -296,43 +360,41 @@ export default function TerminalSessionPanel() {
       cleanupFns.current = [];
       spawnedCwdRef.current = null;
       hasSpawnedRef.current = false;
+      xtermCreatedRef.current = false;
       lastReportedRef.current = null;
-      hasRealDimsRef.current = false;
-      term.dispose();
+      xtermRef.current?.dispose();
       xtermRef.current = null;
       fitRef.current = null;
+      setXtermReady(false);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Re-spawn ONLY when projectPath actually changes ──────────────────────
   useEffect(() => {
     if (!projectPath) return;
-    if (spawnedCwdRef.current === projectPath) return; // no change
-    if (!hasSpawnedRef.current) return; // initial spawn handled by mount effect
+    if (spawnedCwdRef.current === projectPath) return;
+    if (!hasSpawnedRef.current) return; // initial spawn handled by createXterm
+    if (!xtermCreatedRef.current) return; // xterm not ready yet
     const dims = safeFit();
     spawnSession(projectPath, dims?.cols, dims?.rows);
   }, [projectPath, spawnSession, safeFit]);
 
-  // ─── Refit + focus + resize IPC when the tab becomes visible ──────────────
-  // WorkspacePanel hides inactive tabs via display:none. When the terminal
-  // tab is re-activated we must (a) wait for layout, (b) fit, (c) push the
-  // new geometry to the PTY, (d) focus. This runs on every render triggered
-  // by projectPath/activeTab changes via the parent re-render.
+  // ─── Refit when the tab becomes visible (runs on every render) ───────────
+  // Cheap because of dedupe guards. Handles tab re-activation after the
+  // initial lazy-init.
   useEffect(() => {
+    if (!xtermReady) return;
     const timer = setTimeout(() => {
       const container = containerRef.current;
-      const term = xtermRef.current;
-      if (!container || !term) return;
-      const style = window.getComputedStyle(container);
-      if (style.display === 'none') return; // still hidden — skip
+      if (!container || !isVisible(container)) return;
       const dims = safeFit();
       if (dims) {
         sendResizeIfChanged(dims.cols, dims.rows);
-        term.focus();
+        xtermRef.current?.focus();
       }
-    }, 60); // wait one frame for display:flex to take effect + layout
+    }, 60);
     return () => clearTimeout(timer);
-  }); // runs every render — cheap because of dedupe guards
+  }); // every render
 
   const handleClear = () => xtermRef.current?.clear();
   const handleCtrlC = () => {
