@@ -30,6 +30,8 @@ import * as path from 'path';
 import type { DocumentFormat, DocumentParser } from '../ai/knowledge-types';
 // Phase 11 / P11-C: DOCX (lazy mammoth inside the parser — no static coupling)
 import { DocxParser } from './docx-parser';
+// Phase 40: PDF (no external dependency — basic text extraction)
+import { PdfParser } from './pdf-parser';
 
 // ─── Format detection ───────────────────────────────────────────────────────
 
@@ -65,7 +67,8 @@ export function detectFormat(filename: string): DocumentFormat | null {
 
 /** True when the format is handled by this parser set. */
 export function isSupportedFormat(format: DocumentFormat): boolean {
-  return format !== 'pdf' && format !== 'office-doc' && format !== 'image';
+  // Phase 40: PDF is now supported via PdfParser.
+  return format !== 'office-doc' && format !== 'image';
 }
 
 // ─── Parse result ───────────────────────────────────────────────────────────
@@ -222,6 +225,7 @@ const PARSERS: DocumentParser[] = [
   new HtmlParser(),
   new XmlParser(),   // Phase 11 / P11-A
   new DocxParser(),  // Phase 11 / P11-C (lazy mammoth)
+  new PdfParser(),   // Phase 40 — no external dependency
 ];
 
 /** Find the parser for a format (null when unsupported). */

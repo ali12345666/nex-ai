@@ -80,6 +80,14 @@ export interface BuildContextOptions {
   relevantFiles?: ContextFile[];
   // Phase 9 / P9-S4: retrieved knowledge chunks (cited, UNTRUSTED-framed)
   relevantKnowledge?: import('./types').ContextKnowledgeItem[];
+  // Phase 40: semantically retrieved memories (ranked by relevance, not recency)
+  relevantMemories?: Array<{
+    store: string;
+    key: string;
+    content: string;
+    score: number;
+    importance: number;
+  }>;
   projectPath?: string;
   activeFile?: string;
   // Override system prompt (e.g. for sub-agents)
@@ -167,44 +175,61 @@ export function buildContext(
     }
   }
 
-  // ── Layer 3: Project memory ──
-  if (opts.projectPath) {
-    const projectMemories = ProjectMemory.list(opts.projectPath).slice(0, 20);
-    if (projectMemories.length > 0) {
-      const memoryText = '## Project Context\n' + projectMemories.map((m) =>
-        `- ${m.key}: ${JSON.stringify(m.value).slice(0, 200)}`
+  // ── Layer 3: Relevant Memories (Phase 40 — semantic retrieval) ──
+  //
+  // Phase 40: if relevantMemories are provided (by MemoryRetrievalEngine),
+  // use them — they are ranked by semantic relevance + importance + recency.
+  // Otherwise, fall back to the old recency-based list() for backward compat.
+  if (opts.relevantMemories && opts.relevantMemories.length > 0) {
+    const memoryText = '## Relevant Memories\n' + opts.relevantMemories.map((m) =>
+      `- [${m.store}] ${m.key}: ${m.content.slice(0, 200)} (score: ${m.score.toFixed(2)})`
+    ).join('\n');
+    if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
+      tokensUsed += estimateTokens(memoryText);
+      messages.push({ role: 'system', content: memoryText });
+      opts.relevantMemories.forEach((m) => memoriesIncluded.push(`${m.store}:${m.key}`));
+    }
+  } else {
+    // Fallback: old recency-based memory layers (for backward compat)
+    // ── Layer 3a: Project memory ──
+    if (opts.projectPath) {
+      const projectMemories = ProjectMemory.list(opts.projectPath).slice(0, 20);
+      if (projectMemories.length > 0) {
+        const memoryText = '## Project Context\n' + projectMemories.map((m) =>
+          `- ${m.key}: ${JSON.stringify(m.value).slice(0, 200)}`
+        ).join('\n');
+        if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
+          tokensUsed += estimateTokens(memoryText);
+          messages.push({ role: 'system', content: memoryText });
+          projectMemories.forEach((m) => memoriesIncluded.push(`project:${m.key}`));
+        }
+      }
+    }
+
+    // ── Layer 4a: User memory ──
+    const userMemories = UserMemory.list().slice(0, 10);
+    if (userMemories.length > 0) {
+      const memoryText = '## User Preferences\n' + userMemories.map((m) =>
+        `- ${m.key}: ${JSON.stringify(m.value).slice(0, 100)}`
       ).join('\n');
       if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
         tokensUsed += estimateTokens(memoryText);
         messages.push({ role: 'system', content: memoryText });
-        projectMemories.forEach((m) => memoriesIncluded.push(`project:${m.key}`));
+        userMemories.forEach((m) => memoriesIncluded.push(`user:${m.key}`));
       }
     }
-  }
 
-  // ── Layer 4: User memory ──
-  const userMemories = UserMemory.list().slice(0, 10);
-  if (userMemories.length > 0) {
-    const memoryText = '## User Preferences\n' + userMemories.map((m) =>
-      `- ${m.key}: ${JSON.stringify(m.value).slice(0, 100)}`
-    ).join('\n');
-    if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
-      tokensUsed += estimateTokens(memoryText);
-      messages.push({ role: 'system', content: memoryText });
-      userMemories.forEach((m) => memoriesIncluded.push(`user:${m.key}`));
-    }
-  }
-
-  // ── Layer 5: Task memory ──
-  const taskMemories = TaskMemory.list().slice(0, 30);
-  if (taskMemories.length > 0) {
-    const memoryText = '## Current Task Memory\n' + taskMemories.map((m) =>
-      `- ${m.key}: ${JSON.stringify(m.value).slice(0, 300)}`
-    ).join('\n');
-    if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
-      tokensUsed += estimateTokens(memoryText);
-      messages.push({ role: 'system', content: memoryText });
-      taskMemories.forEach((m) => memoriesIncluded.push(`task:${m.key}`));
+    // ── Layer 5a: Task memory ──
+    const taskMemories = TaskMemory.list().slice(0, 30);
+    if (taskMemories.length > 0) {
+      const memoryText = '## Current Task Memory\n' + taskMemories.map((m) =>
+        `- ${m.key}: ${JSON.stringify(m.value).slice(0, 300)}`
+      ).join('\n');
+      if (tokensUsed + estimateTokens(memoryText) < contextBudget) {
+        tokensUsed += estimateTokens(memoryText);
+        messages.push({ role: 'system', content: memoryText });
+        taskMemories.forEach((m) => memoriesIncluded.push(`task:${m.key}`));
+      }
     }
   }
 

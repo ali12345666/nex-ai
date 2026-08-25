@@ -1803,9 +1803,24 @@ async function setupIPC(): Promise<void> {
 }
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Initialize persistence before anything else
   initPersistence(userDataPath);
+
+  // Phase 40: Initialize the Semantic Memory Store + Retrieval Engine.
+  // This wires the embedding-based memory search into the agent flow.
+  try {
+    const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+    const { SemanticMemoryStore } = await import('./memory/semantic-memory-store');
+    const { MemoryRetrievalEngine, setMemoryRetrievalEngine } = await import('./memory/memory-retrieval-engine');
+    const embedderResolution = await createConfiguredEmbedder();
+    const semanticStore = new SemanticMemoryStore(embedderResolution.embedder);
+    const retrievalEngine = new MemoryRetrievalEngine(semanticStore, embedderResolution.embedder);
+    setMemoryRetrievalEngine(retrievalEngine);
+    console.log(`[NEX AI] Phase 40: Memory Retrieval Engine initialized (embedder: ${embedderResolution.backend})`);
+  } catch (err: any) {
+    console.warn(`[NEX AI] Phase 40: Memory Retrieval Engine init failed (non-blocking): ${err.message}`);
+  }
 
   setupIPC().catch((err) => console.error('[NEX AI] IPC setup failed:', err));
   createWindow();

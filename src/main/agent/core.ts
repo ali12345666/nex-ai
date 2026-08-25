@@ -330,6 +330,39 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       }
     );
 
+    // ── Phase 40: Memory Retrieval BEFORE planning ──
+    // Retrieve semantically relevant memories so the planner has context
+    // about past experiences, user preferences, and project facts.
+    let relevantMemories: Array<{ store: string; key: string; content: string; score: number; importance: number }> = [];
+    try {
+      const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+      const engine = getMemoryRetrievalEngine();
+      if (engine) {
+        const memResult = await engine.retrieve({
+          query: task.userRequest,
+          projectId: task.context.projectPath,
+          limit: 10,
+        });
+        relevantMemories = memResult.memories.map((m) => ({
+          store: m.store,
+          key: m.key,
+          content: m.content,
+          score: m.score,
+          importance: m.importance,
+        }));
+        if (relevantMemories.length > 0) {
+          emit({
+            type: 'log',
+            taskId,
+            message: `Memory retrieval: ${relevantMemories.length} relevant memories found (semantic: ${memResult.usedSemantic}, scanned: ${memResult.totalScanned})`,
+            data: { count: relevantMemories.length, usedSemantic: memResult.usedSemantic },
+          });
+        }
+      }
+    } catch (memErr: any) {
+      AgentLogger.warn(`Memory retrieval failed (non-blocking): ${memErr.message}`, { taskId });
+    }
+
     const plan = await generatePlan(runtime, model, {
       userRequest: task.userRequest,
       intent: task.intent,
@@ -340,6 +373,8 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       // Phase 9 / P9-S4: cited knowledge chunks (already injection-framed
       // by the context manager's UNTRUSTED-DATA layer)
       relevantKnowledge: task.context.relevantKnowledge,
+      // Phase 40: semantically retrieved memories
+      relevantMemories,
       onToken: (chunk) => streamer.push(chunk),
     });
     streamer.end();
@@ -468,6 +503,9 @@ export async function runTask(taskId: string): Promise<AgentTask> {
           stepsCompleted: task.plan.filter((st) => st.status === 'completed').length,
           toolsUsed: task.toolCalls.map((tc) => tc.toolName),
           filesTouched,
+          // Phase 40: extract lessons from observations (was dead code before)
+          // Look for error→fix patterns in the task's observations + errors.
+          lessonsLearned: extractLessonsFromTask(task),
           // Phase 13: user corrections — step failures caused by permission
           // denials are recorded in task.errors ('Permission denied for ...').
           userCorrections: task.errors
@@ -1321,6 +1359,64 @@ async function getModelForTask(task: AgentTask): Promise<LocalModelInfo | null> 
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
+
+/**
+ * Phase 40: Extract lessons from a completed task.
+ *
+ * Looks for patterns in the task's observations, errors, and tool calls
+ * that represent valuable learning:
+ *   - Errors that were eventually fixed (error → retry → success)
+ *   - File modifications (what was changed)
+ *   - Tool sequences that worked (read → edit → test → pass)
+ *   - Failed approaches (what NOT to do)
+ *
+ * Returns short, actionable lessons suitable for ProjectMemory storage.
+ */
+function extractLessonsFromTask(task: AgentTask): string[] {
+  const lessons: string[] = [];
+
+  // Lesson 1: If the task had errors but eventually completed, the error→fix
+  // pattern is a lesson.
+  const failedSteps = task.plan.filter((s) => s.status === 'failed' || (s.retryCount && s.retryCount > 0));
+  const completedSteps = task.plan.filter((s) => s.status === 'completed');
+  if (failedSteps.length > 0 && completedSteps.length > 0) {
+    for (const step of failedSteps.slice(0, 2)) {
+      if (step.error) {
+        lessons.push(`Encountered error at "${step.description}": ${step.error.slice(0, 120)} — resolved by retry/replan`);
+      }
+    }
+  }
+
+  // Lesson 2: If files were modified, record what was changed.
+  const modifiedFiles = [
+    ...new Set(
+      task.toolCalls
+        .filter((tc) => tc.afterState?.files)
+        .flatMap((tc) => tc.afterState!.files.map((f) => f.path))
+    ),
+  ];
+  if (modifiedFiles.length > 0 && modifiedFiles.length <= 5) {
+    lessons.push(`Modified files: ${modifiedFiles.join(', ')}`);
+  }
+
+  // Lesson 3: If the task involved testing and the test passed, record it.
+  const testCalls = task.toolCalls.filter((tc) =>
+    tc.toolName === 'npm_test' || tc.toolName === 'run_command' && tc.params?.command?.includes('test')
+  );
+  for (const tc of testCalls.slice(0, 1)) {
+    if (tc.result?.success) {
+      lessons.push(`Tests passed after changes — approach validated`);
+    }
+  }
+
+  // Lesson 4: If the task was cancelled or failed, record the failure mode.
+  if (task.status === 'failed' && task.errors.length > 0) {
+    const lastError = task.errors[task.errors.length - 1];
+    lessons.push(`Task failed: ${lastError.type} — ${lastError.message.slice(0, 120)}`);
+  }
+
+  return lessons.slice(0, 4); // cap at 4 lessons
+}
 
 /**
  * Remove a completed task from the registry. Logs are kept.

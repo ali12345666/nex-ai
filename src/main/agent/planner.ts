@@ -35,6 +35,14 @@ export interface PlanRequest {
   activeFile?: string;
   // Phase 9 / P9-S4: retrieved knowledge (cited, untrusted-framed)
   relevantKnowledge?: ContextKnowledgeItem[];
+  // Phase 40: semantically retrieved memories (ranked by relevance)
+  relevantMemories?: Array<{
+    store: string;
+    key: string;
+    content: string;
+    score: number;
+    importance: number;
+  }>;
   // Phase 8 / P8-E-1: streaming callback. When provided, the planner uses
   // runtime.chatStream instead of runtime.chat and forwards each chunk.
   onToken?: (chunk: string) => void;
@@ -123,6 +131,8 @@ export async function generatePlan(
     projectPath: request.projectPath,
     activeFile: request.activeFile,
     relevantKnowledge: request.relevantKnowledge,
+    // Phase 40: pass semantically retrieved memories to the context builder
+    relevantMemories: request.relevantMemories,
     systemPrompt,
     toolSchemas: request.tools.map((t) => ({
       name: t.name,
