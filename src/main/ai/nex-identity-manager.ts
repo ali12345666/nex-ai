@@ -1,0 +1,287 @@
+/**
+ * NEX AI — Identity Manager (Phase 51)
+ *
+ * NEX's self-awareness: knows who it is, what it can do, what it can't do.
+ * Stores identity in nex_identity.json — editable by the user.
+ *
+ * CRITICAL: This is READ-ONLY self-description. Never takes actions.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { getUserDataDir } from '../persistence';
+import { listModels } from '../ai/model-registry';
+
+export type PersonalityType = 'professional' | 'technical' | 'friendly' | 'patient';
+
+export interface NexIdentity {
+  name: string;
+  version: string;
+  mission: string;
+  missionFa: string;
+  abilities: string[];
+  abilitiesFa: string[];
+  limitations: string[];
+  limitationsFa: string[];
+  rules: string[];
+  rulesFa: string[];
+  personality: PersonalityType;
+  personalityFa: string;
+}
+
+export interface NexSelfAwareness {
+  identity: NexIdentity;
+  installedModels: Array<{ name: string; type: string; category: string }>;
+  availableTools: string[];
+  capabilities: string[];
+  capabilitiesFa: string[];
+  cannotDo: string[];
+  cannotDoFa: string[];
+  activeBrain: string;
+  memoryStatus: { ready: boolean; storeCount: number };
+  knowledgeStatus: { ready: boolean; documentCount: number };
+  voiceStatus: { sttReady: boolean; ttsReady: boolean };
+  visionStatus: { ready: boolean; providerName: string | null };
+  systemSummary: string;
+  systemSummaryFa: string;
+}
+
+const DEFAULT_IDENTITY: NexIdentity = {
+  name: 'NEX AI',
+  version: '1.0.0',
+  mission: 'Local intelligent assistant — fully offline, privacy-first',
+  missionFa: 'دستیار هوشمند محلی — کاملاً آفلاین، حفظ حریم خصوصی',
+  abilities: [
+    'Programming & code generation',
+    'System analysis & diagnostics',
+    'Electronics engineering assistance',
+    'Voice recognition (STT)',
+    'Text-to-speech (TTS)',
+    'Image & vision analysis',
+    'Knowledge retrieval (RAG)',
+    'Semantic memory',
+    'File operations',
+    'Terminal execution',
+    'Git operations',
+    'Project management',
+  ],
+  abilitiesFa: [
+    'برنامه‌نویسی و تولید کد',
+    'تحلیل سیستم و عیب‌یابی',
+    'کمک به مهندسی الکترونیک',
+    'تشخیص گفتار (STT)',
+    'تولید گفتار (TTS)',
+    'تحلیل تصویر و بینایی',
+    'بازیابی دانش (RAG)',
+    'حافظه معنایی',
+    'عملیات فایل',
+    'اجرای ترمینال',
+    'عملیات Git',
+    'مدیریت پروژه',
+  ],
+  limitations: [
+    'Cannot download files without explicit permission',
+    'Cannot delete files without explicit permission',
+    'Cannot modify system files without permission',
+    'Cannot change active model without permission',
+    'Cannot access the internet unless explicitly configured',
+    'Vision requires a loaded vision model',
+    'Voice requires Whisper/Piper binaries installed',
+  ],
+  limitationsFa: [
+    'بدون اجازه صریح فایل دانلود نمی‌کند',
+    'بدون اجازه صریح فایل حذف نمی‌کند',
+    'فایل‌های سیستمی را بدون اجازه تغییر نمی‌دهد',
+    'مدل فعال را بدون اجازه تغییر نمی‌دهد',
+    'بدون تنظیمات، به اینترنت دسترسی ندارد',
+    'بینایی نیازمند مدل vision بارگذاری شده است',
+    'صدا نیازمند نصب Whisper/Piper است',
+  ],
+  rules: [
+    'Never download without permission',
+    'Never install without permission',
+    'Never delete without permission',
+    'Always explain actions before executing',
+    'Always use local models first',
+    'Always respect user privacy',
+    'Always log actions to audit trail',
+  ],
+  rulesFa: [
+    'هرگز بدون اجازه دانلود نمی‌کند',
+    'هرگز بدون اجازه نصب نمی‌کند',
+    'هرگز بدون اجازه حذف نمی‌کند',
+    'همیشه قبل از اجرا، عملیات را توضیح می‌دهد',
+    'همیشه ابتدا از مدل‌های محلی استفاده می‌کند',
+    'همیشه به حریم خصوصی کاربر احترام می‌گذارد',
+    'همیشه عملیات را در audit log ثبت می‌کند',
+  ],
+  personality: 'professional',
+  personalityFa: 'حرفه‌ای',
+};
+
+export class NexIdentityManager {
+  private identity: NexIdentity;
+  private identityPath: string;
+
+  constructor() {
+    this.identityPath = path.join(getUserDataDir(), 'nex_identity.json');
+    this.identity = this.load();
+  }
+
+  private load(): NexIdentity {
+    try {
+      if (fs.existsSync(this.identityPath)) {
+        const data = JSON.parse(fs.readFileSync(this.identityPath, 'utf-8'));
+        return { ...DEFAULT_IDENTITY, ...data };
+      }
+    } catch { /* */ }
+    // Save default on first run
+    this.save(DEFAULT_IDENTITY);
+    return { ...DEFAULT_IDENTITY };
+  }
+
+  private save(identity: NexIdentity): void {
+    try {
+      const tmp = this.identityPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(identity, null, 2), 'utf-8');
+      fs.renameSync(tmp, this.identityPath);
+    } catch { /* */ }
+  }
+
+  getIdentity(): NexIdentity {
+    return { ...this.identity };
+  }
+
+  updateIdentity(patch: Partial<NexIdentity>): NexIdentity {
+    this.identity = { ...this.identity, ...patch };
+    this.save(this.identity);
+    return { ...this.identity };
+  }
+
+  setPersonality(personality: PersonalityType): void {
+    const labels: Record<PersonalityType, string> = {
+      professional: 'حرفه‌ای',
+      technical: 'فنی',
+      friendly: 'دوستانه',
+      patient: 'صبور',
+    };
+    this.identity.personality = personality;
+    this.identity.personalityFa = labels[personality];
+    this.save(this.identity);
+  }
+
+  /**
+   * Generate self-awareness report.
+   * NEX knows what it can and cannot do RIGHT NOW.
+   */
+  async getSelfAwareness(): Promise<NexSelfAwareness> {
+    const models = listModels().filter((m) => m.fileExists);
+    const installedModels = models.map((m) => ({
+      name: m.name,
+      type: m.category || 'general',
+      category: m.category || 'general',
+    }));
+
+    // Detect capabilities
+    const capabilities: string[] = ['chat', 'text-generation'];
+    const capabilitiesFa: string[] = ['گفتگو', 'تولید متن'];
+    const cannotDo: string[] = [];
+    const cannotDoFa: string[] = [];
+
+    if (models.some((m) => (m.capabilities || []).includes('coding'))) {
+      capabilities.push('coding');
+      capabilitiesFa.push('برنامه‌نویسی');
+    } else {
+      cannotDo.push('No coding model installed');
+      cannotDoFa.push('مدل برنامه‌نویسی نصب نیست');
+    }
+
+    if (models.some((m) => (m.capabilities || []).includes('reasoning'))) {
+      capabilities.push('reasoning');
+      capabilitiesFa.push('استدلال');
+    }
+
+    if (models.some((m) => m.category === 'vision')) {
+      capabilities.push('vision');
+      capabilitiesFa.push('بینایی');
+    } else {
+      cannotDo.push('No vision model installed');
+      cannotDoFa.push('مدل بینایی نصب نیست');
+    }
+
+    // Voice
+    let sttReady = false;
+    let ttsReady = false;
+    try {
+      const { getLocalVoiceEngine } = await import('../voice/local-voice-engine');
+      const ve = getLocalVoiceEngine();
+      sttReady = ve.hasLocalSTT;
+      ttsReady = ve.hasLocalTTS;
+    } catch { /* */ }
+    if (sttReady) { capabilities.push('voice-stt'); capabilitiesFa.push('تشخیص گفتار'); }
+    else { cannotDo.push('Voice STT not configured'); cannotDoFa.push('تشخیص گفتار تنظیم نشده'); }
+    if (ttsReady) { capabilities.push('voice-tts'); capabilitiesFa.push('تولید گفتار'); }
+    else { cannotDo.push('Voice TTS not configured'); cannotDoFa.push('تولید گفتار تنظیم نشده'); }
+
+    // Memory
+    let memoryReady = false;
+    let memoryStoreCount = 0;
+    try {
+      const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+      const me = getMemoryRetrievalEngine();
+      memoryReady = me !== null;
+    } catch { /* */ }
+    if (memoryReady) { capabilities.push('semantic-memory'); capabilitiesFa.push('حافظه معنایی'); }
+
+    // Knowledge
+    let knowledgeReady = false;
+    try {
+      const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+      knowledgeReady = getMemoryRetrievalEngine() !== null;
+    } catch { /* */ }
+
+    // Active brain
+    const activeBrain = models.length > 0 ? models[0].name : 'none';
+
+    // Available tools
+    let availableTools: string[] = [];
+    try {
+      const { listToolDefinitions } = await import('../ai/tool-registry');
+      availableTools = listToolDefinitions().map((t) => t.name);
+    } catch { /* */ }
+
+    // Summary
+    const systemSummary = `NEX AI v${this.identity.version}. ${models.length} models, ${availableTools.length} tools, ${capabilities.length} capabilities.`;
+    const systemSummaryFa = `NEX AI نسخه ${this.identity.version}. ${models.length} مدل، ${availableTools.length} ابزار، ${capabilities.length} قابلیت فعال.`;
+
+    return {
+      identity: this.getIdentity(),
+      installedModels,
+      availableTools,
+      capabilities,
+      capabilitiesFa,
+      cannotDo,
+      cannotDoFa,
+      activeBrain,
+      memoryStatus: { ready: memoryReady, storeCount: memoryStoreCount },
+      knowledgeStatus: { ready: knowledgeReady, documentCount: 0 },
+      voiceStatus: { sttReady, ttsReady },
+      visionStatus: { ready: models.some((m) => m.category === 'vision'), providerName: null },
+      systemSummary,
+      systemSummaryFa,
+    };
+  }
+
+  get identityFilePath(): string {
+    return this.identityPath;
+  }
+}
+
+let _manager: NexIdentityManager | null = null;
+
+export function getNexIdentityManager(): NexIdentityManager {
+  if (!_manager) {
+    _manager = new NexIdentityManager();
+  }
+  return _manager;
+}

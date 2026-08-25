@@ -1889,6 +1889,106 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 51: NEX Brain Core + Identity System ──
+  const { getNexBrainController } = await import('./ai/nex-brain-controller');
+  const { getNexIdentityManager } = await import('./ai/nex-identity-manager');
+
+  // Brain: get decision for a user request
+  ipcMain.handle('brain-decide', async (_event, request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) => {
+    try {
+      const brain = getNexBrainController();
+      const decision = brain.decide(request);
+      return { success: true, decision };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Brain: get status
+  ipcMain.handle('brain-status', async () => {
+    try {
+      const brain = getNexBrainController();
+      const status = await brain.getStatus();
+      return { success: true, status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Brain: set mode (auto/coding/reasoning/vision/voice/chat)
+  ipcMain.handle('brain-set-mode', async (_event, mode: string) => {
+    try {
+      const brain = getNexBrainController();
+      brain.setMode(mode as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Brain: get last decision
+  ipcMain.handle('brain-last-decision', async () => {
+    try {
+      const brain = getNexBrainController();
+      return { success: true, decision: brain.getLastDecision() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Brain: get models grouped by task
+  ipcMain.handle('brain-models-by-task', async () => {
+    try {
+      const brain = getNexBrainController();
+      return { success: true, models: brain.getModelsByTask() };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: {} };
+    }
+  });
+
+  // Identity: get identity
+  ipcMain.handle('identity-get', async () => {
+    try {
+      const mgr = getNexIdentityManager();
+      return { success: true, identity: mgr.getIdentity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Identity: update identity
+  ipcMain.handle('identity-update', async (_event, patch: any) => {
+    try {
+      const mgr = getNexIdentityManager();
+      const updated = mgr.updateIdentity(patch);
+      return { success: true, identity: updated };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Identity: set personality
+  ipcMain.handle('identity-set-personality', async (_event, personality: string) => {
+    try {
+      const mgr = getNexIdentityManager();
+      mgr.setPersonality(personality as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Identity: get self-awareness
+  ipcMain.handle('identity-self-awareness', async () => {
+    try {
+      const mgr = getNexIdentityManager();
+      const awareness = await mgr.getSelfAwareness();
+      return { success: true, awareness };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {

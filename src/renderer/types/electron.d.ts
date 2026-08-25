@@ -206,6 +206,18 @@ export interface NexAPI {
   systemClearNotifications: () => Promise<{ success: boolean; error?: string }>;
   systemQuickActions: () => Promise<{ success: boolean; quickActions?: any[]; error?: string }>;
 
+  // Phase 51: NEX Brain Core + Identity System
+  brainDecide: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+    Promise<{ success: boolean; decision?: any; error?: string }>;
+  brainStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  brainSetMode: (mode: string) => Promise<{ success: boolean; error?: string }>;
+  brainLastDecision: () => Promise<{ success: boolean; decision?: any; error?: string }>;
+  brainModelsByTask: () => Promise<{ success: boolean; models?: any; error?: string }>;
+  identityGet: () => Promise<{ success: boolean; identity?: any; error?: string }>;
+  identityUpdate: (patch: any) => Promise<{ success: boolean; identity?: any; error?: string }>;
+  identitySetPersonality: (personality: string) => Promise<{ success: boolean; error?: string }>;
+  identitySelfAwareness: () => Promise<{ success: boolean; awareness?: any; error?: string }>;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

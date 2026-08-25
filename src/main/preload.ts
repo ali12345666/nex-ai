@@ -200,6 +200,18 @@ contextBridge.exposeInMainWorld('nexAPI', {
   systemClearNotifications: () => ipcRenderer.invoke('system-clear-notifications'),
   systemQuickActions: () => ipcRenderer.invoke('system-quick-actions'),
 
+  // ── Phase 51: NEX Brain Core + Identity System ──
+  brainDecide: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+    ipcRenderer.invoke('brain-decide', request),
+  brainStatus: () => ipcRenderer.invoke('brain-status'),
+  brainSetMode: (mode: string) => ipcRenderer.invoke('brain-set-mode', mode),
+  brainLastDecision: () => ipcRenderer.invoke('brain-last-decision'),
+  brainModelsByTask: () => ipcRenderer.invoke('brain-models-by-task'),
+  identityGet: () => ipcRenderer.invoke('identity-get'),
+  identityUpdate: (patch: any) => ipcRenderer.invoke('identity-update', patch),
+  identitySetPersonality: (personality: string) => ipcRenderer.invoke('identity-set-personality', personality),
+  identitySelfAwareness: () => ipcRenderer.invoke('identity-self-awareness'),
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
