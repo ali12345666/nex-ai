@@ -248,6 +248,17 @@ contextBridge.exposeInMainWorld('nexAPI', {
   ecosystemStatus: () => ipcRenderer.invoke('ecosystem-status'),
   ecosystemSecurityAudit: () => ipcRenderer.invoke('ecosystem-security-audit'),
 
+  // ── Phase 60: Universal Knowledge Brain Expansion ──
+  universalKnowledgeDomains: () => ipcRenderer.invoke('universal-knowledge-domains'),
+  universalKnowledgePacks: () => ipcRenderer.invoke('universal-knowledge-packs'),
+  universalKnowledgePacksByDomain: (domain: string) => ipcRenderer.invoke('universal-knowledge-packs-by-domain', domain),
+  universalKnowledgeRoute: (request: any) => ipcRenderer.invoke('universal-knowledge-route', request),
+  universalKnowledgeSearch: (query: string, opts?: any) => ipcRenderer.invoke('universal-knowledge-search', query, opts),
+  universalKnowledgeGraph: (opts?: any) => ipcRenderer.invoke('universal-knowledge-graph', opts),
+  universalKnowledgeStatus: () => ipcRenderer.invoke('universal-knowledge-status'),
+  universalKnowledgeDetectDomain: (query: string) => ipcRenderer.invoke('universal-knowledge-detect-domain', query),
+  universalKnowledgeSecurityAudit: () => ipcRenderer.invoke('universal-knowledge-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

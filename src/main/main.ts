@@ -1746,6 +1746,100 @@ async function setupIPC(): Promise<void> {
 
   void ecosystemManager;
 
+  // ── Phase 60: Universal Knowledge Brain Expansion ──
+  const { getUniversalKnowledgeBrain, verifyUniversalKnowledgeSecurity } = await import('./knowledge/universal-knowledge-brain');
+  const { verifyCatalogSecurity: verifyUniversalCatalogSec } = await import('./knowledge/universal-knowledge-catalog');
+  const universalBrain = getUniversalKnowledgeBrain();
+
+  // Universal knowledge: list all domains (Phase 55 + Phase 60 expansion)
+  ipcMain.handle('universal-knowledge-domains', async () => {
+    try {
+      const { getUniversalDomains } = await import('./knowledge/universal-knowledge-catalog');
+      return { success: true, domains: getUniversalDomains() };
+    } catch (err: any) {
+      return { success: false, error: err.message, domains: [] };
+    }
+  });
+
+  // Universal knowledge: Phase 60 new packs (architecture/mechanical/business/economics + SW expansion)
+  ipcMain.handle('universal-knowledge-packs', async () => {
+    try {
+      const { getPhase60Packs } = await import('./knowledge/universal-knowledge-catalog');
+      return { success: true, packs: getPhase60Packs() };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  ipcMain.handle('universal-knowledge-packs-by-domain', async (_event, domain: string) => {
+    try {
+      const { getPhase60PacksByDomain } = await import('./knowledge/universal-knowledge-catalog');
+      return { success: true, packs: getPhase60PacksByDomain(domain as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  // Universal knowledge: expert knowledge routing (Expert + KnowledgePack + Model)
+  ipcMain.handle('universal-knowledge-route', async (_event, request: any) => {
+    try {
+      const route = await getUniversalKnowledgeBrain().routeQuery(request);
+      return { success: true, route };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Universal knowledge: multilingual search (Persian normalization + RAG)
+  ipcMain.handle('universal-knowledge-search', async (_event, query: string, opts?: any) => {
+    try {
+      const result = await getUniversalKnowledgeBrain().searchMultilingual(query, opts);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Universal knowledge: knowledge graph query
+  ipcMain.handle('universal-knowledge-graph', async (_event, opts?: any) => {
+    try {
+      const result = getUniversalKnowledgeBrain().queryKnowledgeGraph(opts || {});
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Universal knowledge: full status (domains, packs, graph size, installed/missing)
+  ipcMain.handle('universal-knowledge-status', async () => {
+    try {
+      return { success: true, status: getUniversalKnowledgeBrain().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Universal knowledge: detect domain for a query
+  ipcMain.handle('universal-knowledge-detect-domain', async (_event, query: string) => {
+    try {
+      const { detectDomainForQuery } = await import('./knowledge/universal-knowledge-catalog');
+      return { success: true, domain: detectDomainForQuery(query) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Universal knowledge: security audit
+  ipcMain.handle('universal-knowledge-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyUniversalKnowledgeSecurity(), catalogAudit: verifyUniversalCatalogSec() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void universalBrain;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

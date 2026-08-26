@@ -9,10 +9,10 @@
 
 import React from 'react';
 import {
-  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes,
+  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes, Globe,
 } from 'lucide-react';
 
-export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem' | 'uknowledge';
 
 /** Workspace sub-tabs — accessible when view === 'workspace'. */
 export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'planner', icon: <Network size={20} strokeWidth={1.5} />, label: 'Planner' },
   { id: 'localai', icon: <Cpu size={20} strokeWidth={1.5} />, label: 'Local AI' },
   { id: 'ecosystem', icon: <Boxes size={20} strokeWidth={1.5} />, label: 'Models' },
+  { id: 'uknowledge', icon: <Globe size={20} strokeWidth={1.5} />, label: 'Univ. Knowledge' },
   { id: 'settings', icon: <Settings size={20} strokeWidth={1.5} />, label: 'Settings' },
 ];
 

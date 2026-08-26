@@ -198,6 +198,17 @@ export interface NexAPI {
   ecosystemStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
   ecosystemSecurityAudit: () => Promise<{ success: boolean; audit?: any; catalogAudit?: any; error?: string }>;
 
+  // Phase 60: Universal Knowledge Brain Expansion
+  universalKnowledgeDomains: () => Promise<{ success: boolean; domains?: any[]; error?: string }>;
+  universalKnowledgePacks: () => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  universalKnowledgePacksByDomain: (domain: string) => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  universalKnowledgeRoute: (request: any) => Promise<{ success: boolean; route?: any; error?: string }>;
+  universalKnowledgeSearch: (query: string, opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  universalKnowledgeGraph: (opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  universalKnowledgeStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  universalKnowledgeDetectDomain: (query: string) => Promise<{ success: boolean; domain?: any; error?: string }>;
+  universalKnowledgeSecurityAudit: () => Promise<{ success: boolean; audit?: any; catalogAudit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;
