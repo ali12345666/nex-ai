@@ -145,34 +145,57 @@ export default function NexLibraryPanel() {
   };
 
   // ── Install actions ──
-  // These call the new non-blocking IPC handlers that return immediately
-  // with a downloadId. The download continues in the main process.
+  // Phase 70: These IPC calls now BLOCK until the permission dialog is
+  // resolved. The "Download started" toast ONLY appears after the main
+  // process returns {success:true, downloadId} — which only happens AFTER
+  // the user explicitly approved the permission.
+  //
+  // If the user denies (Cancel), the IPC returns {status:'permission-denied'}
+  // and NO toast is shown.
 
   const handleInstallModel = async (url: string, name?: string) => {
     setError(null);
+    console.log('[INSTALL:01] CLICK — handleInstallModel — url:', url, 'name:', name);
     try {
       const res = await window.nexAPI.downloadStart({ url, name });
+      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
       if (res.success && res.downloadId) {
-        // Store entry will be created by the download:state event
+        // Permission was APPROVED + downloadId was created + download started.
+        // The download store entry will be created by the download:state event.
         showToast('ok', 'دانلود شروع شد');
+      } else if (res.status === 'permission-denied') {
+        // User cancelled — no toast, no error. Silent.
+        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
+      } else if (res.status === 'invalid-url') {
+        setError(res.error || 'آدرس نامعتبر است');
       } else {
+        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
         setError(res.error || 'شروع دانلود ناموفق بود');
       }
     } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
+      console.log('[INSTALL:ERROR] stack:', err?.stack);
       setError(err?.message);
     }
   };
 
   const handleInstallRecommended = async () => {
     setError(null);
+    console.log('[INSTALL:01] CLICK — handleInstallRecommended');
     try {
       const res = await window.nexAPI.downloadStartRecommended();
+      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
       if (res.success && res.downloadId) {
         showToast('ok', 'دانلود مدل پیشنهادی شروع شد');
+      } else if (res.status === 'permission-denied') {
+        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
       } else {
+        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
         setError(res.error || 'شروع دانلود ناموفق بود');
       }
     } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
+      console.log('[INSTALL:ERROR] stack:', err?.stack);
       setError(err?.message);
     }
   };

@@ -2246,32 +2246,79 @@ async function setupIPC(): Promise<void> {
     return { success: true, downloads: Array.from(activeDownloads.values()) };
   });
 
-  // IPC: Start a model download (returns immediately with downloadId)
-  ipcMain.handle('download-start', async (_event, opts: any) => {
-    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 70: PERMISSION-GATED DOWNLOAD START
+  //
+  // CRITICAL FIX: The download-start IPC handler NO LONGER creates a downloadId
+  // or activeDownloads entry immediately. Instead it:
+  //
+  //   1. [INSTALL:01] Receives the click from renderer
+  //   2. [INSTALL:02] Opens the permission dialog (via gate callback → event)
+  //   3. [INSTALL:03] AWAITS the user's response (blocks the IPC)
+  //   4. [INSTALL:04] Receives permission result
+  //      - If DENIED → returns {success:false, status:'permission-denied'}
+  //        (NO downloadId, NO activeDownloads entry, NO HTTP request)
+  //      - If APPROVED → continues to step 5
+  //   5. [INSTALL:05] Creates downloadId
+  //   6. [INSTALL:06] Adds entry to activeDownloads + emits download:state
+  //   7. [INSTALL:07] Starts async download (downloadFromUrl with
+  //      permissionPreApproved:true so it skips its own permission gate)
+  //   8. Returns {success:true, downloadId, status:'approved'}
+  //
+  // The renderer's "Download started" toast ONLY appears after step 8,
+  // which ONLY happens after permission was APPROVED.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Helper: request permission for a model download. Returns true if approved.
+  const requestDownloadPermission = async (url: string, name?: string, expectedSize?: number): Promise<boolean> => {
+    const filename = name || (() => { try { return path.basename(new URL(url).pathname); } catch { return 'downloaded-model.gguf'; } })();
+    const action = {
+      type: 'install-model' as const,
+      description: `Download model: ${filename}`,
+      sizeBytes: expectedSize,
+      affectedItems: [filename],
+      reason: `دانلود مدل GGUF از ${url}`,
+    };
+    console.log('[INSTALL:02] PERMISSION_DIALOG_OPEN — filename:', filename);
+    console.log('[INSTALL:03] PERMISSION_WAITING — awaiting user response');
+    const gate = getModelDeploymentManager().getPermissionGate();
+    const result = await gate.requestPermission(action);
+    console.log('[INSTALL:04] PERMISSION_RESULT — approved:', result.approved,
+      '— method:', result.confirmationMethod,
+      '— reason:', result.denialReason || '(approved)');
+    return result.approved;
+  };
+
+  // Helper: create a download entry AFTER permission is approved, start the
+  // async download, and wire up completion/error handlers.
+  const startApprovedDownload = (
+    downloadId: string,
+    modelName: string,
+    url: string,
+    downloadPromise: () => Promise<any>,
+  ) => {
     const entry = {
       id: downloadId,
-      modelName: opts.name || opts.url || 'model',
-      url: opts.url,
-      status: 'requesting-permission',
+      modelName,
+      url,
+      status: 'downloading' as const,  // NOT 'requesting-permission' — we're past that
       progress: 0,
       downloadedBytes: 0,
       totalBytes: 0,
       speedBytesPerSec: 0,
       etaSeconds: -1,
-      stageMessage: 'Starting...',
-      stageMessageFa: 'در حال شروع...',
+      stageMessage: 'Download approved — starting...',
+      stageMessageFa: 'دانلود تأیید شد — در حال شروع...',
       startedAt: Date.now(),
     };
     activeDownloads.set(downloadId, entry);
     emitDownloadState(downloadId);
-
-    // Start the actual download asynchronously (non-blocking)
-    console.log('[DOWNLOAD_START] id:', downloadId, 'url:', opts.url, 'name:', opts.name);
+    console.log('[INSTALL:06] DOWNLOAD_MANAGER_START — entry created, id:', downloadId);
+    console.log('[INSTALL:07] SECURE_DOWNLOADER_START — launching async download');
 
     (async () => {
       try {
-        const result = await getModelDeploymentManager().downloadFromUrl(opts);
+        const result = await downloadPromise();
         const finalEntry = activeDownloads.get(downloadId);
         if (finalEntry) {
           activeDownloads.set(downloadId, {
@@ -2283,9 +2330,12 @@ async function setupIPC(): Promise<void> {
             completedAt: Date.now(),
           });
           emitDownloadState(downloadId);
+          console.log('[INSTALL:14] COMPLETE — id:', downloadId, 'success:', result.success);
           mainWindow?.webContents.send('download:completed', { id: downloadId, result });
         }
       } catch (err: any) {
+        console.log('[INSTALL:ERROR] stage:download — error:', err?.message);
+        console.log('[INSTALL:ERROR] stack:', err?.stack);
         const finalEntry = activeDownloads.get(downloadId);
         if (finalEntry) {
           activeDownloads.set(downloadId, {
@@ -2299,65 +2349,83 @@ async function setupIPC(): Promise<void> {
         }
       }
     })();
+  };
 
-    return { success: true, downloadId };
+  // IPC: Start a model download (BLOCKS until permission is resolved)
+  ipcMain.handle('download-start', async (_event, opts: any) => {
+    const traceId = `trace-${Date.now()}`;
+    console.log(`[INSTALL:01] CLICK — download-start received — traceId:${traceId} — url:${opts?.url} — name:${opts?.name}`);
+
+    // Validate URL BEFORE requesting permission
+    if (!opts?.url || !opts.url.startsWith('https://')) {
+      console.log('[INSTALL:ERROR] stage:validate — error: non-HTTPS URL:', opts?.url);
+      return { success: false, status: 'invalid-url', error: 'Security: only HTTPS URLs are allowed' };
+    }
+
+    // ── Request permission (BLOCKS until user responds) ──
+    let approved: boolean;
+    try {
+      approved = await requestDownloadPermission(opts.url, opts.name, opts.expectedSize);
+    } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:permission — error:', err?.message);
+      console.log('[INSTALL:ERROR] stack:', err?.stack);
+      return { success: false, status: 'permission-error', error: err?.message || 'Permission request failed' };
+    }
+
+    if (!approved) {
+      // Permission DENIED — NO downloadId, NO activeDownloads entry, NO HTTP request
+      console.log('[INSTALL:CANCELLED] Permission denied — no download created');
+      return { success: false, status: 'permission-denied', error: 'Permission denied by user' };
+    }
+
+    // ── Permission APPROVED — NOW create downloadId ──
+    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log('[INSTALL:05] DOWNLOAD_ID_CREATED — id:', downloadId);
+
+    startApprovedDownload(
+      downloadId,
+      opts.name || opts.url || 'model',
+      opts.url,
+      () => getModelDeploymentManager().downloadFromUrl({ ...opts, permissionPreApproved: true }),
+    );
+
+    return { success: true, downloadId, status: 'approved' };
   });
 
-  // IPC: Start recommended model download (returns immediately with downloadId)
+  // IPC: Start recommended model download (BLOCKS until permission is resolved)
   ipcMain.handle('download-start-recommended', async () => {
-    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const { RECOMMENDED_FIRST_MODEL } = await import('./ai/first-run-wizard');
-    const entry = {
-      id: downloadId,
-      modelName: RECOMMENDED_FIRST_MODEL.name,
-      url: RECOMMENDED_FIRST_MODEL.downloadUrl,
-      status: 'requesting-permission',
-      progress: 0,
-      downloadedBytes: 0,
-      totalBytes: 0,
-      speedBytesPerSec: 0,
-      etaSeconds: -1,
-      stageMessage: 'Starting...',
-      stageMessageFa: 'در حال شروع...',
-      startedAt: Date.now(),
-    };
-    activeDownloads.set(downloadId, entry);
-    emitDownloadState(downloadId);
+    const traceId = `trace-${Date.now()}`;
+    console.log(`[INSTALL:01] CLICK — download-start-recommended received — traceId:${traceId} — model:${RECOMMENDED_FIRST_MODEL.name}`);
 
-    console.log('[DOWNLOAD_START] id:', downloadId, 'recommended model:', RECOMMENDED_FIRST_MODEL.name);
+    // ── Request permission (BLOCKS until user responds) ──
+    let approved: boolean;
+    try {
+      approved = await requestDownloadPermission(RECOMMENDED_FIRST_MODEL.downloadUrl, RECOMMENDED_FIRST_MODEL.name);
+    } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:permission — error:', err?.message);
+      console.log('[INSTALL:ERROR] stack:', err?.stack);
+      return { success: false, status: 'permission-error', error: err?.message || 'Permission request failed' };
+    }
 
-    (async () => {
-      try {
-        const result = await getFirstRunWizard().installRecommendedModel();
-        const finalEntry = activeDownloads.get(downloadId);
-        if (finalEntry) {
-          activeDownloads.set(downloadId, {
-            ...finalEntry,
-            status: result.success ? 'deployed' : 'download-failed',
-            progress: result.success ? 100 : finalEntry.progress,
-            result,
-            error: result.error,
-            completedAt: Date.now(),
-          });
-          emitDownloadState(downloadId);
-          mainWindow?.webContents.send('download:completed', { id: downloadId, result });
-        }
-      } catch (err: any) {
-        const finalEntry = activeDownloads.get(downloadId);
-        if (finalEntry) {
-          activeDownloads.set(downloadId, {
-            ...finalEntry,
-            status: 'download-failed',
-            error: err?.message || String(err),
-            completedAt: Date.now(),
-          });
-          emitDownloadState(downloadId);
-          mainWindow?.webContents.send('download:error', { id: downloadId, error: err?.message });
-        }
-      }
-    })();
+    if (!approved) {
+      // Permission DENIED — NO downloadId, NO activeDownloads entry, NO HTTP request
+      console.log('[INSTALL:CANCELLED] Permission denied — no download created');
+      return { success: false, status: 'permission-denied', error: 'Permission denied by user' };
+    }
 
-    return { success: true, downloadId };
+    // ── Permission APPROVED — NOW create downloadId ──
+    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log('[INSTALL:05] DOWNLOAD_ID_CREATED — id:', downloadId);
+
+    startApprovedDownload(
+      downloadId,
+      RECOMMENDED_FIRST_MODEL.name,
+      RECOMMENDED_FIRST_MODEL.downloadUrl,
+      () => getFirstRunWizard().installRecommendedModel({ permissionPreApproved: true }),
+    );
+
+    return { success: true, downloadId, status: 'approved' };
   });
 
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──

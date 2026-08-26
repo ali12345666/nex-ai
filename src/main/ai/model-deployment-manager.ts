@@ -129,6 +129,17 @@ export interface ModelImportOptions {
 export interface ModelDownloadOptions extends ModelImportOptions {
   /** HTTPS URL to download the GGUF from. */
   url: string;
+  /**
+   * Phase 70: If true, the permission gate step is SKIPPED inside
+   * downloadFromUrl() because the caller (IPC handler) has ALREADY
+   * requested and received explicit user approval.
+   *
+   * This flag must ONLY be set by the IPC handler AFTER it has awaited
+   * gate.requestPermission() and received { approved: true }.
+   *
+   * It must NEVER be set by untrusted callers.
+   */
+  permissionPreApproved?: boolean;
 }
 
 export interface DeploymentResult {
@@ -366,7 +377,8 @@ export class ModelDeploymentManager {
     const log: string[] = [];
     const url = opts.url;
 
-    console.log('[IPC_INSTALL] downloadFromUrl START — url:', url, 'name:', opts.name);
+    console.log('[IPC_INSTALL] downloadFromUrl START — url:', url, 'name:', opts.name,
+      '— permissionPreApproved:', !!opts.permissionPreApproved);
 
     // Validate URL is HTTPS
     if (!url.startsWith('https://')) {
@@ -374,60 +386,77 @@ export class ModelDeploymentManager {
       return this.fail('download-failed', `Security: only HTTPS URLs are allowed (rejected: ${url.split(':')[0]})`, start, log);
     }
 
-    // 1. Request permission (REQUIRES_APPROVAL)
-    console.log('[PERMISSION] Requesting permission for model download — filename:', opts.name);
-    this.setStage('requesting-permission');
     const filename = opts.name || path.basename(url) || 'downloaded-model.gguf';
-    const action: ActionDescriptor = {
-      type: 'install-model',
-      description: `Download model: ${filename}`,
-      sizeBytes: opts.expectedSize,
-      affectedItems: [filename],
-      reason: `دانلود مدل GGUF از ${url}`,
-    };
 
-    this.audit.log({
-      action: 'permission-requested',
-      description: `Model download requested: ${filename}`,
-      level: 'REQUIRES_APPROVAL',
-      targetPath: filename,
-      sizeBytes: opts.expectedSize,
-      metadata: { url, filename },
-    });
-
-    this.pendingPermission = { operation: 'download', modelPath: filename, url, sizeBytes: opts.expectedSize, action, requiredPhrase: 'تایید می‌کنم' };
-
-    console.log('[PERMISSION] Calling gate.requestPermission — waiting for user response...');
-    const permResult: PermissionGateResult = await this.gate.requestPermission(action);
-    console.log('[PERMISSION] Result:', permResult.approved ? 'APPROVED' : 'DENIED', '— method:', permResult.confirmationMethod);
-    this.pendingPermission = null;
-
-    if (!permResult.approved) {
-      this.setStage('permission-denied');
+    // ── 1. Permission gate ──
+    // Phase 70: If permissionPreApproved is true, the caller (IPC handler)
+    // has ALREADY requested and received explicit user approval. We skip
+    // the permission request here to avoid a DOUBLE permission dialog.
+    if (opts.permissionPreApproved) {
+      console.log('[INSTALL:08] DOWNLOAD_MANAGER_START — permission pre-approved, skipping gate');
       this.audit.log({
-        action: 'permission-denied',
-        description: `Model download denied: ${filename}`,
+        action: 'permission-approved',
+        description: `Model download approved (pre-approved by IPC handler): ${filename}`,
         level: 'REQUIRES_APPROVAL',
         targetPath: filename,
-        metadata: { denialReason: permResult.denialReason || 'User declined' },
+        metadata: { confirmationMethod: 'chat', preApproved: true },
       });
-      const result: DeploymentResult = {
-        success: false, stage: 'permission-denied',
-        error: 'Permission denied by user', durationMs: Date.now() - start, log,
+    } else {
+      // Request permission (REQUIRES_APPROVAL)
+      console.log('[PERMISSION] Requesting permission for model download — filename:', opts.name);
+      this.setStage('requesting-permission');
+      const action: ActionDescriptor = {
+        type: 'install-model',
+        description: `Download model: ${filename}`,
+        sizeBytes: opts.expectedSize,
+        affectedItems: [filename],
+        reason: `دانلود مدل GGUF از ${url}`,
       };
-      this.lastDeployment = result;
-      return result;
+
+      this.audit.log({
+        action: 'permission-requested',
+        description: `Model download requested: ${filename}`,
+        level: 'REQUIRES_APPROVAL',
+        targetPath: filename,
+        sizeBytes: opts.expectedSize,
+        metadata: { url, filename },
+      });
+
+      this.pendingPermission = { operation: 'download', modelPath: filename, url, sizeBytes: opts.expectedSize, action, requiredPhrase: 'تایید می‌کنم' };
+
+      console.log('[PERMISSION] Calling gate.requestPermission — waiting for user response...');
+      const permResult: PermissionGateResult = await this.gate.requestPermission(action);
+      console.log('[PERMISSION] Result:', permResult.approved ? 'APPROVED' : 'DENIED', '— method:', permResult.confirmationMethod);
+      this.pendingPermission = null;
+
+      if (!permResult.approved) {
+        this.setStage('permission-denied');
+        this.audit.log({
+          action: 'permission-denied',
+          description: `Model download denied: ${filename}`,
+          level: 'REQUIRES_APPROVAL',
+          targetPath: filename,
+          metadata: { denialReason: permResult.denialReason || 'User declined' },
+        });
+        const result: DeploymentResult = {
+          success: false, stage: 'permission-denied',
+          error: 'Permission denied by user', durationMs: Date.now() - start, log,
+        };
+        this.lastDeployment = result;
+        return result;
+      }
+
+      this.audit.log({
+        action: 'permission-approved',
+        description: `Model download approved: ${filename}`,
+        level: 'REQUIRES_APPROVAL',
+        targetPath: filename,
+        metadata: { confirmationMethod: permResult.confirmationMethod },
+      });
     }
 
-    this.audit.log({
-      action: 'permission-approved',
-      description: `Model download approved: ${filename}`,
-      level: 'REQUIRES_APPROVAL',
-      targetPath: filename,
-      metadata: { confirmationMethod: permResult.confirmationMethod },
-    });
-
-    // 2. Download (HTTPS-only, sandboxed)
+    // ── 2. Download (HTTPS-only, sandboxed) ──
+    console.log('[INSTALL:09] SECURE_DOWNLOADER_START — url:', url, 'filename:', filename);
     console.log('[DOWNLOADER_START] Starting download — url:', url, 'filename:', filename);
     this.setStage('downloading');
     log.push(`Downloading from: ${url}`);

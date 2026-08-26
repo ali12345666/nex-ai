@@ -254,8 +254,8 @@ export interface NexAPI {
 
   // Phase 68: Download State Architecture
   downloadGetActive: () => Promise<{ success: boolean; downloads?: any[]; error?: string }>;
-  downloadStart: (opts: any) => Promise<{ success: boolean; downloadId?: string; error?: string }>;
-  downloadStartRecommended: () => Promise<{ success: boolean; downloadId?: string; error?: string }>;
+  downloadStart: (opts: any) => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
+  downloadStartRecommended: () => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
   onDownloadState: (callback: (state: any) => void) => () => void;
   onDownloadCompleted: (callback: (ev: any) => void) => () => void;
   onDownloadError: (callback: (ev: any) => void) => () => void;

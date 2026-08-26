@@ -179,11 +179,14 @@ export class FirstRunWizard {
    */
   async installRecommendedModel(opts?: {
     onProgress?: ActivationProgressCallback;
+    /** Phase 70: If true, skip permission (already approved by IPC handler). */
+    permissionPreApproved?: boolean;
   }): Promise<ActivationResult> {
     const start = Date.now();
     this.installing = true;
 
-    console.log('[LIBRARY_INSTALL] installRecommendedModel START — model:', RECOMMENDED_FIRST_MODEL.name, 'url:', RECOMMENDED_FIRST_MODEL.downloadUrl);
+    console.log('[LIBRARY_INSTALL] installRecommendedModel START — model:', RECOMMENDED_FIRST_MODEL.name, 'url:', RECOMMENDED_FIRST_MODEL.downloadUrl,
+      '— permissionPreApproved:', !!opts?.permissionPreApproved);
 
     if (opts?.onProgress) {
       this.progressCallback = opts.onProgress;
@@ -221,6 +224,7 @@ export class FirstRunWizard {
         source: 'huggingface' as const,
         sourceUrl: RECOMMENDED_FIRST_MODEL.downloadUrl,
         testInference: true,
+        permissionPreApproved: opts?.permissionPreApproved ?? false,
       };
 
       const deployResult: DeploymentResult = await deploymentManager.downloadFromUrl(downloadOpts);

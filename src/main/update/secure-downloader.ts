@@ -265,7 +265,7 @@ export class SecureDownloader {
         timeout: 30_000,               // ← Initial connection timeout (30s)
       };
 
-      console.log(`[${requestId}] REQUEST → GET https://${requestOpts.hostname}:${requestOpts.port || 443}${requestOpts.path}`);
+      console.log(`[INSTALL:10] [${requestId}] HTTP_REQUEST → GET https://${requestOpts.hostname}:${requestOpts.port || 443}${requestOpts.path}`);
       console.log(`[${requestId}] HOST=${requestOpts.hostname}`);
       console.log(`[${requestId}] Headers=${JSON.stringify(headers)}`);
       console.log(`[${requestId}] Dest=${destPath} — existingBytes=${existingBytes}`);
@@ -316,7 +316,8 @@ export class SecureDownloader {
         settled = true;
         if (idleTimer) clearTimeout(idleTimer);
         try { writeStream?.close(); } catch { /* */ }
-        console.log(`[${requestId}] SOCKET_ERROR code=${errObj?.code || 'N/A'} message=${error}`);
+        console.log(`[INSTALL:ERROR] [${requestId}] stage:http — code=${errObj?.code || 'N/A'} message=${error}`);
+        console.log(`[INSTALL:ERROR] [${requestId}] stack=${errObj?.stack || '(no stack)'}`);
         console.log(`[${requestId}] bytes received before error: ${bytesDownloaded}`);
         console.log(`[${requestId}] content-length was: ${expectedContentLength}`);
         console.log(`[${requestId}] redirect count: ${redirectCount}`);
@@ -343,7 +344,7 @@ export class SecureDownloader {
       });
 
       requestRef = https.request(requestOpts, (response) => {
-        console.log(`[${requestId}] RESPONSE ← status=${response.statusCode} ${response.statusMessage}`);
+        console.log(`[INSTALL:11] [${requestId}] HTTP_RESPONSE ← status=${response.statusCode} ${response.statusMessage}`);
         console.log(`[${requestId}] RESPONSE headers: ${JSON.stringify({
           'content-length': response.headers['content-length'],
           'content-range': response.headers['content-range'],
@@ -424,7 +425,7 @@ export class SecureDownloader {
           totalBytes = (response.statusCode === 206) ? existingBytes + cl : cl;
         }
 
-        console.log(`[${requestId}] STREAM_START — totalBytes=${totalBytes} — statusCode=${response.statusCode}`);
+        console.log(`[INSTALL:12] [${requestId}] STREAM_START — totalBytes=${totalBytes} — statusCode=${response.statusCode}`);
 
         resetIdleTimer();
 
@@ -465,9 +466,11 @@ export class SecureDownloader {
             const bytesInInterval = bytesDownloaded - lastProgressBytes;
             const speed = elapsed > 0 ? bytesInInterval / elapsed : 0;
             const remaining = totalBytes > 0 ? totalBytes - bytesDownloaded : 0;
+            const pct = totalBytes > 0 ? (bytesDownloaded / totalBytes) * 100 : -1;
+            console.log(`[INSTALL:13] [${requestId}] PROGRESS — ${pct.toFixed(1)}% — ${bytesDownloaded}/${totalBytes > 0 ? totalBytes : '?'} bytes — ${Math.round(speed / 1024)} KB/s`);
             opts.onProgress({
               bytesDownloaded, totalBytes,
-              percent: totalBytes > 0 ? (bytesDownloaded / totalBytes) * 100 : -1,
+              percent: pct,
               speedBytesPerSec: speed,
               etaSeconds: speed > 0 ? remaining / speed : -1,
             });
@@ -493,7 +496,7 @@ export class SecureDownloader {
             if (settled) return;
             settled = true;
 
-            console.log(`[${requestId}] DOWNLOAD_COMPLETE — file: ${destPath}`);
+            console.log(`[INSTALL:14] [${requestId}] DOWNLOAD_COMPLETE — file: ${destPath} — bytes: ${bytesDownloaded}`);
 
             let finalHash: string;
             if (needFullHash) {
