@@ -121,8 +121,20 @@ export default function NexLibraryPanel() {
     });
 
     const unsubError = window.nexAPI.onDownloadError((ev) => {
-      failDownload(ev.id, ev.error);
-      setToast({ kind: 'err', msg: `دانلود ناموفق: ${ev.error}` });
+      // Phase 71: Pass detailed error info (code/stage/host/expected) to store
+      failDownload(ev.id, ev.error, {
+        code: ev.result?.errorCode || ev.code,
+        stage: ev.result?.errorStage || ev.stage,
+        host: ev.result?.errorHost || ev.host,
+        bytesExpected: ev.result?.bytesExpected || ev.bytesExpected,
+      });
+      const code = ev.result?.errorCode || ev.code || 'UNKNOWN';
+      const stage = ev.result?.errorStage || ev.stage || 'unknown';
+      const host = ev.result?.errorHost || ev.host || 'unknown';
+      const received = ev.result?.bytesDownloaded || ev.bytesDownloaded || 0;
+      const expected = ev.result?.bytesExpected || ev.bytesExpected || 0;
+      console.log('[INSTALL:ERROR] Download failed — code:', code, 'stage:', stage, 'host:', host, 'received:', received, 'expected:', expected);
+      setToast({ kind: 'err', msg: `دانلود ناموفق: ${code} @ ${stage}` });
     });
 
     // Subscribe to permission requests
@@ -406,7 +418,16 @@ export default function NexLibraryPanel() {
                     <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>{dl.modelName}</span>
                     <span className="ml-auto text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{dl.status}</span>
                   </div>
-                  {dl.error && <div className="text-[9px]" style={{ color: '#fca5a5' }}>{dl.error}</div>}
+                  {dl.error && <div className="text-[9px] mb-1" style={{ color: '#fca5a5' }}>{dl.error}</div>}
+                  {/* Phase 71: Detailed error info */}
+                  {dl.status === 'download-failed' && (dl.errorCode || dl.errorStage || dl.errorHost) && (
+                    <div className="text-[8px] mt-1 p-1.5 rounded font-mono space-y-0.5" style={{ background: 'rgba(239,68,68,0.06)', color: 'var(--nex-text-muted)', border: '1px solid rgba(239,68,68,0.1)' }}>
+                      {dl.errorCode && <div>Error: <span style={{ color: '#fca5a5' }}>{dl.errorCode}</span></div>}
+                      {dl.errorStage && <div>Stage: <span style={{ color: '#fca5a5' }}>{dl.errorStage}</span></div>}
+                      {dl.errorHost && <div>Host: <span style={{ color: '#fca5a5' }}>{dl.errorHost}</span></div>}
+                      <div>Received: {formatBytes(dl.downloadedBytes || 0)}{dl.bytesExpected ? ` / ${formatBytes(dl.bytesExpected)}` : ''}</div>
+                    </div>
+                  )}
                 </div>
               ))}
             </>

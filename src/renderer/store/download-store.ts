@@ -53,6 +53,11 @@ export interface DownloadEntry {
   stageMessage: string;
   stageMessageFa: string;
   error?: string;
+  /** Phase 71: Detailed error info for UI */
+  errorCode?: string;
+  errorStage?: string;
+  errorHost?: string;
+  bytesExpected?: number;
   startedAt: number;
   completedAt?: number;
   filePath?: string;
@@ -70,7 +75,7 @@ export interface DownloadStore {
   startDownload: (id: string, modelName: string, url: string) => void;
   updateProgress: (id: string, progress: Partial<DownloadEntry>) => void;
   completeDownload: (id: string, result: any) => void;
-  failDownload: (id: string, error: string) => void;
+  failDownload: (id: string, error: string, details?: { code?: string; stage?: string; host?: string; bytesExpected?: number }) => void;
   setPendingPermission: (perm: any | null) => void;
   clearActive: (id: string) => void;
   addToHistory: (result: any) => void;
@@ -126,15 +131,24 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     console.log('[DOWNLOAD_STORE] completeDownload — id:', id);
   },
 
-  failDownload: (id, error) => {
+  failDownload: (id, error, details) => {
     set((s) => ({
       downloads: s.downloads.map((d) =>
         d.id === id
-          ? { ...d, status: 'download-failed', error, completedAt: Date.now() }
+          ? {
+              ...d,
+              status: 'download-failed' as DownloadStatus,
+              error,
+              errorCode: details?.code,
+              errorStage: details?.stage,
+              errorHost: details?.host,
+              bytesExpected: details?.bytesExpected,
+              completedAt: Date.now(),
+            }
           : d
       ),
     }));
-    console.log('[DOWNLOAD_STORE] failDownload — id:', id, 'error:', error);
+    console.log('[DOWNLOAD_STORE] failDownload — id:', id, 'error:', error, 'details:', details);
   },
 
   setPendingPermission: (perm) => {

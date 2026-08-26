@@ -2327,11 +2327,26 @@ async function setupIPC(): Promise<void> {
             progress: result.success ? 100 : finalEntry.progress,
             result,
             error: result.error,
+            // Phase 71: detailed error fields from SecureDownloader
+            errorCode: result.errorCode,
+            errorStage: result.errorStage,
+            errorHost: result.errorHost,
+            bytesExpected: result.bytesExpected,
+            downloadedBytes: result.bytesDownloaded || finalEntry.downloadedBytes,
             completedAt: Date.now(),
           });
           emitDownloadState(downloadId);
           console.log('[INSTALL:14] COMPLETE — id:', downloadId, 'success:', result.success);
-          mainWindow?.webContents.send('download:completed', { id: downloadId, result });
+          if (result.success) {
+            mainWindow?.webContents.send('download:completed', { id: downloadId, result });
+          } else {
+            // Phase 71: send download:error with detailed info (not download:completed)
+            mainWindow?.webContents.send('download:error', {
+              id: downloadId,
+              error: result.error,
+              result,  // includes errorCode, errorStage, errorHost, bytesExpected, bytesDownloaded
+            });
+          }
         }
       } catch (err: any) {
         console.log('[INSTALL:ERROR] stage:download — error:', err?.message);
@@ -2342,10 +2357,16 @@ async function setupIPC(): Promise<void> {
             ...finalEntry,
             status: 'download-failed',
             error: err?.message || String(err),
+            errorCode: err?.code || 'CAUGHT',
+            errorStage: 'deployment-manager',
             completedAt: Date.now(),
           });
           emitDownloadState(downloadId);
-          mainWindow?.webContents.send('download:error', { id: downloadId, error: err?.message });
+          mainWindow?.webContents.send('download:error', {
+            id: downloadId,
+            error: err?.message,
+            result: { errorCode: err?.code || 'CAUGHT', errorStage: 'deployment-manager' },
+          });
         }
       }
     })();

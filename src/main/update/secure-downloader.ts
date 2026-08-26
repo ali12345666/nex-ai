@@ -44,6 +44,11 @@ export interface DownloadResult {
   error?: string;
   resumed: boolean;
   retries: number;
+  /** Phase 71: Detailed error info for UI display */
+  errorCode?: string;
+  errorStage?: string;
+  errorHost?: string;
+  bytesExpected?: number;
 }
 
 export interface DownloadOptions {
@@ -166,11 +171,16 @@ export class SecureDownloader {
   /**
    * Download a file securely to the sandbox.
    * HTTPS only. Resume support. Automatic retry on transient errors (including socket hang up).
+   *
+   * Phase 71: Retry loop is HARD-CAPPED at maxRetries (default 5). After
+   * exhausting retries, the download is marked FAILED and [DOWNLOAD_FINAL_FAILURE]
+   * is logged with full diagnostics. The UI spinner stops because the status
+   * becomes 'download-failed' (excluded from activeDownloads in the store).
    */
   async download(opts: DownloadOptions): Promise<DownloadResult> {
     const startMs = Date.now();
-    const maxRetries = opts.maxRetries ?? 5;   // Increased from 3 to 5
-    const idleTimeoutMs = opts.timeoutMs ?? 120_000;  // Increased from 60s to 120s
+    const maxRetries = opts.maxRetries ?? 5;
+    const idleTimeoutMs = opts.timeoutMs ?? 120_000;
 
     if (!opts.url.startsWith('https://')) {
       return { success: false, hash: '', bytesDownloaded: 0, durationMs: Date.now() - startMs,
@@ -180,11 +190,22 @@ export class SecureDownloader {
     const filename = opts.filename || this.deriveFilename(opts.url);
     const sandboxPath = path.join(this.sandboxDir, filename);
 
+    console.log(`[DOWNLOAD_ATTEMPT] 0/${maxRetries} — START — url=${opts.url.slice(0, 80)}... — dest=${sandboxPath}`);
+
     let lastError: any = null;
+    let lastErrorCode: string = '';
+    let lastErrorStage: string = '';
+    let lastHost: string = '';
+    let totalBytesExpected: number = 0;
+    let totalBytesReceived: number = 0;
     let retries = 0;
+
+    // Shared context across all attempts — tracks host/stage/expected for diagnostics
+    const diagCtx = { host: '', stage: '', bytesExpected: 0 };
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (opts.shouldAbort?.()) {
+        console.log(`[DOWNLOAD_ABORTED] by user — attempt ${attempt}/${maxRetries} — bytesReceived=${this.getPartialSize(sandboxPath)}`);
         return { success: false, hash: '', bytesDownloaded: this.getPartialSize(sandboxPath),
           durationMs: Date.now() - startMs, error: 'Download aborted by user',
           resumed: this.getPartialSize(sandboxPath) > 0, retries: attempt };
@@ -192,57 +213,117 @@ export class SecureDownloader {
 
       const existingBytes = this.getPartialSize(sandboxPath);
 
+      // ── Log .part file state before each attempt ──
+      console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — .part file state:`);
+      if (existingBytes > 0) {
+        try {
+          const stat = fs.statSync(sandboxPath);
+          console.log(`  .part exists: true — size=${existingBytes} bytes — mtime=${stat.mtime.toISOString()}`);
+          console.log(`  Resume: will send Range: bytes=${existingBytes}-`);
+        } catch {
+          console.log(`  .part stat failed — size=0`);
+        }
+      } else {
+        console.log(`  .part exists: false — size=0 — fresh download (no Range header)`);
+      }
+
       try {
-        const result = await this.attemptDownload(opts.url, sandboxPath, existingBytes, opts, startMs, idleTimeoutMs, attempt);
+        const result = await this.attemptDownload(opts.url, sandboxPath, existingBytes, opts, startMs, idleTimeoutMs, attempt, diagCtx);
 
         if (result.success) {
+          console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — SUCCESS — bytesDownloaded=${result.bytesDownloaded}`);
           return { ...result, resumed: existingBytes > 0, retries: attempt };
         }
 
         lastError = result.error;
+        totalBytesReceived = result.bytesDownloaded || this.getPartialSize(sandboxPath);
+        totalBytesExpected = diagCtx.bytesExpected || result.bytesDownloaded;
+        lastHost = diagCtx.host;
+        lastErrorStage = diagCtx.stage || 'response-stream';
         const errInfo = classifyDownloadError({ message: result.error }, this.getPartialSize(sandboxPath) > 0);
 
+        console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — FAILED — error=${result.error}`);
+        console.log(`  classification=${errInfo.classification} — isTransient=${errInfo.isTransient} — canResume=${errInfo.canResume}`);
+        console.log(`  bytesReceived this attempt: ${result.bytesDownloaded}`);
+
         if (!errInfo.isTransient) {
+          // Non-transient error — stop immediately
+          console.log(`[DOWNLOAD_FINAL_FAILURE] — non-transient error, stopping`);
+          console.log(`  attempts=${attempt + 1}/${maxRetries + 1}`);
+          console.log(`  code=${lastErrorCode || 'N/A'}`);
+          console.log(`  message=${result.error}`);
+          console.log(`  bytesReceived=${totalBytesReceived}`);
           return { ...result, resumed: this.getPartialSize(sandboxPath) > 0, retries: attempt };
         }
 
         if (attempt < maxRetries) {
           const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000);  // 2s, 4s, 8s, 16s, 30s
-          console.log(`[NEX SecureDownloader] Attempt ${attempt + 1} failed: ${result.error}. Retrying in ${waitMs}ms...`);
+          console.log(`[DOWNLOAD_RETRY] waiting ${waitMs}ms before attempt ${attempt + 2}/${maxRetries + 1}...`);
           await new Promise(r => setTimeout(r, waitMs));
           retries = attempt + 1;
         }
       } catch (err: any) {
         lastError = err;
+        lastErrorCode = err?.code || '';
         if (isTransientError(err) && attempt < maxRetries) {
           const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000);
-          console.log(`[NEX SecureDownloader] Attempt ${attempt + 1} threw: ${err.message}. Retrying in ${waitMs}ms...`);
+          console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — THREW — code=${err.code} message=${err.message}`);
+          console.log(`[DOWNLOAD_RETRY] waiting ${waitMs}ms before attempt ${attempt + 2}/${maxRetries + 1}...`);
           await new Promise(r => setTimeout(r, waitMs));
           retries = attempt + 1;
         } else {
+          console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — THREW (non-transient or max reached) — code=${err.code} message=${err.message}`);
           break;
         }
       }
     }
 
+    // ── All retries exhausted — FINAL FAILURE ──
     const existingBytes = this.getPartialSize(sandboxPath);
     const errInfo = classifyDownloadError(lastError, existingBytes > 0);
-    return { success: false, hash: '', bytesDownloaded: existingBytes,
-      durationMs: Date.now() - startMs, error: errInfo.userMessageFa,
-      resumed: existingBytes > 0, retries };
+
+    console.log(`[DOWNLOAD_FINAL_FAILURE]`);
+    console.log(`  attempts=${retries}/${maxRetries + 1}`);
+    console.log(`  code=${lastErrorCode || (lastError?.code || 'N/A')}`);
+    console.log(`  message=${lastError?.message || String(lastError)}`);
+    console.log(`  stage=${lastErrorStage || 'unknown'}`);
+    console.log(`  bytesReceived=${existingBytes}`);
+    console.log(`  bytesExpected=${totalBytesExpected || 'unknown'}`);
+    console.log(`  host=${lastHost || 'unknown'}`);
+    console.log(`  classification=${errInfo.classification}`);
+
+    return {
+      success: false,
+      hash: '',
+      bytesDownloaded: existingBytes,
+      durationMs: Date.now() - startMs,
+      error: errInfo.userMessageFa,
+      resumed: existingBytes > 0,
+      retries,
+      errorCode: lastErrorCode || (lastError?.code || 'UNKNOWN'),
+      errorStage: lastErrorStage || 'unknown',
+      errorHost: lastHost || 'unknown',
+      bytesExpected: totalBytesExpected,
+    };
   }
 
   /**
    * Single download attempt with full request tracing.
+   *
+   * The `ctx` parameter tracks diagnostic state (stage, host, expected bytes)
+   * across redirects within a single attempt. The caller's `download()` method
+   * reads from this context when reporting [DOWNLOAD_FINAL_FAILURE].
    */
   private attemptDownload(
     url: string, destPath: string, existingBytes: number,
     opts: DownloadOptions, startMs: number, idleTimeoutMs: number,
     attemptNum: number,
+    ctx?: { host?: string; stage?: string; bytesExpected?: number },
   ): Promise<DownloadResult> {
     return new Promise((resolve) => {
       const urlObj = new URL(url);
       const requestId = `HTTP:${String(attemptNum + 1).padStart(3, '0')}`;
+      if (ctx) ctx.host = urlObj.hostname;
 
       // Build headers — ALL set BEFORE the request is made
       const headers: Record<string, string> = {
@@ -298,6 +379,7 @@ export class SecureDownloader {
         idleTimer = setTimeout(() => {
           if (!settled) {
             console.log(`[${requestId}] IDLE_TIMEOUT — no data for ${idleTimeoutMs}ms — bytes received: ${bytesDownloaded}`);
+            if (ctx) { ctx.stage = 'idle-timeout'; }
             settled = true;
             requestRef?.destroy();
             try { writeStream?.close(); } catch { /* */ }
@@ -356,22 +438,27 @@ export class SecureDownloader {
         // ── Handle redirects (3xx) ──
         if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           redirectCount++;
-          console.log(`[${requestId}] REDIRECT → ${response.headers.location}`);
+          const fromHost = urlObj.hostname;
+          let redirectUrl = response.headers.location;
+          let toHost: string;
+          if (redirectUrl.startsWith('/')) {
+            toHost = fromHost;
+            redirectUrl = `https://${fromHost}${redirectUrl}`;
+          } else if (!redirectUrl.startsWith('https://')) {
+            try { toHost = new URL(redirectUrl, url).hostname; redirectUrl = new URL(redirectUrl, url).href; }
+            catch { toHost = '?'; }
+          } else {
+            try { toHost = new URL(redirectUrl).hostname; } catch { toHost = '?'; }
+          }
+          console.log(`[REDIRECT] from=${fromHost} to=${toHost}`);
+          console.log(`[REDIRECT] url=${redirectUrl.slice(0, 120)}${redirectUrl.length > 120 ? '...' : ''}`);
 
           response.resume();
           try { writeStream?.close(); } catch { /* */ }
           if (idleTimer) clearTimeout(idleTimer);
 
-          let redirectUrl = response.headers.location;
-          if (redirectUrl.startsWith('/')) {
-            redirectUrl = `https://${urlObj.hostname}${redirectUrl}`;
-          } else if (!redirectUrl.startsWith('https://')) {
-            redirectUrl = new URL(redirectUrl, url).href;
-          }
-          console.log(`[${requestId}] Following redirect to: ${redirectUrl}`);
-
           const currentBytes = this.getPartialSize(destPath);
-          this.attemptDownload(redirectUrl, destPath, currentBytes, opts, startMs, idleTimeoutMs, attemptNum).then(resolve);
+          this.attemptDownload(redirectUrl, destPath, currentBytes, opts, startMs, idleTimeoutMs, attemptNum, ctx).then(resolve);
           return;
         }
 
@@ -424,8 +511,10 @@ export class SecureDownloader {
           expectedContentLength = cl;
           totalBytes = (response.statusCode === 206) ? existingBytes + cl : cl;
         }
+        if (ctx) ctx.bytesExpected = totalBytes;
 
         console.log(`[INSTALL:12] [${requestId}] STREAM_START — totalBytes=${totalBytes} — statusCode=${response.statusCode}`);
+        if (ctx) ctx.stage = 'response-stream';
 
         resetIdleTimer();
 
@@ -532,12 +621,14 @@ export class SecureDownloader {
       // ── Request-level error handler ──
       requestRef.on('error', (err: Error) => {
         console.log(`[${requestId}] REQUEST_ERROR: ${err.message} — code: ${(err as any).code}`);
+        if (ctx) { ctx.stage = 'request-error'; }
         failWith(err.message, err);
       });
 
       // ── Request-level timeout (initial connection / DNS) ──
       requestRef.on('timeout', () => {
         console.log(`[${requestId}] REQUEST_TIMEOUT — destroying request`);
+        if (ctx) { ctx.stage = 'connection-timeout'; }
         requestRef.destroy();
         failWith('Connection timeout (30s)');
       });
