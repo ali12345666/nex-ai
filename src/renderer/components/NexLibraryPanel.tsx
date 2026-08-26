@@ -56,6 +56,10 @@ export default function NexLibraryPanel() {
   // ── Phase 72: Test Connection state ──
   const [connectionTest, setConnectionTest] = useState<any | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
+  // ── Phase 72: Unified Model Download Manager state ──
+  const [downloadableModels, setDownloadableModels] = useState<any[]>([]);
+  const [unifiedDownloads, setUnifiedDownloads] = useState<Map<string, any>>(new Map());
+  const [showImportDialog, setShowImportDialog] = useState(false);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -73,14 +77,16 @@ export default function NexLibraryPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, installedRes, statusRes] = await Promise.all([
+      const [catRes, installedRes, statusRes, dlModelsRes] = await Promise.all([
         window.nexAPI.ecosystemCatalog(),
         window.nexAPI.localRuntimeListModels(),
         window.nexAPI.interactionStatus(),
+        window.nexAPI.modelDownloadList(),
       ]);
       if (catRes.success) setCatalog(catRes.catalog || []);
       if (installedRes.success) setInstalled(installedRes.models || []);
       if (statusRes.success) setStatus(statusRes.status);
+      if (dlModelsRes.success) setDownloadableModels(dlModelsRes.models || []);
     } catch (err: any) {
       setError(err?.message);
     } finally {
@@ -155,11 +161,35 @@ export default function NexLibraryPanel() {
       setPermissionInput('');
     });
 
+    // ── Phase 72: Unified Model Download Manager progress ──
+    const unsubUnified = window.nexAPI.onModelDownloadProgress((progress) => {
+      setUnifiedDownloads((prev) => {
+        const next = new Map(prev);
+        next.set(progress.downloadId, progress);
+        return next;
+      });
+      // Refresh installed list when completed
+      if (progress.state === 'completed') {
+        setToast({ kind: 'ok', msg: `مدل نصب شد: ${progress.modelName}` });
+        refresh();
+      }
+      // Show error toast on failure
+      if (progress.state === 'download-failed' && progress.failure) {
+        const f = progress.failure;
+        if (f.classification === 'CDN_UNREACHABLE') {
+          setToast({ kind: 'err', msg: `CDN مسدود است — منبع جایگزین امتحان شد` });
+        } else {
+          setToast({ kind: 'err', msg: `دانلود ناموفق: ${f.classification}` });
+        }
+      }
+    });
+
     return () => {
       unsubState();
       unsubCompleted();
       unsubError();
       unsubPerm();
+      unsubUnified();
     };
   }, []);
 
@@ -269,6 +299,80 @@ export default function NexLibraryPanel() {
       }
     } catch (err: any) {
       console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
+      setError(err?.message);
+    }
+  };
+
+  // ── Phase 72: Unified Model Download Manager handlers ──
+  const handleUnifiedDownload = async (modelId: string) => {
+    setError(null);
+    console.log('[MODEL_DOWNLOAD:01] CLICK — model:', modelId);
+    try {
+      const res = await window.nexAPI.modelDownloadStart(modelId);
+      if (res.success && res.downloadId) {
+        showToast('ok', 'دانلود شروع شد (چند منبعی)');
+      } else if (res.status === 'permission-denied') {
+        console.log('[MODEL_DOWNLOAD:CANCELLED] Permission denied');
+      } else {
+        setError(res.error || 'شروع دانلود ناموفق بود');
+      }
+    } catch (err: any) {
+      setError(err?.message);
+    }
+  };
+
+  const handleCancelUnifiedDownload = async (downloadId: string) => {
+    try {
+      await window.nexAPI.modelDownloadCancel(downloadId);
+      showToast('ok', 'دانلود لغو شد');
+    } catch (err: any) {
+      setError(err?.message);
+    }
+  };
+
+  const handleTestSources = async (modelId: string) => {
+    setTestingConnection(true);
+    try {
+      const res = await window.nexAPI.modelDownloadTestSources(modelId);
+      if (res.success && res.results) {
+        setConnectionTest({ sources: res.results });
+      }
+    } catch (err: any) {
+      setError(err?.message);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleImportLocalModel = async () => {
+    // Use Electron's native file dialog via IPC
+    try {
+      // We'll use the showOpenDialog IPC if available, otherwise prompt
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.gguf';
+      input.onchange = async (e: any) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const filePath = (file as any).path; // Electron exposes .path on File objects
+        if (!filePath) {
+          setError('Cannot get file path — use drag & drop or Electron dialog');
+          return;
+        }
+        console.log('[MODEL_IMPORT] Importing:', filePath);
+        const res = await window.nexAPI.modelDownloadImportLocal(filePath, {
+          filename: file.name,
+          name: file.name.replace(/\.gguf$/i, ''),
+        });
+        if (res.success) {
+          showToast('ok', `مدل ایمپورت شد: ${file.name}`);
+          refresh();
+        } else {
+          setError(res.error || 'ایمپورت ناموفق بود');
+        }
+      };
+      input.click();
+    } catch (err: any) {
       setError(err?.message);
     }
   };
@@ -445,6 +549,74 @@ export default function NexLibraryPanel() {
 
         {/* ═══ Downloads ═══ */}
         <div style={{ display: tab === 'downloads' ? 'block' : 'none' }} className="p-3 space-y-2">
+          {/* Phase 72: Unified Model Download Manager — Multi-source + Import */}
+          <div className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid rgba(6,182,212,0.2)' }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Package size={11} style={{ color: 'var(--nex-accent)' }} />
+              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>مدیریت دانلود مدل (چند منبعی)</span>
+            </div>
+            {/* Downloadable models with multi-source */}
+            {downloadableModels.map((m: any) => {
+              const isInstalled = installedNames.has(m.name.toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
+              const activeDl = Array.from(unifiedDownloads.values()).find((d: any) => d.modelId === m.id && !['completed', 'download-failed', 'cancelled'].includes(d.state));
+              return (
+                <div key={m.id} className="p-2 rounded-lg mb-2" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Brain size={10} style={{ color: 'var(--nex-accent)' }} />
+                    <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
+                    {isInstalled ? (
+                      <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
+                    ) : activeDl ? (
+                      <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
+                    ) : (
+                      <button onClick={() => handleUnifiedDownload(m.id)} className="nex-click nex-focus flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
+                        <Download size={7} /> نصب
+                      </button>
+                    )}
+                  </div>
+                  {/* Sources list */}
+                  <div className="ml-4 mb-1 space-y-0.5">
+                    {m.sources?.map((s: any, i: number) => (
+                      <div key={i} className="flex items-center gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
+                        <span className="px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
+                        <span>اولویت: {s.priority}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Active download progress */}
+                  {activeDl && (
+                    <div className="mt-1">
+                      <div className="flex items-center gap-1 text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
+                        <span>وضعیت: {activeDl.state}</span>
+                        {activeDl.currentSource && <span>• منبع: {activeDl.currentSource.label}</span>}
+                        {activeDl.attempt && <span>• تلاش: {activeDl.attempt}/{activeDl.maxAttempts}</span>}
+                      </div>
+                      {activeDl.percentage !== null && (
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
+                          <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, activeDl.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between mt-0.5 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
+                        <span>{formatBytes(activeDl.receivedBytes)} / {activeDl.totalBytes > 0 ? formatBytes(activeDl.totalBytes) : '?'}</span>
+                        <button onClick={() => handleCancelUnifiedDownload(activeDl.downloadId)} className="nex-click text-[8px]" style={{ color: '#fca5a5' }}>لغو</button>
+                      </div>
+                    </div>
+                  )}
+                  {/* Test sources button */}
+                  {!isInstalled && !activeDl && (
+                    <button onClick={() => handleTestSources(m.id)} disabled={testingConnection} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded disabled:opacity-50" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>
+                      تست منابع
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {/* Manual import button */}
+            <button onClick={handleImportLocalModel} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium mt-2" style={{ background: 'rgba(34,197,94,0.1)', color: '#86efac', border: '1px solid rgba(34,197,94,0.2)' }}>
+              <Package size={11} /> ایمپورت فایل GGUF محلی
+            </button>
+          </div>
+
           {/* Phase 72: Test Connection + Alternative Source */}
           <div className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
             <div className="flex items-center gap-1.5 mb-2">

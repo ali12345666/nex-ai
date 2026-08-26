@@ -310,6 +310,22 @@ contextBridge.exposeInMainWorld('nexAPI', {
   hwFixWindowsPath: (filePath: string) => ipcRenderer.invoke('hw-fix-windows-path', filePath),
   hwSecurityAudit: () => ipcRenderer.invoke('hw-security-audit'),
 
+  // ── Phase 72: Unified Model Download Manager ──
+  modelDownloadList: () => ipcRenderer.invoke('model-download-list'),
+  modelDownloadGet: (modelId: string) => ipcRenderer.invoke('model-download-get', modelId),
+  modelDownloadStart: (modelId: string) => ipcRenderer.invoke('model-download-start', modelId),
+  modelDownloadCancel: (downloadId: string) => ipcRenderer.invoke('model-download-cancel', downloadId),
+  modelDownloadActive: () => ipcRenderer.invoke('model-download-active'),
+  modelDownloadTestConnectionUrl: (url: string) => ipcRenderer.invoke('model-download-test-connection-url', url),
+  modelDownloadTestSources: (modelId: string) => ipcRenderer.invoke('model-download-test-sources', modelId),
+  modelDownloadGetModelsDir: () => ipcRenderer.invoke('model-download-get-models-dir'),
+  modelDownloadImportLocal: (filePath: string, opts?: any) => ipcRenderer.invoke('model-download-import-local', filePath, opts),
+  onModelDownloadProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any) => callback(progress);
+    ipcRenderer.on('model-download:progress', listener);
+    return () => ipcRenderer.removeListener('model-download:progress', listener);
+  },
+
   // ── Phase 68: Download State Architecture ──
   downloadGetActive: () => ipcRenderer.invoke('download-get-active'),
   downloadStart: (opts: any) => ipcRenderer.invoke('download-start', opts),

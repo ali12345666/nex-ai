@@ -2600,6 +2600,151 @@ async function setupIPC(): Promise<void> {
     return { success: true, downloadId, status: 'approved' };
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 72: Unified Model Download Manager
+  //
+  // ONE unified pipeline for all model downloads. Supports:
+  //   - Multi-source: each model has multiple verified sources (priority-ordered)
+  //   - Automatic fallback: if source 1 fails (CDN blocked), try source 2
+  //   - Bounded retry: MAX_ATTEMPTS=5 per source, exponential backoff
+  //   - .part resume: downloads to <filename>.part, atomically renames on success
+  //   - Integrity validation: GGUF magic + size + SHA-256 before install
+  //   - Durable storage: models stored in <userData>/models/, NOT tmpdir
+  //   - Offline-first: installed models work without network
+  //   - Manual import: user can import a local .gguf file
+  // ═══════════════════════════════════════════════════════════════════════════
+  const { getModelDownloadManager, getModelsDir, testConnection: testConnFn, validateGgufIntegrity } = await import('./ai/model-download-manager');
+  const { DOWNLOADABLE_MODELS, getDownloadableModel, getRecommendedModel: getRecommendedDownloadable } = await import('./ai/downloadable-models');
+  const modelDownloadManager = getModelDownloadManager();
+
+  // Wire progress callback to forward to renderer
+  modelDownloadManager.setProgressCallback((progress) => {
+    mainWindow?.webContents.send('model-download:progress', progress);
+  });
+
+  // IPC: List all downloadable models (with multi-source metadata)
+  ipcMain.handle('model-download-list', async () => {
+    return { success: true, models: DOWNLOADABLE_MODELS };
+  });
+
+  // IPC: Get a specific downloadable model
+  ipcMain.handle('model-download-get', async (_event, modelId: string) => {
+    const model = getDownloadableModel(modelId);
+    if (!model) return { success: false, error: 'Model not found' };
+    return { success: true, model };
+  });
+
+  // IPC: Start a model download (with permission gate)
+  // Tries sources in priority order, falls back automatically.
+  ipcMain.handle('model-download-start', async (_event, modelId: string) => {
+    const model = getDownloadableModel(modelId);
+    if (!model) return { success: false, error: 'Model not found: ' + modelId };
+
+    console.log(`[MODEL_DOWNLOAD:01] CLICK — model: ${model.name} — sources: ${model.sources.length}`);
+
+    // Request permission (BLOCKS until user responds)
+    const firstSource = model.sources[0];
+    let approved: boolean;
+    try {
+      approved = await requestDownloadPermission(firstSource.url, model.name, firstSource.expectedSize);
+    } catch (err: any) {
+      console.log('[MODEL_DOWNLOAD:ERROR] stage:permission — error:', err?.message);
+      return { success: false, status: 'permission-error', error: err?.message };
+    }
+
+    if (!approved) {
+      console.log('[MODEL_DOWNLOAD:CANCELLED] Permission denied');
+      return { success: false, status: 'permission-denied', error: 'Permission denied by user' };
+    }
+
+    const downloadId = modelDownloadManager.startDownload(model);
+    console.log('[MODEL_DOWNLOAD:05] Download started — id:', downloadId);
+    return { success: true, downloadId, status: 'approved' };
+  });
+
+  // IPC: Cancel a download
+  ipcMain.handle('model-download-cancel', async (_event, downloadId: string) => {
+    modelDownloadManager.cancelDownload(downloadId);
+    return { success: true };
+  });
+
+  // IPC: Get all active downloads
+  ipcMain.handle('model-download-active', async () => {
+    const active = modelDownloadManager.getActiveDownloads();
+    return { success: true, downloads: active };
+  });
+
+  // IPC: Test connection to a specific URL (DNS + TCP + TLS)
+  ipcMain.handle('model-download-test-connection-url', async (_event, url: string) => {
+    const result = await testConnFn(url);
+    return { success: true, result };
+  });
+
+  // IPC: Test connection to all sources of a model
+  ipcMain.handle('model-download-test-sources', async (_event, modelId: string) => {
+    const model = getDownloadableModel(modelId);
+    if (!model) return { success: false, error: 'Model not found' };
+    const results = await Promise.all(model.sources.map(s => testConnFn(s.url)));
+    return { success: true, results: results.map((r, i) => ({ source: model.sources[i], ...r })) };
+  });
+
+  // IPC: Get models directory (for manual import UI)
+  ipcMain.handle('model-download-get-models-dir', async () => {
+    return { success: true, dir: getModelsDir() };
+  });
+
+  // IPC: Manual GGUF import — validate + copy to models/ + register
+  ipcMain.handle('model-download-import-local', async (_event, filePath: string, opts?: any) => {
+    try {
+      console.log('[MODEL_IMPORT] Importing:', filePath);
+
+      // Validate the file exists
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File does not exist: ' + filePath };
+      }
+
+      // Validate GGUF magic
+      const integrity = await validateGgufIntegrity(filePath, opts?.expectedHash, opts?.expectedSize);
+      if (!integrity.passed) {
+        return { success: false, error: 'Integrity check failed: ' + integrity.error };
+      }
+
+      // Copy to models/ directory
+      const filename = opts?.filename || path.basename(filePath);
+      const destPath = path.join(getModelsDir(), filename);
+      if (filePath !== destPath) {
+        // Copy file (not move — user may want to keep original)
+        fs.copyFileSync(filePath, destPath);
+      }
+      console.log('[MODEL_IMPORT] Copied to:', destPath);
+
+      // Register in model registry
+      const { addModel, updateModel } = await import('./ai/model-registry');
+      const addOpts = {
+        name: opts?.name || filename.replace(/\.gguf$/i, ''),
+        category: opts?.category || 'general',
+        quantization: opts?.quantization,
+        parameterCount: opts?.parameterCount,
+        architecture: opts?.architecture,
+        capabilities: ['chat', 'completion'] as any,
+        source: 'local' as const,
+      };
+      const registered = addModel(destPath, addOpts);
+      updateModel(registered.id, {
+        hash: integrity.actualHash,
+        hashAlgorithm: 'sha256',
+        verifiedAt: Date.now(),
+        integrityStatus: 'verified',
+      });
+
+      console.log('[MODEL_IMPORT] Registered — modelId:', registered.id);
+      return { success: true, modelId: registered.id, filePath: destPath, hash: integrity.actualHash };
+    } catch (err: any) {
+      console.error('[MODEL_IMPORT] Error:', err);
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

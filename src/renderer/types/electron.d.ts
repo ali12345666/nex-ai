@@ -252,6 +252,18 @@ export interface NexAPI {
   hwFixWindowsPath: (filePath: string) => Promise<{ success: boolean; fixed?: string; error?: string }>;
   hwSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
 
+  // Phase 72: Unified Model Download Manager
+  modelDownloadList: () => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  modelDownloadGet: (modelId: string) => Promise<{ success: boolean; model?: any; error?: string }>;
+  modelDownloadStart: (modelId: string) => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
+  modelDownloadCancel: (downloadId: string) => Promise<{ success: boolean; error?: string }>;
+  modelDownloadActive: () => Promise<{ success: boolean; downloads?: any[]; error?: string }>;
+  modelDownloadTestConnectionUrl: (url: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDownloadTestSources: (modelId: string) => Promise<{ success: boolean; results?: any[]; error?: string }>;
+  modelDownloadGetModelsDir: () => Promise<{ success: boolean; dir?: string; error?: string }>;
+  modelDownloadImportLocal: (filePath: string, opts?: any) => Promise<{ success: boolean; modelId?: string; filePath?: string; hash?: string; error?: string }>;
+  onModelDownloadProgress: (callback: (progress: any) => void) => () => void;
+
   // Phase 68: Download State Architecture
   downloadGetActive: () => Promise<{ success: boolean; downloads?: any[]; error?: string }>;
   downloadStart: (opts: any) => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
