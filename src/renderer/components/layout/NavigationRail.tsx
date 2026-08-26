@@ -1,18 +1,38 @@
 /**
- * NEX AI — Navigation Rail (UI-15 Consolidation)
+ * NEX AI — Navigation Rail (Phase 66 consolidation)
  *
- * Minimal 5-item navigation: Chat, Workspace, Memory, Knowledge, Settings.
- * All other panels (Git, Diagnostics, Plugins, Hardware, Terminal, Editor,
- * Files, Preview, Logs, Agents, Tools) are accessible via Workspace tabs
- * or Settings — NOT as separate nav items.
+ * Cleaned up navigation: consolidated 17 items into 8 clean items.
+ *
+ * Removed/merged into Library:
+ *   - advisor → Library > Recommended
+ *   - runtime → Library > Tools
+ *   - expertise → Library > Knowledge
+ *   - voice → Library > Voice
+ *   - localai → Library > Installed
+ *   - ecosystem → Library > Models
+ *   - uknowledge → Library > Knowledge
+ *   - deploy → Library > Downloads
+ *   - firstrun → Library > Recommended
+ *   - hwvalid → Validation
+ *   - interact → Interact
+ *   - knowledge → Library > Knowledge (project knowledge kept separate for now)
+ *
+ * Kept separate:
+ *   - chat → Chat (primary)
+ *   - workspace → Workspace (terminal/editor/files)
+ *   - memory → Memory (semantic memory)
+ *   - planner → Planner (executive planner)
+ *   - library → Library (ALL resources: models/voice/tools/knowledge/downloads)
+ *   - interact → Interact (basic interaction test)
+ *   - validation → Validation (hardware diagnostics)
+ *   - settings → Settings
  */
-
 import React from 'react';
 import {
-  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes, Globe, PackageCheck, Activity, Zap, Gauge,
+  MessageSquare, LayoutGrid, Brain, Library, Settings, Network, Activity, Gauge,
 } from 'lucide-react';
 
-export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem' | 'uknowledge' | 'deploy' | 'interact' | 'firstrun' | 'hwvalid';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'library' | 'planner' | 'interact' | 'validation' | 'settings';
 
 /** Workspace sub-tabs — accessible when view === 'workspace'. */
 export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
@@ -24,23 +44,14 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'chat', icon: <MessageSquare size={20} strokeWidth={1.5} />, label: 'Chat' },
-  { id: 'workspace', icon: <LayoutGrid size={20} strokeWidth={1.5} />, label: 'Workspace' },
-  { id: 'advisor', icon: <Sparkles size={20} strokeWidth={1.5} />, label: 'Advisor' },
-  { id: 'runtime', icon: <Rocket size={20} strokeWidth={1.5} />, label: 'Setup' },
-  { id: 'memory', icon: <Brain size={20} strokeWidth={1.5} />, label: 'Memory' },
-  { id: 'knowledge', icon: <BookOpen size={20} strokeWidth={1.5} />, label: 'Knowledge' },
-  { id: 'expertise', icon: <GraduationCap size={20} strokeWidth={1.5} />, label: 'Expertise' },
-  { id: 'voice', icon: <Mic size={20} strokeWidth={1.5} />, label: 'Voice' },
-  { id: 'planner', icon: <Network size={20} strokeWidth={1.5} />, label: 'Planner' },
-  { id: 'localai', icon: <Cpu size={20} strokeWidth={1.5} />, label: 'Local AI' },
-  { id: 'ecosystem', icon: <Boxes size={20} strokeWidth={1.5} />, label: 'Models' },
-  { id: 'uknowledge', icon: <Globe size={20} strokeWidth={1.5} />, label: 'Univ. Knowledge' },
-  { id: 'deploy', icon: <PackageCheck size={20} strokeWidth={1.5} />, label: 'Deploy' },
-  { id: 'interact', icon: <Activity size={20} strokeWidth={1.5} />, label: 'Interact' },
-  { id: 'firstrun', icon: <Zap size={20} strokeWidth={1.5} />, label: 'First Run' },
-  { id: 'hwvalid', icon: <Gauge size={20} strokeWidth={1.5} />, label: 'Validation' },
-  { id: 'settings', icon: <Settings size={20} strokeWidth={1.5} />, label: 'Settings' },
+  { id: 'chat',       icon: <MessageSquare size={20} strokeWidth={1.5} />, label: 'Chat' },
+  { id: 'workspace',  icon: <LayoutGrid size={20} strokeWidth={1.5} />,   label: 'Workspace' },
+  { id: 'library',    icon: <Library size={20} strokeWidth={1.5} />,      label: 'Library' },
+  { id: 'planner',    icon: <Network size={20} strokeWidth={1.5} />,      label: 'Planner' },
+  { id: 'interact',   icon: <Activity size={20} strokeWidth={1.5} />,     label: 'Interact' },
+  { id: 'validation', icon: <Gauge size={20} strokeWidth={1.5} />,        label: 'Validation' },
+  { id: 'memory',     icon: <Brain size={20} strokeWidth={1.5} />,        label: 'Memory' },
+  { id: 'settings',   icon: <Settings size={20} strokeWidth={1.5} />,     label: 'Settings' },
 ];
 
 export interface NavigationRailProps {

@@ -35,33 +35,16 @@ const ConversationHistory = lazy(() => import('../chat/ConversationHistory'));
 const NexChatPanel = lazy(() => import('../chat/NexChatPanel'));
 // UI-15: Workspace panel (consolidates Editor/Terminal/Preview/Files/Logs into tabs)
 const WorkspacePanel = lazy(() => import('./WorkspacePanel'));
-const KnowledgePanel = lazy(() => import('../KnowledgePanel'));
 const MemoryPanel = lazy(() => import('../MemoryPanel'));
 const SettingsPanel = lazy(() => import('../SettingsPanel'));
-// Phase 45: Model Advisor panel (hardware analysis + recommendations + router)
-const ModelAdvisorPanel = lazy(() => import('./ModelAdvisorPanel'));
-// Phase 46: Runtime Setup Center (first-run detection + component status)
-const RuntimeSetupPanel = lazy(() => import('./RuntimeSetupPanel'));
-// Phase 55: Expert Knowledge Center (offline knowledge packs)
-const ExpertKnowledgePanel = lazy(() => import('../ExpertKnowledgePanel'));
-// Phase 56: Voice Center (advanced voice conversation)
-const VoiceCenterPanel = lazy(() => import('../VoiceCenterPanel'));
 // Phase 57: Executive Planner (multi-agent orchestration)
 const PlannerPanel = lazy(() => import('../PlannerPanel'));
-// Phase 58: Local AI Runtime (model activation + telemetry)
-const LocalRuntimePanel = lazy(() => import('../LocalRuntimePanel'));
-// Phase 59: Model Ecosystem (catalog + advisor + comparison + collaboration)
-const ModelEcosystemPanel = lazy(() => import('../ModelEcosystemPanel'));
-// Phase 60: Universal Knowledge Center (multidisciplinary knowledge + RAG + graph)
-const UniversalKnowledgePanel = lazy(() => import('../UniversalKnowledgePanel'));
-// Phase 61: Model Deployment (import, download, verify, test inference)
-const ModelDeploymentPanel = lazy(() => import('../ModelDeploymentPanel'));
 // Phase 62: Basic Interaction MVP (text/voice → GGUF → response + TTS)
 const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));
-// Phase 64: First-Run Wizard (model activation)
-const FirstRunWizardPanel = lazy(() => import('../FirstRunWizardPanel'));
 // Phase 65: Hardware Validation (diagnostics + benchmark + pipeline test)
 const HardwareValidationPanel = lazy(() => import('../HardwareValidationPanel'));
+// Phase 66: Unified Library Center (consolidates all resource management)
+const NexLibraryPanel = lazy(() => import('../NexLibraryPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -209,21 +192,12 @@ export default function AppShell() {
     switch (view) {
       case 'chat': return null; // Chat is rendered as the right panel
       case 'workspace': return <Suspense fallback={<PanelLoading />}><WorkspacePanel /></Suspense>;
-      case 'knowledge': return <Suspense fallback={<PanelLoading />}><KnowledgePanel /></Suspense>;
+      case 'library': return <Suspense fallback={<PanelLoading />}><NexLibraryPanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
-      case 'advisor': return <Suspense fallback={<PanelLoading />}><ModelAdvisorPanel /></Suspense>;
-      case 'runtime': return <Suspense fallback={<PanelLoading />}><RuntimeSetupPanel /></Suspense>;
-      case 'expertise': return <Suspense fallback={<PanelLoading />}><ExpertKnowledgePanel /></Suspense>;
-      case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceCenterPanel /></Suspense>;
       case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
-      case 'localai': return <Suspense fallback={<PanelLoading />}><LocalRuntimePanel /></Suspense>;
-      case 'ecosystem': return <Suspense fallback={<PanelLoading />}><ModelEcosystemPanel /></Suspense>;
-      case 'uknowledge': return <Suspense fallback={<PanelLoading />}><UniversalKnowledgePanel /></Suspense>;
-      case 'deploy': return <Suspense fallback={<PanelLoading />}><ModelDeploymentPanel /></Suspense>;
       case 'interact': return <Suspense fallback={<PanelLoading />}><BasicInteractionPanel /></Suspense>;
-      case 'firstrun': return <Suspense fallback={<PanelLoading />}><FirstRunWizardPanel /></Suspense>;
-      case 'hwvalid': return <Suspense fallback={<PanelLoading />}><HardwareValidationPanel /></Suspense>;
+      case 'validation': return <Suspense fallback={<PanelLoading />}><HardwareValidationPanel /></Suspense>;
       default: return <NoProject />;
     }
   };
@@ -273,14 +247,16 @@ export default function AppShell() {
               </div>
             )}
 
-            {/* Orb container — FIXED SIZE. Does not change when panel opens. */}
+            {/* Orb container — LARGE, responsive. Fills available central workspace. */}
             <div
               className="relative pointer-events-auto"
               style={{
-                width: 'min(62vh, 42vw)',
-                height: 'min(62vh, 42vw)',
-                minHeight: 280,
-                minWidth: 280,
+                width: 'min(80vh, 60vw)',
+                height: 'min(80vh, 60vw)',
+                minHeight: 320,
+                minWidth: 320,
+                maxWidth: '90%',
+                maxHeight: '90%',
               }}
             >
               <Suspense fallback={<OrbLoading />}>

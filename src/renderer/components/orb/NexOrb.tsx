@@ -645,12 +645,7 @@ export default function NexOrb({
           primaryColor={primaryColor}
           reducedMotion={reducedMotion}
         />
-        <OrbRings
-          state={effectiveState}
-          audioLevelRef={effectiveAudioRef}
-          color={primaryColor}
-          reducedMotion={reducedMotion}
-        />
+        {/* Phase 66: OrbRings removed — replaced by organic particle/wave system */}
         <AmbientParticles
           state={effectiveState}
           audioLevelRef={effectiveAudioRef}

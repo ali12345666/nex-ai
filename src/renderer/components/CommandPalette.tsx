@@ -112,12 +112,12 @@ export default function CommandPalette() {
     // UI-15: Consolidated navigation commands (5 main views only)
     {
       id: 'view-knowledge',
-      label: 'Knowledge Base',
-      description: 'Open the local knowledge/RAG panel',
+      label: 'NEX Library',
+      description: 'Open the unified library (models, voice, tools, knowledge, downloads)',
       icon: <BookOpen size={16} />,
       category: 'View',
       action: () => {
-        navigateTo('knowledge');
+        navigateTo('library');
         toggleCommandPalette();
       },
     },

@@ -176,12 +176,14 @@ async function main(): Promise<void> {
   // ═══════════════════════════════════════════════════════════════════════
   console.log('\n8) Navigation + UI Design:');
   const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
-  assert('nav has deploy view', navSrc.includes("'deploy'"));
-  assert('nav has PackageCheck icon', navSrc.includes('PackageCheck'));
+  // Phase 66: deploy view consolidated into library
+  assert('nav has library view', navSrc.includes("'library'"));
+  assert('nav has Library icon', navSrc.includes('Library'));
 
   const appShellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-  assert('AppShell imports ModelDeploymentPanel', appShellSrc.includes('ModelDeploymentPanel'));
-  assert('AppShell routes deploy view', appShellSrc.includes("case 'deploy'"));
+  // Phase 66: deploy panel consolidated into NexLibraryPanel
+  assert('AppShell imports NexLibraryPanel', appShellSrc.includes('NexLibraryPanel'));
+  assert('AppShell routes library view', appShellSrc.includes("case 'library'"));
 
   // UI design elements
   assert('panel uses glassmorphism', panelSrc.includes('nex-glass'));
