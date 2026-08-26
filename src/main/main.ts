@@ -1470,11 +1470,38 @@ async function setupIPC(): Promise<void> {
   const runtimeManager = getMultiModelRuntimeManager();
 
   // Runtime: list installed models with loaded/hardware metadata
+  // Phase 73: Scan filesystem for .gguf files before listing, so models
+  // that exist on disk but aren't in the registry get auto-registered.
   ipcMain.handle('local-runtime-list-models', async () => {
     try {
+      // Phase 73: Scan <userData>/models/ for unregistered .gguf files
+      try {
+        const { scanAndRegisterModels } = await import('./ai/model-registry');
+        const { getModelsDir } = await import('./ai/model-download-manager');
+        const modelsDir = getModelsDir();
+        const scanResult = scanAndRegisterModels(modelsDir);
+        if (scanResult.registered > 0) {
+          console.log(`[MODEL_INSTALL] Auto-registered ${scanResult.registered} models from filesystem`);
+        }
+      } catch (scanErr: any) {
+        console.log('[MODEL_INSTALL] Scan error (non-fatal):', scanErr?.message);
+      }
       return { success: true, models: getMultiModelRuntimeManager().listInstalledModels() };
     } catch (err: any) {
       return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Phase 73: Explicit scan-models IPC for manual refresh
+  ipcMain.handle('scan-models', async () => {
+    try {
+      const { scanAndRegisterModels } = await import('./ai/model-registry');
+      const { getModelsDir } = await import('./ai/model-download-manager');
+      const modelsDir = getModelsDir();
+      const result = scanAndRegisterModels(modelsDir);
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
   });
 

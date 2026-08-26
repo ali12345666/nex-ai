@@ -262,6 +262,8 @@ export interface NexAPI {
   modelDownloadTestSources: (modelId: string) => Promise<{ success: boolean; results?: any[]; error?: string }>;
   modelDownloadGetModelsDir: () => Promise<{ success: boolean; dir?: string; error?: string }>;
   modelDownloadImportLocal: (filePath: string, opts?: any) => Promise<{ success: boolean; modelId?: string; filePath?: string; hash?: string; error?: string }>;
+  // Phase 73: Scan filesystem for unregistered .gguf files
+  scanModels: () => Promise<{ success: boolean; scanned?: number; registered?: number; alreadyRegistered?: number; skipped?: number; newModels?: any[]; errors?: string[]; error?: string }>;
   onModelDownloadProgress: (callback: (progress: any) => void) => () => void;
 
   // Phase 68: Download State Architecture

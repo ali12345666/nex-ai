@@ -281,3 +281,141 @@ export function getDefaultModel(): LocalModelInfo | null {
   });
   return models[0];
 }
+
+// ─── Phase 73: Filesystem Scanner ──────────────────────────────────────────────
+
+/**
+ * Recursively scan a directory for .gguf files.
+ * Returns absolute paths to all .gguf files found.
+ */
+function findGgufFiles(dir: string): string[] {
+  const results: string[] = [];
+  if (!fs.existsSync(dir)) return results;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip hidden directories (like .downloads)
+        if (entry.name.startsWith('.')) continue;
+        results.push(...findGgufFiles(fullPath));
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.gguf')) {
+        results.push(fullPath);
+      }
+    }
+  } catch {
+    // Directory read error — return what we have
+  }
+  return results;
+}
+
+export interface ScanResult {
+  scanned: number;
+  registered: number;
+  alreadyRegistered: number;
+  skipped: number;
+  newModels: LocalModelInfo[];
+  errors: string[];
+}
+
+/**
+ * Phase 73: Scan the models directory for .gguf files and auto-register
+ * any that aren't in the registry yet.
+ *
+ * Scans:
+ *   <userData>/models/        (recursive — includes llm/, vision/, etc.)
+ *
+ * For each .gguf file found:
+ *   1. Check if it's already registered (by path)
+ *   2. If not, validate GGUF magic bytes
+ *   3. If valid, register in the model registry
+ *   4. If invalid, skip (don't delete — user may want to inspect)
+ *
+ * Returns a summary of what was scanned and registered.
+ */
+export function scanAndRegisterModels(modelsDir: string): ScanResult {
+  const result: ScanResult = {
+    scanned: 0,
+    registered: 0,
+    alreadyRegistered: 0,
+    skipped: 0,
+    newModels: [],
+    errors: [],
+  };
+
+  console.log(`[MODEL_SCAN] Scanning: ${modelsDir}`);
+
+  const ggufFiles = findGgufFiles(modelsDir);
+  result.scanned = ggufFiles.length;
+  console.log(`[MODEL_SCAN] Found ${ggufFiles.length} .gguf files`);
+
+  const existing = listModels();
+  const existingPaths = new Set(existing.map(m => path.resolve(m.path)));
+
+  for (const filePath of ggufFiles) {
+    const absPath = path.resolve(filePath);
+
+    // Skip if already registered
+    if (existingPaths.has(absPath)) {
+      result.alreadyRegistered++;
+      continue;
+    }
+
+    try {
+      // Validate GGUF magic bytes
+      const fd = fs.openSync(absPath, 'r');
+      const buf = Buffer.alloc(4);
+      fs.readSync(fd, buf, 0, 4, 0);
+      fs.closeSync(fd);
+      const magic = buf.toString('ascii');
+
+      if (magic !== 'GGUF') {
+        console.log(`[MODEL_SCAN] Skipping (invalid magic): ${absPath}`);
+        result.skipped++;
+        result.errors.push(`Invalid GGUF magic: ${path.basename(absPath)}`);
+        continue;
+      }
+
+      // Get file size
+      const stat = fs.statSync(absPath);
+
+      // Derive name from filename
+      const name = path.basename(absPath, '.gguf');
+
+      // Register the model
+      const model: LocalModelInfo = {
+        id: crypto.randomUUID(),
+        name,
+        path: normalizeModelPathForStorage(absPath),
+        sizeBytes: stat.size,
+        contextSize: 2048,
+        gpuLayers: -1,
+        category: 'general',
+        addedAt: Date.now(),
+        fileExists: true,
+        capabilities: ['chat', 'completion'],
+        source: 'local',
+        schemaVersion: CURRENT_MODEL_SCHEMA_VERSION,
+        hashAlgorithm: 'sha256',
+        integrityStatus: 'pending',
+      };
+
+      backupModelRegistry();
+      const state = loadState();
+      const models = state.localModels || [];
+      models.push(model);
+      updateState({ localModels: models });
+
+      result.registered++;
+      result.newModels.push(model);
+      console.log(`[MODEL_SCAN] Registered: ${name} — ${stat.size} bytes — ${model.id}`);
+    } catch (err: any) {
+      console.log(`[MODEL_SCAN] Error registering ${absPath}: ${err?.message}`);
+      result.skipped++;
+      result.errors.push(`Error: ${path.basename(absPath)} — ${err?.message || err}`);
+    }
+  }
+
+  console.log(`[MODEL_SCAN] Done — scanned: ${result.scanned}, registered: ${result.registered}, already: ${result.alreadyRegistered}, skipped: ${result.skipped}`);
+  return result;
+}

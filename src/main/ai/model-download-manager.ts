@@ -782,31 +782,55 @@ class ModelDownloadManagerClass {
                 fs.unlinkSync(finalPath);
               }
               fs.renameSync(partPath, finalPath);
-              console.log(`[MODEL_DL:${download.id}] Installed: ${finalPath}`);
+
+              // Phase 73: [MODEL_INSTALL] logging
+              const finalStat = fs.statSync(finalPath);
+              console.log(`[MODEL_INSTALL]`);
+              console.log(`  path=${finalPath}`);
+              console.log(`  size=${finalStat.size}`);
+              console.log(`  ggufValid=${integrity.ggufMagicValid}`);
 
               // Register in model registry
-              const addOpts: AddModelOptions = {
-                name: model.name,
-                category: model.category,
-                quantization: model.quantization,
-                parameterCount: model.parameterCount,
-                architecture: model.architecture,
-                capabilities: ['chat', 'completion'] as any,
-                source: source.type === 'huggingface' ? 'huggingface' : source.type === 'modelscope' ? 'custom' : 'custom',
-                sourceUrl: source.url,
-              };
-              const registered = addModel(finalPath, addOpts);
-              updateModel(registered.id, {
-                hash: integrity.actualHash,
-                hashAlgorithm: 'sha256',
-                verifiedAt: Date.now(),
-                integrityStatus: 'verified',
-              });
+              let registryUpdated = false;
+              let visibleInLibrary = false;
+              try {
+                const addOpts: AddModelOptions = {
+                  name: model.name,
+                  category: model.category,
+                  quantization: model.quantization,
+                  parameterCount: model.parameterCount,
+                  architecture: model.architecture,
+                  capabilities: ['chat', 'completion'] as any,
+                  source: source.type === 'huggingface' ? 'huggingface' : source.type === 'modelscope' ? 'custom' : 'custom',
+                  sourceUrl: source.url,
+                };
+                const registered = addModel(finalPath, addOpts);
+                updateModel(registered.id, {
+                  hash: integrity.actualHash,
+                  hashAlgorithm: 'sha256',
+                  verifiedAt: Date.now(),
+                  integrityStatus: 'verified',
+                });
+                registryUpdated = true;
 
-              download.state = 'completed';
-              this.emitProgress(download);
-              console.log(`[MODEL_DL:${download.id}] COMPLETE — modelId: ${registered.id}`);
-              return;
+                // Verify the model is now visible via listModels()
+                const { listModels } = await import('./model-registry');
+                const allModels = listModels();
+                visibleInLibrary = allModels.some(m => m.id === registered.id);
+
+                console.log(`  registryUpdated=${registryUpdated}`);
+                console.log(`  visibleInLibrary=${visibleInLibrary}`);
+                console.log(`  modelId=${registered.id}`);
+
+                download.state = 'completed';
+                this.emitProgress(download);
+                console.log(`[MODEL_DL:${download.id}] COMPLETE — modelId: ${registered.id}`);
+                return;
+              } catch (regErr: any) {
+                console.log(`  registryUpdated=false — error: ${regErr?.message}`);
+                console.log(`  visibleInLibrary=false`);
+                throw regErr;
+              }
             } catch (err: any) {
               console.error(`[MODEL_DL:${download.id}] Install error:`, err);
               lastFailure = {
@@ -843,8 +867,9 @@ class ModelDownloadManagerClass {
               classification: 'INTEGRITY_ERROR',
               timestamp: Date.now(),
             };
-            // Delete corrupt file and try next source
-            try { fs.unlinkSync(partPath); } catch {}
+            // Phase 73: Do NOT delete the .part file on validation failure.
+            // The user may want to inspect it. Just try next source.
+            console.log(`[MODEL_DL:${download.id}] Integrity failed — .part file preserved at: ${partPath}`);
             break;  // Don't retry integrity — try next source
           }
         }

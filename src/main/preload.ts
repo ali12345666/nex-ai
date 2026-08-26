@@ -320,6 +320,8 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelDownloadTestSources: (modelId: string) => ipcRenderer.invoke('model-download-test-sources', modelId),
   modelDownloadGetModelsDir: () => ipcRenderer.invoke('model-download-get-models-dir'),
   modelDownloadImportLocal: (filePath: string, opts?: any) => ipcRenderer.invoke('model-download-import-local', filePath, opts),
+  // Phase 73: Scan filesystem for unregistered .gguf files
+  scanModels: () => ipcRenderer.invoke('scan-models'),
   onModelDownloadProgress: (callback: (progress: any) => void) => {
     const listener = (_e: any, progress: any) => callback(progress);
     ipcRenderer.on('model-download:progress', listener);
