@@ -1840,6 +1840,128 @@ async function setupIPC(): Promise<void> {
 
   void universalBrain;
 
+  // ── Phase 61: Real Local AI Model Deployment ──
+  const { getModelDeploymentManager, verifyDeploymentSecurity } = await import('./ai/model-deployment-manager');
+  const { getModelVerifier, verifyVerifierSecurity } = await import('./ai/model-verification');
+  const { getModelInferenceTester, verifyInferenceTesterSecurity } = await import('./ai/model-inference-tester');
+  const deploymentManager = getModelDeploymentManager();
+
+  // Wire deployment manager's permission callbacks → forward to renderer
+  deploymentManager.setCallbacks({
+    onRequestPermission: (req) => {
+      mainWindow?.webContents.send('model-deployment-permission-request', req);
+    },
+  });
+
+  // Model deployment: import a local GGUF file (SAFE — no permission needed)
+  ipcMain.handle('model-deploy-import', async (_event, filePath: string, opts?: any) => {
+    try {
+      const result = await getModelDeploymentManager().importFromFile(filePath, opts);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: download from HTTPS URL (REQUIRES_APPROVAL — PermissionGate)
+  ipcMain.handle('model-deploy-download', async (_event, opts: any) => {
+    try {
+      const result = await getModelDeploymentManager().downloadFromUrl(opts);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: remove a model (HIGH_RISK — PermissionGate)
+  ipcMain.handle('model-deploy-remove', async (_event, modelId: string, deleteFile?: boolean) => {
+    try {
+      const result = await getModelDeploymentManager().removeModel(modelId, deleteFile);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: verify a file without importing
+  ipcMain.handle('model-deploy-verify', async (_event, filePath: string, opts?: any) => {
+    try {
+      const result = await getModelVerifier().verify(filePath, opts);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: test inference on a registered model
+  ipcMain.handle('model-deploy-test-inference', async (_event, modelId: string, opts?: any) => {
+    try {
+      const result = await getModelInferenceTester().testInference(modelId, opts);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: quick health check
+  ipcMain.handle('model-deploy-health-check', async (_event, modelId: string) => {
+    try {
+      const result = await getModelInferenceTester().quickHealthCheck(modelId);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: status
+  ipcMain.handle('model-deploy-status', async () => {
+    try {
+      return { success: true, status: getModelDeploymentManager().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: pending permission
+  ipcMain.handle('model-deploy-pending-permission', async () => {
+    try {
+      return { success: true, hasPending: getModelDeploymentManager().hasPendingPermission(), permission: getModelDeploymentManager().getPendingPermission() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: respond to permission (chat)
+  ipcMain.handle('model-deploy-respond-permission', async (_event, userResponse: string) => {
+    try {
+      getModelDeploymentManager().respondToPermission(userResponse);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: respond to permission (voice)
+  ipcMain.handle('model-deploy-respond-voice', async () => {
+    try {
+      await getModelDeploymentManager().respondViaVoice();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Model deployment: security audit
+  ipcMain.handle('model-deploy-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyDeploymentSecurity(), verifierAudit: verifyVerifierSecurity(), testerAudit: verifyInferenceTesterSecurity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void deploymentManager;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

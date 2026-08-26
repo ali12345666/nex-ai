@@ -259,6 +259,24 @@ contextBridge.exposeInMainWorld('nexAPI', {
   universalKnowledgeDetectDomain: (query: string) => ipcRenderer.invoke('universal-knowledge-detect-domain', query),
   universalKnowledgeSecurityAudit: () => ipcRenderer.invoke('universal-knowledge-security-audit'),
 
+  // ── Phase 61: Real Local AI Model Deployment ──
+  modelDeployImport: (filePath: string, opts?: any) => ipcRenderer.invoke('model-deploy-import', filePath, opts),
+  modelDeployDownload: (opts: any) => ipcRenderer.invoke('model-deploy-download', opts),
+  modelDeployRemove: (modelId: string, deleteFile?: boolean) => ipcRenderer.invoke('model-deploy-remove', modelId, deleteFile),
+  modelDeployVerify: (filePath: string, opts?: any) => ipcRenderer.invoke('model-deploy-verify', filePath, opts),
+  modelDeployTestInference: (modelId: string, opts?: any) => ipcRenderer.invoke('model-deploy-test-inference', modelId, opts),
+  modelDeployHealthCheck: (modelId: string) => ipcRenderer.invoke('model-deploy-health-check', modelId),
+  modelDeployStatus: () => ipcRenderer.invoke('model-deploy-status'),
+  modelDeployPendingPermission: () => ipcRenderer.invoke('model-deploy-pending-permission'),
+  modelDeployRespondPermission: (userResponse: string) => ipcRenderer.invoke('model-deploy-respond-permission', userResponse),
+  modelDeployRespondVoice: () => ipcRenderer.invoke('model-deploy-respond-voice'),
+  modelDeploySecurityAudit: () => ipcRenderer.invoke('model-deploy-security-audit'),
+  onModelDeploymentPermissionRequest: (callback: (req: any) => void) => {
+    const listener = (_e: any, req: any) => callback(req);
+    ipcRenderer.on('model-deployment-permission-request', listener);
+    return () => ipcRenderer.removeListener('model-deployment-permission-request', listener);
+  },
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

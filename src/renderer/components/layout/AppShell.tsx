@@ -54,6 +54,8 @@ const LocalRuntimePanel = lazy(() => import('../LocalRuntimePanel'));
 const ModelEcosystemPanel = lazy(() => import('../ModelEcosystemPanel'));
 // Phase 60: Universal Knowledge Center (multidisciplinary knowledge + RAG + graph)
 const UniversalKnowledgePanel = lazy(() => import('../UniversalKnowledgePanel'));
+// Phase 61: Model Deployment (import, download, verify, test inference)
+const ModelDeploymentPanel = lazy(() => import('../ModelDeploymentPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -212,6 +214,7 @@ export default function AppShell() {
       case 'localai': return <Suspense fallback={<PanelLoading />}><LocalRuntimePanel /></Suspense>;
       case 'ecosystem': return <Suspense fallback={<PanelLoading />}><ModelEcosystemPanel /></Suspense>;
       case 'uknowledge': return <Suspense fallback={<PanelLoading />}><UniversalKnowledgePanel /></Suspense>;
+      case 'deploy': return <Suspense fallback={<PanelLoading />}><ModelDeploymentPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

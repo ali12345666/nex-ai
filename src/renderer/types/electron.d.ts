@@ -209,6 +209,20 @@ export interface NexAPI {
   universalKnowledgeDetectDomain: (query: string) => Promise<{ success: boolean; domain?: any; error?: string }>;
   universalKnowledgeSecurityAudit: () => Promise<{ success: boolean; audit?: any; catalogAudit?: any; error?: string }>;
 
+  // Phase 61: Real Local AI Model Deployment
+  modelDeployImport: (filePath: string, opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployDownload: (opts: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployRemove: (modelId: string, deleteFile?: boolean) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployVerify: (filePath: string, opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployTestInference: (modelId: string, opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployHealthCheck: (modelId: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  modelDeployStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  modelDeployPendingPermission: () => Promise<{ success: boolean; hasPending?: boolean; permission?: any; error?: string }>;
+  modelDeployRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
+  modelDeployRespondVoice: () => Promise<{ success: boolean; error?: string }>;
+  modelDeploySecurityAudit: () => Promise<{ success: boolean; audit?: any; verifierAudit?: any; testerAudit?: any; error?: string }>;
+  onModelDeploymentPermissionRequest: (callback: (req: any) => void) => () => void;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;
