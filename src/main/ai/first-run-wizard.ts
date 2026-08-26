@@ -121,6 +121,38 @@ export const RECOMMENDED_FIRST_MODEL: RecommendedModel = {
   reasonFa: 'کوچک، سریع، سازگار با CPU، پشتیبانی فارسی — مناسب اولین اجرا',
 };
 
+/**
+ * Phase 72: Alternative download source — ModelScope (Alibaba's official model host).
+ *
+ * When HuggingFace's Xet CDN (us.aws.cdn.hf.co) is blocked/unreachable on
+ * the user's network, ModelScope provides the same Qwen GGUF model from a
+ * different CDN that is typically accessible.
+ *
+ * ModelScope is operated by Alibaba (the creators of Qwen), so this is the
+ * canonical source — not a third-party mirror.
+ *
+ * Verified: ModelScope serves GGUF directly (no redirect to us.aws.cdn.hf.co),
+ * supports Range/resume, and returns the same file size (491400032 bytes).
+ */
+export const RECOMMENDED_FIRST_MODEL_ALTERNATIVE: RecommendedModel = {
+  ...RECOMMENDED_FIRST_MODEL,
+  catalogId: 'qwen2.5-0.5b-q4-alt',
+  downloadUrl: 'https://modelscope.cn/api/v1/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/repo?Revision=master&FilePath=qwen2.5-0.5b-instruct-q4_k_m.gguf',
+  reason: 'Alternative source via ModelScope (Alibaba) — use when HuggingFace CDN is blocked',
+  reasonFa: 'منبع جایگزین از ModelScope (علی‌بابا) — برای زمانی که CDN هاگینگ‌فیس مسدود است',
+};
+
+/**
+ * Phase 72: CDN hosts that are known to be blocked on some networks.
+ * When a download fails connecting to these hosts, we classify it as a
+ * 'cdn-connection-failure' and suggest the alternative source.
+ */
+export const KNOWN_CDN_HOSTS = [
+  'us.aws.cdn.hf.co',
+  'cas-server.xethub.hf.co',
+  'cdn-lfs.huggingface.co',
+];
+
 // ─── First-Run Wizard ─────────────────────────────────────────────────────
 
 export class FirstRunWizard {

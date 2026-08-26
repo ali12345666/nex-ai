@@ -314,6 +314,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
   downloadGetActive: () => ipcRenderer.invoke('download-get-active'),
   downloadStart: (opts: any) => ipcRenderer.invoke('download-start', opts),
   downloadStartRecommended: () => ipcRenderer.invoke('download-start-recommended'),
+  // ── Phase 72: Test Connection + Alternative Source ──
+  downloadTestConnection: () => ipcRenderer.invoke('download-test-connection'),
+  downloadGetAlternativeModel: () => ipcRenderer.invoke('download-get-alternative-model'),
+  downloadStartAlternative: () => ipcRenderer.invoke('download-start-alternative'),
   onDownloadState: (callback: (state: any) => void) => {
     const listener = (_e: any, state: any) => callback(state);
     ipcRenderer.on('download:state', listener);

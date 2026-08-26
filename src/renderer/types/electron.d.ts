@@ -256,6 +256,10 @@ export interface NexAPI {
   downloadGetActive: () => Promise<{ success: boolean; downloads?: any[]; error?: string }>;
   downloadStart: (opts: any) => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
   downloadStartRecommended: () => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
+  // Phase 72: Test Connection + Alternative Source
+  downloadTestConnection: () => Promise<{ success: boolean; results?: any; error?: string }>;
+  downloadGetAlternativeModel: () => Promise<{ success: boolean; model?: any; error?: string }>;
+  downloadStartAlternative: () => Promise<{ success: boolean; downloadId?: string; status?: string; error?: string }>;
   onDownloadState: (callback: (state: any) => void) => () => void;
   onDownloadCompleted: (callback: (ev: any) => void) => () => void;
   onDownloadError: (callback: (ev: any) => void) => () => void;

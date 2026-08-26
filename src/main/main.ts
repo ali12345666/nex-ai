@@ -2333,6 +2333,10 @@ async function setupIPC(): Promise<void> {
             errorHost: result.errorHost,
             bytesExpected: result.bytesExpected,
             downloadedBytes: result.bytesDownloaded || finalEntry.downloadedBytes,
+            // Phase 72: CDN connection failure fields
+            errorClassification: result.errorClassification,
+            cdnHost: result.cdnHost,
+            hasAlternativeSource: result.hasAlternativeSource,
             completedAt: Date.now(),
           });
           emitDownloadState(downloadId);
@@ -2444,6 +2448,153 @@ async function setupIPC(): Promise<void> {
       RECOMMENDED_FIRST_MODEL.name,
       RECOMMENDED_FIRST_MODEL.downloadUrl,
       () => getFirstRunWizard().installRecommendedModel({ permissionPreApproved: true }),
+    );
+
+    return { success: true, downloadId, status: 'approved' };
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 72: Test Connection — tests reachability of HuggingFace + CDN hosts
+  //
+  // Tests 3 hosts:
+  //   1. huggingface.co (the model metadata server)
+  //   2. us.aws.cdn.hf.co (the Xet/AWS CDN — known to be blocked on some networks)
+  //   3. modelscope.cn (the alternative source — Alibaba's official model host)
+  //
+  // For each host, performs a HEAD request with a short timeout and reports:
+  //   - reachable: true/false
+  //   - statusCode (if reachable)
+  //   - error (if not reachable)
+  //   - latencyMs
+  //
+  // This helps the user diagnose whether the download failure is due to a
+  // blocked CDN (in which case they should use the alternative source).
+  // ═══════════════════════════════════════════════════════════════════════════
+  ipcMain.handle('download-test-connection', async () => {
+    const https = await import('https');
+    const { URL } = await import('url');
+
+    const testHost = (url: string, timeoutMs = 10000): Promise<any> => {
+      return new Promise((resolve) => {
+        const start = Date.now();
+        let u: URL;
+        try { u = new URL(url); } catch { return resolve({ url, reachable: false, error: 'invalid URL', latencyMs: 0 }); }
+        const req = https.request({
+          hostname: u.hostname,
+          port: 443,
+          path: u.pathname + u.search,
+          method: 'HEAD',
+          timeout: timeoutMs,
+        }, (res) => {
+          res.resume();
+          resolve({
+            url,
+            host: u.hostname,
+            reachable: res.statusCode !== undefined,
+            statusCode: res.statusCode,
+            latencyMs: Date.now() - start,
+          });
+        });
+        req.on('error', (err: any) => {
+          resolve({
+            url,
+            host: u.hostname,
+            reachable: false,
+            error: err.code || err.message,
+            latencyMs: Date.now() - start,
+          });
+        });
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({
+            url,
+            host: u.hostname,
+            reachable: false,
+            error: 'TIMEOUT',
+            latencyMs: Date.now() - start,
+          });
+        });
+        req.end();
+      });
+    };
+
+    const { RECOMMENDED_FIRST_MODEL, RECOMMENDED_FIRST_MODEL_ALTERNATIVE } = await import('./ai/first-run-wizard');
+
+    console.log('[TEST_CONNECTION] Testing 3 hosts...');
+    const results = await Promise.all([
+      testHost(RECOMMENDED_FIRST_MODEL.downloadUrl),        // huggingface.co (redirects to CDN)
+      testHost('https://us.aws.cdn.hf.co'),                 // CDN host directly
+      testHost(RECOMMENDED_FIRST_MODEL_ALTERNATIVE.downloadUrl), // modelscope.cn (alternative)
+    ]);
+
+    const summary = {
+      huggingface: results[0],
+      cdn: results[1],
+      alternative: results[2],
+      recommendation: '' as string,
+    };
+
+    // Determine recommendation
+    if (!results[1].reachable && results[2].reachable) {
+      summary.recommendation = 'CDN blocked — use ModelScope alternative source';
+    } else if (results[0].reachable && results[1].reachable) {
+      summary.recommendation = 'All hosts reachable — HuggingFace should work';
+    } else if (!results[0].reachable) {
+      summary.recommendation = 'HuggingFace unreachable — check internet connection';
+    } else {
+      summary.recommendation = 'Partial connectivity — try alternative source if download fails';
+    }
+
+    console.log('[TEST_CONNECTION] Results:', JSON.stringify(summary, null, 2));
+    return { success: true, results: summary };
+  });
+
+  // IPC: Get the alternative model source (Phase 72)
+  ipcMain.handle('download-get-alternative-model', async () => {
+    const { RECOMMENDED_FIRST_MODEL_ALTERNATIVE } = await import('./ai/first-run-wizard');
+    return { success: true, model: RECOMMENDED_FIRST_MODEL_ALTERNATIVE };
+  });
+
+  // IPC: Start download from alternative source (Phase 72)
+  ipcMain.handle('download-start-alternative', async () => {
+    const { RECOMMENDED_FIRST_MODEL_ALTERNATIVE } = await import('./ai/first-run-wizard');
+    const traceId = `trace-alt-${Date.now()}`;
+    console.log(`[INSTALL:01] CLICK — download-start-alternative — traceId:${traceId} — model:${RECOMMENDED_FIRST_MODEL_ALTERNATIVE.name}`);
+
+    // Request permission (BLOCKS until user responds)
+    let approved: boolean;
+    try {
+      approved = await requestDownloadPermission(RECOMMENDED_FIRST_MODEL_ALTERNATIVE.downloadUrl, RECOMMENDED_FIRST_MODEL_ALTERNATIVE.name);
+    } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:permission — error:', err?.message);
+      return { success: false, status: 'permission-error', error: err?.message || 'Permission request failed' };
+    }
+
+    if (!approved) {
+      console.log('[INSTALL:CANCELLED] Permission denied — no download created');
+      return { success: false, status: 'permission-denied', error: 'Permission denied by user' };
+    }
+
+    const downloadId = `dl-alt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log('[INSTALL:05] DOWNLOAD_ID_CREATED — id:', downloadId, '(alternative source)');
+
+    startApprovedDownload(
+      downloadId,
+      RECOMMENDED_FIRST_MODEL_ALTERNATIVE.name,
+      RECOMMENDED_FIRST_MODEL_ALTERNATIVE.downloadUrl,
+      () => getModelDeploymentManager().downloadFromUrl({
+        url: RECOMMENDED_FIRST_MODEL_ALTERNATIVE.downloadUrl,
+        name: RECOMMENDED_FIRST_MODEL_ALTERNATIVE.name,
+        category: 'general' as const,
+        quantization: RECOMMENDED_FIRST_MODEL_ALTERNATIVE.quantization,
+        parameterCount: RECOMMENDED_FIRST_MODEL_ALTERNATIVE.parameterCount,
+        architecture: 'qwen2',
+        capabilities: ['chat', 'completion'] as any,
+        source: 'custom' as const,
+        sourceUrl: RECOMMENDED_FIRST_MODEL_ALTERNATIVE.downloadUrl,
+        testInference: true,
+        permissionPreApproved: true,
+      }),
     );
 
     return { success: true, downloadId, status: 'approved' };

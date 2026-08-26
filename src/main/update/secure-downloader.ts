@@ -49,6 +49,10 @@ export interface DownloadResult {
   errorStage?: string;
   errorHost?: string;
   bytesExpected?: number;
+  /** Phase 72: CDN connection failure classification */
+  errorClassification?: string;
+  cdnHost?: string;
+  hasAlternativeSource?: boolean;
 }
 
 export interface DownloadOptions {
@@ -87,14 +91,81 @@ export interface DownloadErrorInfo {
   message: string;
   isTransient: boolean;
   canResume: boolean;
-  classification: 'network-interrupted' | 'timeout' | 'tls' | 'http' | 'permission' | 'disk' | 'unknown';
+  classification: 'network-interrupted' | 'timeout' | 'tls' | 'http' | 'permission' | 'disk' | 'cdn-connection-failure' | 'unknown';
   userMessage: string;
   userMessageFa: string;
+  /** Phase 72: The CDN host that failed (if applicable) */
+  cdnHost?: string;
+  /** Phase 72: Whether an alternative source is available */
+  hasAlternativeSource?: boolean;
 }
 
-export function classifyDownloadError(err: any, hasPartialFile: boolean): DownloadErrorInfo {
+/**
+ * Phase 72: Known CDN hosts that may be blocked on some networks.
+ * When a download fails connecting to these hosts, we classify it as a
+ * 'cdn-connection-failure' rather than a generic transient error.
+ */
+const KNOWN_CDN_HOSTS = [
+  'us.aws.cdn.hf.co',
+  'cas-server.xethub.hf.co',
+  'cdn-lfs.huggingface.co',
+  'cdn-lfs-us-1.huggingface.co',
+  'cdn-lfs-eu-1.huggingface.co',
+];
+
+/**
+ * Phase 72: Check if a host is a known CDN that may be blocked.
+ * Uses exact match or suffix match (e.g., 'us.aws.cdn.hf.co' matches
+ * 'us.aws.cdn.hf.co' but 'huggingface.co' does NOT match just because
+ * 'cdn-lfs.huggingface.co' contains 'huggingface.co').
+ */
+export function isKnownCdnHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return KNOWN_CDN_HOSTS.some(known => {
+    const k = known.toLowerCase();
+    // Exact match, or host is a subdomain of a known CDN host
+    return h === k || h.endsWith('.' + k);
+  });
+}
+
+/**
+ * Phase 72: Check if an error indicates a CDN connection failure
+ * (ECONNRESET, ETIMEDOUT, TLS handshake timeout) on a known CDN host.
+ */
+export function isCdnConnectionFailure(err: any, host: string): boolean {
+  if (!host) return false;
+  if (!isKnownCdnHost(host)) return false;
   const code = err?.code || '';
   const message = err?.message || String(err);
+  return (
+    code.includes('ECONNRESET') ||
+    code.includes('ETIMEDOUT') ||
+    code.includes('EPROTO') ||
+    message.includes('socket hang up') ||
+    message.includes('Connection was reset') ||
+    message.includes('TLS handshake') ||
+    message.includes('Idle timeout')
+  );
+}
+
+export function classifyDownloadError(err: any, hasPartialFile: boolean, host?: string): DownloadErrorInfo {
+  const code = err?.code || '';
+  const message = err?.message || String(err);
+
+  // ── Phase 72: CDN connection failure (check FIRST — before generic transient) ──
+  if (host && isCdnConnectionFailure(err, host)) {
+    return {
+      code, message,
+      isTransient: false,  // CDN blocks are typically persistent, not transient
+      canResume: hasPartialFile,
+      classification: 'cdn-connection-failure',
+      cdnHost: host,
+      hasAlternativeSource: true,
+      userMessage: `Hugging Face CDN connection failed. The model server is reachable, but its download CDN (${host}) connection is being blocked/reset by the current network.`,
+      userMessageFa: `اتصال به CDN هاگینگ‌فیس ناموفق بود. سرور مدل در دسترس است، اما اتصال به CDN دانلود (${host}) توسط شبکه فعلی مسدود/ریست می‌شود. از منبع جایگزین ModelScope استفاده کنید.`,
+    };
+  }
+
   const isInterrupt = TRANSIENT_ERRORS.slice(0, 10).some(e => (code + ' ' + message).includes(e));
 
   if (isInterrupt) {
@@ -240,15 +311,25 @@ export class SecureDownloader {
         totalBytesExpected = diagCtx.bytesExpected || result.bytesDownloaded;
         lastHost = diagCtx.host;
         lastErrorStage = diagCtx.stage || 'response-stream';
-        const errInfo = classifyDownloadError({ message: result.error }, this.getPartialSize(sandboxPath) > 0);
+        // Phase 72: Pass host to classifyDownloadError for CDN failure detection
+        const errInfo = classifyDownloadError({ message: result.error, code: lastErrorCode }, this.getPartialSize(sandboxPath) > 0, lastHost);
 
         console.log(`[DOWNLOAD_ATTEMPT] ${attempt + 1}/${maxRetries + 1} — FAILED — error=${result.error}`);
         console.log(`  classification=${errInfo.classification} — isTransient=${errInfo.isTransient} — canResume=${errInfo.canResume}`);
         console.log(`  bytesReceived this attempt: ${result.bytesDownloaded}`);
+        if (errInfo.classification === 'cdn-connection-failure') {
+          console.log(`  CDN_HOST=${errInfo.cdnHost} — hasAlternativeSource=${errInfo.hasAlternativeSource}`);
+        }
 
         if (!errInfo.isTransient) {
           // Non-transient error — stop immediately
-          console.log(`[DOWNLOAD_FINAL_FAILURE] — non-transient error, stopping`);
+          // Phase 72: CDN connection failures are non-transient — stop and report
+          if (errInfo.classification === 'cdn-connection-failure') {
+            console.log(`[DOWNLOAD_FINAL_FAILURE] — CDN connection failure, stopping (not transient)`);
+            console.log(`  CDN host ${lastHost} is blocked — suggest alternative source`);
+          } else {
+            console.log(`[DOWNLOAD_FINAL_FAILURE] — non-transient error, stopping`);
+          }
           console.log(`  attempts=${attempt + 1}/${maxRetries + 1}`);
           console.log(`  code=${lastErrorCode || 'N/A'}`);
           console.log(`  message=${result.error}`);
@@ -280,7 +361,8 @@ export class SecureDownloader {
 
     // ── All retries exhausted — FINAL FAILURE ──
     const existingBytes = this.getPartialSize(sandboxPath);
-    const errInfo = classifyDownloadError(lastError, existingBytes > 0);
+    // Phase 72: Pass lastHost to classifyDownloadError for CDN failure detection
+    const errInfo = classifyDownloadError(lastError, existingBytes > 0, lastHost);
 
     console.log(`[DOWNLOAD_FINAL_FAILURE]`);
     console.log(`  attempts=${retries}/${maxRetries + 1}`);
@@ -291,6 +373,11 @@ export class SecureDownloader {
     console.log(`  bytesExpected=${totalBytesExpected || 'unknown'}`);
     console.log(`  host=${lastHost || 'unknown'}`);
     console.log(`  classification=${errInfo.classification}`);
+    if (errInfo.classification === 'cdn-connection-failure') {
+      console.log(`  CDN_HOST=${errInfo.cdnHost}`);
+      console.log(`  hasAlternativeSource=${errInfo.hasAlternativeSource}`);
+      console.log(`  SUGGESTION: Use ModelScope alternative source (RECOMMENDED_FIRST_MODEL_ALTERNATIVE)`);
+    }
 
     return {
       success: false,
@@ -304,6 +391,10 @@ export class SecureDownloader {
       errorStage: lastErrorStage || 'unknown',
       errorHost: lastHost || 'unknown',
       bytesExpected: totalBytesExpected,
+      // Phase 72: CDN-specific fields
+      errorClassification: errInfo.classification,
+      cdnHost: errInfo.cdnHost,
+      hasAlternativeSource: errInfo.hasAlternativeSource,
     };
   }
 

@@ -53,6 +53,9 @@ export default function NexLibraryPanel() {
   const [status, setStatus] = useState<any>(null);
   const [permissionInput, setPermissionInput] = useState('');
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null);
+  // ── Phase 72: Test Connection state ──
+  const [connectionTest, setConnectionTest] = useState<any | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -121,20 +124,29 @@ export default function NexLibraryPanel() {
     });
 
     const unsubError = window.nexAPI.onDownloadError((ev) => {
-      // Phase 71: Pass detailed error info (code/stage/host/expected) to store
+      // Phase 71/72: Pass detailed error info (code/stage/host/expected/classification/cdnHost) to store
       failDownload(ev.id, ev.error, {
         code: ev.result?.errorCode || ev.code,
         stage: ev.result?.errorStage || ev.stage,
         host: ev.result?.errorHost || ev.host,
         bytesExpected: ev.result?.bytesExpected || ev.bytesExpected,
+        classification: ev.result?.errorClassification,
+        cdnHost: ev.result?.cdnHost,
+        hasAlternativeSource: ev.result?.hasAlternativeSource,
       });
       const code = ev.result?.errorCode || ev.code || 'UNKNOWN';
       const stage = ev.result?.errorStage || ev.stage || 'unknown';
       const host = ev.result?.errorHost || ev.host || 'unknown';
       const received = ev.result?.bytesDownloaded || ev.bytesDownloaded || 0;
       const expected = ev.result?.bytesExpected || ev.bytesExpected || 0;
-      console.log('[INSTALL:ERROR] Download failed — code:', code, 'stage:', stage, 'host:', host, 'received:', received, 'expected:', expected);
-      setToast({ kind: 'err', msg: `دانلود ناموفق: ${code} @ ${stage}` });
+      const classification = ev.result?.errorClassification;
+      console.log('[INSTALL:ERROR] Download failed — code:', code, 'stage:', stage, 'host:', host, 'received:', received, 'expected:', expected, 'classification:', classification);
+      // Phase 72: CDN-specific toast message
+      if (classification === 'cdn-connection-failure') {
+        setToast({ kind: 'err', msg: `CDN هاگینگ‌فیس مسدود است — از منبع جایگزین استفاده کنید` });
+      } else {
+        setToast({ kind: 'err', msg: `دانلود ناموفق: ${code} @ ${stage}` });
+      }
     });
 
     // Subscribe to permission requests
@@ -208,6 +220,55 @@ export default function NexLibraryPanel() {
     } catch (err: any) {
       console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
       console.log('[INSTALL:ERROR] stack:', err?.stack);
+      setError(err?.message);
+    }
+  };
+
+  // ── Phase 72: Test Connection — tests HuggingFace + CDN + ModelScope ──
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setConnectionTest(null);
+    try {
+      console.log('[TEST_CONNECTION] Testing 3 hosts...');
+      const res = await window.nexAPI.downloadTestConnection();
+      if (res.success && res.results) {
+        setConnectionTest(res.results);
+        console.log('[TEST_CONNECTION] Results:', res.results);
+        if (res.results.recommendation.includes('CDN blocked')) {
+          showToast('err', 'CDN هاگینگ‌فیس مسدود است — از منبع جایگزین استفاده کنید');
+        } else if (res.results.recommendation.includes('All hosts reachable')) {
+          showToast('ok', 'تمام میزبان‌ها در دسترس هستند');
+        } else {
+          showToast('ok', 'تست اتصال انجام شد');
+        }
+      } else {
+        setError(res.error || 'تست اتصال ناموفق بود');
+      }
+    } catch (err: any) {
+      console.log('[TEST_CONNECTION] Error:', err?.message);
+      setError(err?.message);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  // ── Phase 72: Install from alternative source (ModelScope) ──
+  const handleInstallAlternative = async () => {
+    setError(null);
+    console.log('[INSTALL:01] CLICK — handleInstallAlternative (ModelScope)');
+    try {
+      const res = await window.nexAPI.downloadStartAlternative();
+      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
+      if (res.success && res.downloadId) {
+        showToast('ok', 'دانلود از منبع جایگزین (ModelScope) شروع شد');
+      } else if (res.status === 'permission-denied') {
+        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
+      } else {
+        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
+        setError(res.error || 'شروع دانلود ناموفق بود');
+      }
+    } catch (err: any) {
+      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
       setError(err?.message);
     }
   };
@@ -384,6 +445,57 @@ export default function NexLibraryPanel() {
 
         {/* ═══ Downloads ═══ */}
         <div style={{ display: tab === 'downloads' ? 'block' : 'none' }} className="p-3 space-y-2">
+          {/* Phase 72: Test Connection + Alternative Source */}
+          <div className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Globe size={11} style={{ color: 'var(--nex-accent)' }} />
+              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>تست اتصال شبکه</span>
+            </div>
+            <button onClick={handleTestConnection} disabled={testingConnection} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium mb-2 disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
+              {testingConnection ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
+              {testingConnection ? 'در حال تست...' : 'تست اتصال به HuggingFace و CDN'}
+            </button>
+            {connectionTest && (
+              <div className="space-y-1 text-[9px]">
+                <div className="flex items-center gap-1.5">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>huggingface.co:</span>
+                  {connectionTest.huggingface?.reachable ? (
+                    <span style={{ color: '#86efac' }}>✓ {connectionTest.huggingface.statusCode} ({connectionTest.huggingface.latencyMs}ms)</span>
+                  ) : (
+                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.huggingface?.error || 'ناموفق'}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>us.aws.cdn.hf.co:</span>
+                  {connectionTest.cdn?.reachable ? (
+                    <span style={{ color: '#86efac' }}>✓ {connectionTest.cdn.statusCode} ({connectionTest.cdn.latencyMs}ms)</span>
+                  ) : (
+                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.cdn?.error || 'ناموفق'}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>modelscope.cn:</span>
+                  {connectionTest.alternative?.reachable ? (
+                    <span style={{ color: '#86efac' }}>✓ {connectionTest.alternative.statusCode} ({connectionTest.alternative.latencyMs}ms)</span>
+                  ) : (
+                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.alternative?.error || 'ناموفق'}</span>
+                  )}
+                </div>
+                {connectionTest.recommendation && (
+                  <div className="mt-1 p-1.5 rounded text-[9px]" style={{ background: connectionTest.recommendation.includes('CDN blocked') ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.06)', color: connectionTest.recommendation.includes('CDN blocked') ? '#fca5a5' : '#86efac' }}>
+                    {connectionTest.recommendation}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Alternative source button — shown when CDN is blocked */}
+            {connectionTest?.recommendation?.includes('CDN blocked') && (
+              <button onClick={handleInstallAlternative} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold mt-2" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}>
+                <Download size={11} /> دانلود از منبع جایگزین (ModelScope)
+              </button>
+            )}
+          </div>
+
           {/* Active downloads */}
           {activeDownloads.length === 0 && completedDownloads.length === 0 ? (
             <div className="text-center py-6 text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>دانلود فعالی وجود ندارد</div>
@@ -426,6 +538,16 @@ export default function NexLibraryPanel() {
                       {dl.errorStage && <div>Stage: <span style={{ color: '#fca5a5' }}>{dl.errorStage}</span></div>}
                       {dl.errorHost && <div>Host: <span style={{ color: '#fca5a5' }}>{dl.errorHost}</span></div>}
                       <div>Received: {formatBytes(dl.downloadedBytes || 0)}{dl.bytesExpected ? ` / ${formatBytes(dl.bytesExpected)}` : ''}</div>
+                    </div>
+                  )}
+                  {/* Phase 72: CDN failure — show alternative source button */}
+                  {dl.status === 'download-failed' && dl.errorClassification === 'cdn-connection-failure' && dl.hasAlternativeSource && (
+                    <div className="mt-2 p-1.5 rounded text-[9px]" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      <div className="mb-1" style={{ color: '#fca5a5' }}>⚠ CDN هاگینگ‌فیس مسدود است</div>
+                      <div className="mb-1.5" style={{ color: 'var(--nex-text-muted)' }}>سرور مدل در دسترس است، اما اتصال به CDN دانلود مسدود می‌شود.</div>
+                      <button onClick={handleInstallAlternative} className="nex-click nex-focus w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] font-bold" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}>
+                        <Download size={9} /> دانلود از ModelScope (منبع جایگزین)
+                      </button>
                     </div>
                   )}
                 </div>

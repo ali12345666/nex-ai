@@ -58,6 +58,10 @@ export interface DownloadEntry {
   errorStage?: string;
   errorHost?: string;
   bytesExpected?: number;
+  /** Phase 72: CDN connection failure classification */
+  errorClassification?: string;
+  cdnHost?: string;
+  hasAlternativeSource?: boolean;
   startedAt: number;
   completedAt?: number;
   filePath?: string;
@@ -75,7 +79,7 @@ export interface DownloadStore {
   startDownload: (id: string, modelName: string, url: string) => void;
   updateProgress: (id: string, progress: Partial<DownloadEntry>) => void;
   completeDownload: (id: string, result: any) => void;
-  failDownload: (id: string, error: string, details?: { code?: string; stage?: string; host?: string; bytesExpected?: number }) => void;
+  failDownload: (id: string, error: string, details?: { code?: string; stage?: string; host?: string; bytesExpected?: number; classification?: string; cdnHost?: string; hasAlternativeSource?: boolean }) => void;
   setPendingPermission: (perm: any | null) => void;
   clearActive: (id: string) => void;
   addToHistory: (result: any) => void;
@@ -143,6 +147,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
               errorStage: details?.stage,
               errorHost: details?.host,
               bytesExpected: details?.bytesExpected,
+              errorClassification: details?.classification,
+              cdnHost: details?.cdnHost,
+              hasAlternativeSource: details?.hasAlternativeSource,
               completedAt: Date.now(),
             }
           : d
