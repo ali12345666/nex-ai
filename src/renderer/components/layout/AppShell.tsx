@@ -58,6 +58,8 @@ const UniversalKnowledgePanel = lazy(() => import('../UniversalKnowledgePanel'))
 const ModelDeploymentPanel = lazy(() => import('../ModelDeploymentPanel'));
 // Phase 62: Basic Interaction MVP (text/voice → GGUF → response + TTS)
 const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));
+// Phase 64: First-Run Wizard (model activation)
+const FirstRunWizardPanel = lazy(() => import('../FirstRunWizardPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -218,6 +220,7 @@ export default function AppShell() {
       case 'uknowledge': return <Suspense fallback={<PanelLoading />}><UniversalKnowledgePanel /></Suspense>;
       case 'deploy': return <Suspense fallback={<PanelLoading />}><ModelDeploymentPanel /></Suspense>;
       case 'interact': return <Suspense fallback={<PanelLoading />}><BasicInteractionPanel /></Suspense>;
+      case 'firstrun': return <Suspense fallback={<PanelLoading />}><FirstRunWizardPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

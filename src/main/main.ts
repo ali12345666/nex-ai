@@ -2071,6 +2071,69 @@ async function setupIPC(): Promise<void> {
 
   void interactionLoop;
 
+  // ── Phase 64: First Real Local AI Model Activation ──
+  const { getFirstRunWizard, verifyFirstRunSecurity, RECOMMENDED_FIRST_MODEL } = await import('./ai/first-run-wizard');
+  const firstRunWizard = getFirstRunWizard();
+
+  // First-run: detect if NEX needs a model
+  ipcMain.handle('firstrun-state', async () => {
+    try {
+      return { success: true, state: getFirstRunWizard().getState() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // First-run: get recommended model profile
+  ipcMain.handle('firstrun-recommended-model', async () => {
+    try {
+      return { success: true, model: RECOMMENDED_FIRST_MODEL };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // First-run: install recommended model (one-click: download → verify → register → test → activate)
+  // Permission-gated via Phase 61 deployment manager
+  ipcMain.handle('firstrun-install-recommended', async () => {
+    try {
+      const result = await getFirstRunWizard().installRecommendedModel();
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // First-run: test interaction after model activation
+  ipcMain.handle('firstrun-test-interaction', async (_event, prompt?: string) => {
+    try {
+      const result = await getFirstRunWizard().testInteraction(prompt);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // First-run: check if brain is ready
+  ipcMain.handle('firstrun-brain-ready', async () => {
+    try {
+      return { success: true, ready: getFirstRunWizard().isBrainReady() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // First-run: security audit
+  ipcMain.handle('firstrun-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyFirstRunSecurity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void firstRunWizard;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

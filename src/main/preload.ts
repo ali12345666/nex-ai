@@ -294,6 +294,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
   languageBuildPrompt: (language: string, personality?: string) => ipcRenderer.invoke('language-build-prompt', language, personality),
   interactionSecurityAudit: () => ipcRenderer.invoke('interaction-security-audit'),
 
+  // ── Phase 64: First Real Local AI Model Activation ──
+  firstrunState: () => ipcRenderer.invoke('firstrun-state'),
+  firstrunRecommendedModel: () => ipcRenderer.invoke('firstrun-recommended-model'),
+  firstrunInstallRecommended: () => ipcRenderer.invoke('firstrun-install-recommended'),
+  firstrunTestInteraction: (prompt?: string) => ipcRenderer.invoke('firstrun-test-interaction', prompt),
+  firstrunBrainReady: () => ipcRenderer.invoke('firstrun-brain-ready'),
+  firstrunSecurityAudit: () => ipcRenderer.invoke('firstrun-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

@@ -236,6 +236,14 @@ export interface NexAPI {
   languageBuildPrompt: (language: string, personality?: string) => Promise<{ success: boolean; prompt?: string; error?: string }>;
   interactionSecurityAudit: () => Promise<{ success: boolean; audit?: any; languageAudit?: any; error?: string }>;
 
+  // Phase 64: First Real Local AI Model Activation
+  firstrunState: () => Promise<{ success: boolean; state?: any; error?: string }>;
+  firstrunRecommendedModel: () => Promise<{ success: boolean; model?: any; error?: string }>;
+  firstrunInstallRecommended: () => Promise<{ success: boolean; result?: any; error?: string }>;
+  firstrunTestInteraction: (prompt?: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  firstrunBrainReady: () => Promise<{ success: boolean; ready?: boolean; error?: string }>;
+  firstrunSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;
