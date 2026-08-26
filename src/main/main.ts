@@ -690,6 +690,13 @@ async function setupIPC(): Promise<void> {
   // and delivered as 'chat-token' events (mirror of agent_token).
   ipcMain.handle('ai-chat-stream', async (_event, config: any, messages: AIMessage[]) => {
     const replyId = `chat-${Date.now()}`;
+    // Phase 74: Runtime diagnostics
+    console.log(`[CHAT_REQUEST]`);
+    console.log(`  panel=ai-chat-stream`);
+    console.log(`  provider=${config.provider}`);
+    console.log(`  modelId=${config.localModelId || 'default'}`);
+    console.log(`  modelPath=${config.localModelPath || 'default'}`);
+    console.log(`  messages=${messages.length}`);
     try {
       // UI-02: enforce persisted aiMode (defense-in-depth — stream path was
       // previously unchecked, allowing a compromised renderer to bypass
@@ -740,6 +747,10 @@ async function setupIPC(): Promise<void> {
         }
       );
       streamer.end();
+      console.log(`[CHAT_RESPONSE]`);
+      console.log(`  source=${config.provider}-stream`);
+      console.log(`  tokens=${result.tokensGenerated || 0}`);
+      console.log(`  error=none`);
       return {
         success: true,
         replyId,
@@ -750,6 +761,7 @@ async function setupIPC(): Promise<void> {
         modelName: result.modelName,
       };
     } catch (err: any) {
+      console.log(`[CHAT_RESPONSE] source=${config.provider}-stream error=${err?.message}`);
       return { success: false, replyId, error: err.message };
     }
   });

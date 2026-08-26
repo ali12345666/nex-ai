@@ -48,8 +48,10 @@ export interface LocalChatResult {
  *  1. If config has localModelId, use that
  *  2. Else if config has localModelPath, find registry entry by path
  *  3. Else fall back to default (most recently used)
+ *
+ * Phase 74: Exported so main.ts streaming handler can use it.
  */
-function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
+export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
   if (config.localModelId) {
     return getModel(config.localModelId);
   }
@@ -64,19 +66,32 @@ function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
 /**
  * Synchronous chat completion (waits for full response).
  * Used by the existing ai-chat IPC handler.
+ *
+ * Phase 74: Added [CHAT_REQUEST]/[LOCAL_RUNTIME]/[CHAT_RESPONSE] diagnostics.
  */
 export async function localChatComplete(
   config: LocalChatConfig,
   messages: LocalMessage[]
 ): Promise<LocalChatResult> {
   const model = resolveModel(config);
+
+  // Phase 74: Runtime diagnostics
+  console.log(`[CHAT_REQUEST]`);
+  console.log(`  panel=${messages.length > 0 ? 'chat' : 'unknown'}`);
+  console.log(`  provider=local`);
+  console.log(`  modelId=${model?.id || 'null'}`);
+  console.log(`  modelPath=${model?.path || 'null'}`);
+  console.log(`  messages=${messages.length}`);
+
   if (!model) {
+    console.log(`[CHAT_RESPONSE] source=local error=No local model configured`);
     return {
       success: false,
       error: 'No local model configured. Add a .gguf file in Settings > Local AI to start using NEX AI locally.',
     };
   }
   if (!model.fileExists) {
+    console.log(`[CHAT_RESPONSE] source=local error=Model file not found: ${model.path}`);
     return {
       success: false,
       error: `Model file not found: ${model.path}. The file may have been moved or deleted.`,
@@ -92,6 +107,18 @@ export async function localChatComplete(
       maxTokens: config.localMaxTokens ?? config.maxTokens,
       systemPrompt: getSystemPrompt(),
     });
+
+    console.log(`[LOCAL_RUNTIME]`);
+    console.log(`  loaded=${result.modelId ? 'true' : 'false'}`);
+    console.log(`  backend=node-llama-cpp`);
+    console.log(`  contextSize=${config.localContextSize ?? 2048}`);
+    console.log(`  tokensGenerated=${result.tokensGenerated || 0}`);
+
+    console.log(`[CHAT_RESPONSE]`);
+    console.log(`  source=local`);
+    console.log(`  tokens=${result.tokensGenerated || 0}`);
+    console.log(`  error=none`);
+
     return {
       success: true,
       content: result.content,
@@ -101,6 +128,7 @@ export async function localChatComplete(
       modelName: result.modelName,
     };
   } catch (err: any) {
+    console.log(`[CHAT_RESPONSE] source=local error=${err?.message}`);
     return {
       success: false,
       error: `Local inference failed: ${err.message}`,
@@ -111,6 +139,8 @@ export async function localChatComplete(
 /**
  * Streaming chat completion (calls onChunk for each token).
  * Used by the streaming IPC channel (Phase 23).
+ *
+ * Phase 74: Added [CHAT_REQUEST]/[LOCAL_RUNTIME]/[CHAT_RESPONSE] diagnostics.
  */
 export async function localChatStream(
   config: LocalChatConfig,
@@ -118,13 +148,24 @@ export async function localChatStream(
   onChunk: (chunk: StreamChunk) => void
 ): Promise<LocalChatResult> {
   const model = resolveModel(config);
+
+  // Phase 74: Runtime diagnostics
+  console.log(`[CHAT_REQUEST]`);
+  console.log(`  panel=chat-stream`);
+  console.log(`  provider=local`);
+  console.log(`  modelId=${model?.id || 'null'}`);
+  console.log(`  modelPath=${model?.path || 'null'}`);
+  console.log(`  messages=${messages.length}`);
+
   if (!model) {
+    console.log(`[CHAT_RESPONSE] source=local-stream error=No local model configured`);
     return {
       success: false,
       error: 'No local model configured.',
     };
   }
   if (!model.fileExists) {
+    console.log(`[CHAT_RESPONSE] source=local-stream error=Model file not found: ${model.path}`);
     return {
       success: false,
       error: `Model file not found: ${model.path}`,
