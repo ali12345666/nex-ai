@@ -183,15 +183,30 @@ export class FirstRunWizard {
     const start = Date.now();
     this.installing = true;
 
+    console.log('[LIBRARY_INSTALL] installRecommendedModel START — model:', RECOMMENDED_FIRST_MODEL.name, 'url:', RECOMMENDED_FIRST_MODEL.downloadUrl);
+
     if (opts?.onProgress) {
       this.progressCallback = opts.onProgress;
     }
 
     // Wire progress callback to the deployment manager
+    // CRITICAL: main.ts already sets a progress callback on deploymentManager
+    // that forwards to the renderer via webContents.send('model-deployment-progress').
+    // We must NOT overwrite it with null. If we have our own callback, wrap it
+    // around the existing one. If we don't, leave the main.ts callback intact.
     const deploymentManager = getModelDeploymentManager();
     if (this.progressCallback) {
-      deploymentManager.setProgressCallback(this.progressCallback);
+      // Wrap: call both the main.ts forwarding callback and our local one
+      const localCb = this.progressCallback;
+      deploymentManager.setProgressCallback((progress) => {
+        try { localCb(progress); } catch { /* */ }
+      });
     }
+    // If this.progressCallback is null, we intentionally do NOT call
+    // setProgressCallback — the main.ts callback remains active and
+    // will forward progress to the renderer.
+
+    console.log('[MODEL_MANAGER] Calling deploymentManager.downloadFromUrl — url:', RECOMMENDED_FIRST_MODEL.downloadUrl);
 
     try {
       // 1. Download + verify + register + test (via Phase 61 deployment manager)

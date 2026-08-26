@@ -245,6 +245,10 @@ export class SecureDownloader {
         headers,
       };
 
+      console.log('[HTTP_REQUEST] →', requestOpts.method, 'https://' + requestOpts.hostname + ':' + (requestOpts.port || 443) + requestOpts.path);
+      console.log('[HTTP_REQUEST] Headers:', JSON.stringify(headers));
+      console.log('[HTTP_REQUEST] Dest:', destPath, '— existingBytes:', existingBytes);
+
       let bytesDownloaded = existingBytes;
       let totalBytes = opts.expectedSize || 0;
       let lastProgressMs = Date.now();
@@ -295,8 +299,17 @@ export class SecureDownloader {
       writeStream = fs.createWriteStream(destPath, { flags: writeFlags });
 
       requestRef = https.request(requestOpts, (response) => {
+        console.log('[HTTP_REQUEST] ← Response status:', response.statusCode, response.statusMessage);
+        console.log('[HTTP_REQUEST] ← Response headers:', JSON.stringify({
+          'content-length': response.headers['content-length'],
+          'content-range': response.headers['content-range'],
+          'content-type': response.headers['content-type'],
+          'location': response.headers['location'] ? '(redirect)' : undefined,
+        }));
+
         // ── Handle redirects (3xx) ──
         if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          console.log('[HTTP_REQUEST] Redirect →', response.headers.location);
           response.resume();
           try { writeStream?.close(); } catch { /* */ }
           if (idleTimer) clearTimeout(idleTimer);
@@ -307,6 +320,7 @@ export class SecureDownloader {
           } else if (!redirectUrl.startsWith('https://')) {
             redirectUrl = new URL(redirectUrl, url).href;
           }
+          console.log('[HTTP_REQUEST] Following redirect to:', redirectUrl);
 
           const currentBytes = this.getPartialSize(destPath);
           this.attemptDownload(redirectUrl, destPath, currentBytes, opts, startMs, idleTimeoutMs).then(resolve);

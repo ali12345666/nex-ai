@@ -366,12 +366,16 @@ export class ModelDeploymentManager {
     const log: string[] = [];
     const url = opts.url;
 
+    console.log('[IPC_INSTALL] downloadFromUrl START — url:', url, 'name:', opts.name);
+
     // Validate URL is HTTPS
     if (!url.startsWith('https://')) {
+      console.log('[IPC_INSTALL] REJECTED: non-HTTPS URL');
       return this.fail('download-failed', `Security: only HTTPS URLs are allowed (rejected: ${url.split(':')[0]})`, start, log);
     }
 
     // 1. Request permission (REQUIRES_APPROVAL)
+    console.log('[PERMISSION] Requesting permission for model download — filename:', opts.name);
     this.setStage('requesting-permission');
     const filename = opts.name || path.basename(url) || 'downloaded-model.gguf';
     const action: ActionDescriptor = {
@@ -393,7 +397,9 @@ export class ModelDeploymentManager {
 
     this.pendingPermission = { operation: 'download', modelPath: filename, url, sizeBytes: opts.expectedSize, action, requiredPhrase: 'تایید می‌کنم' };
 
+    console.log('[PERMISSION] Calling gate.requestPermission — waiting for user response...');
     const permResult: PermissionGateResult = await this.gate.requestPermission(action);
+    console.log('[PERMISSION] Result:', permResult.approved ? 'APPROVED' : 'DENIED', '— method:', permResult.confirmationMethod);
     this.pendingPermission = null;
 
     if (!permResult.approved) {
@@ -422,6 +428,7 @@ export class ModelDeploymentManager {
     });
 
     // 2. Download (HTTPS-only, sandboxed)
+    console.log('[DOWNLOADER_START] Starting download — url:', url, 'filename:', filename);
     this.setStage('downloading');
     log.push(`Downloading from: ${url}`);
     this.audit.log({
@@ -437,6 +444,9 @@ export class ModelDeploymentManager {
       expectedSize: opts.expectedSize,
       filename,
       onProgress: (progress: DownloadProgress) => {
+        console.log('[DOWNLOAD_PROGRESS]', progress.percent.toFixed(1) + '%', '—',
+          this.formatBytes(progress.bytesDownloaded), '/', progress.totalBytes > 0 ? this.formatBytes(progress.totalBytes) : '?',
+          '—', this.formatBytes(progress.speedBytesPerSec) + '/s');
         this.emitProgress({
           stage: 'downloading',
           message: `Downloading: ${progress.percent}% (${this.formatBytes(progress.bytesDownloaded)} / ${progress.totalBytes > 0 ? this.formatBytes(progress.totalBytes) : '?'})`,
@@ -451,8 +461,13 @@ export class ModelDeploymentManager {
 
     let downloadResult: DownloadResult;
     try {
+      console.log('[DOWNLOADER_START] Calling this.downloader.download()...');
       downloadResult = await this.downloader.download(downloadOpts);
+      console.log('[DOWNLOADER_START] Download result:', downloadResult.success ? 'SUCCESS' : 'FAILED',
+        '— bytes:', downloadResult.bytesDownloaded, '— hash:', downloadResult.hash?.slice(0, 16) + '...',
+        '— error:', downloadResult.error || 'none');
       if (!downloadResult.success) {
+        console.log('[DOWNLOAD_ERROR]', downloadResult.error);
         this.setStage('download-failed');
         this.audit.log({
           action: 'download-failed',
@@ -468,6 +483,7 @@ export class ModelDeploymentManager {
         this.lastDeployment = result;
         return result;
       }
+      console.log('[DOWNLOAD_COMPLETE] File:', downloadResult.sandboxPath, '— bytes:', downloadResult.bytesDownloaded, '— hash:', downloadResult.hash.slice(0, 16) + '...');
       this.setStage('download-complete');
       this.totalDownloaded++;
       log.push(`Download complete: ${this.formatBytes(downloadResult.bytesDownloaded)}, hash: ${downloadResult.hash.slice(0, 16)}...`);

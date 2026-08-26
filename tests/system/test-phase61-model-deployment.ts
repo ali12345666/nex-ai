@@ -360,13 +360,15 @@ async function main(): Promise<void> {
   assert('panel has stage metadata', panelSrc.includes('STAGE_META') || panelSrc.includes('STAGE_MAP'));
 
   const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
-  assert('nav has deploy view', navSrc.includes("'deploy'"));
-  assert('nav has PackageCheck icon', navSrc.includes('PackageCheck'));
-  assert('nav has Deploy label', navSrc.includes("label: 'Deploy'"));
+  // Phase 66+: deploy consolidated into library
+  assert('nav has library view', navSrc.includes("'library'"));
+  assert('nav has Library icon', navSrc.includes('Library'));
+  assert('nav has Library label', navSrc.includes("label: 'Library'"));
 
   const appShellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-  assert('AppShell imports ModelDeploymentPanel', appShellSrc.includes('ModelDeploymentPanel'));
-  assert('AppShell routes deploy view', appShellSrc.includes("case 'deploy'"));
+  // Phase 66+: deploy panel consolidated into NexLibraryPanel
+  assert('AppShell imports NexLibraryPanel', appShellSrc.includes('NexLibraryPanel'));
+  assert('AppShell routes library view', appShellSrc.includes("case 'library'"));
 
   // ═══════════════════════════════════════════════════════════════════════
   // 11) Security
