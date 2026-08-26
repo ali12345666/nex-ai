@@ -1342,6 +1342,129 @@ async function setupIPC(): Promise<void> {
   void WakeWordDetector;
   void AudioEnergyGate;
 
+  // ── Phase 57: Executive Planner & Multi-Agent Orchestration ──
+  const { getNexExecutivePlanner, verifyPlannerSecurity } = await import('./ai/nex-executive-planner');
+
+  // Wire planner callbacks → forward events to the renderer.
+  const executivePlanner = getNexExecutivePlanner();
+  executivePlanner.setCallbacks({
+    onPlanCreated: (plan) => { mainWindow?.webContents.send('planner-plan-created', plan); },
+    onPlanUpdated: (plan) => { mainWindow?.webContents.send('planner-plan-updated', plan); },
+    onPlanCompleted: (plan) => { mainWindow?.webContents.send('planner-plan-completed', plan); },
+    onSubTaskStarted: (subTask, plan) => { mainWindow?.webContents.send('planner-subtask-started', { subTask, planId: plan.id }); },
+    onSubTaskCompleted: (subTask, plan) => { mainWindow?.webContents.send('planner-subtask-completed', { subTask, planId: plan.id }); },
+    onSelfEvaluation: (evaluation, plan) => { mainWindow?.webContents.send('planner-self-evaluation', { evaluation, planId: plan.id }); },
+    onError: (message) => { mainWindow?.webContents.send('planner-error', { message }); },
+  });
+
+  // Planner: create a multi-agent plan (decomposition + swarm composition)
+  ipcMain.handle('planner-create', async (_event, request: string, opts?: { projectId?: string }) => {
+    try {
+      const plan = await getNexExecutivePlanner().createPlan(request, opts);
+      return { success: true, plan };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: execute a plan (permission-gated via NexAgentExecutor)
+  ipcMain.handle('planner-execute', async (_event, plan: any, opts?: { speakResults?: boolean }) => {
+    try {
+      const result = await getNexExecutivePlanner().executePlan(plan, opts);
+      return { success: true, plan: result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: abort the current plan
+  ipcMain.handle('planner-abort', async (_event, plan: any) => {
+    try {
+      const result = getNexExecutivePlanner().abortPlan(plan);
+      return { success: true, plan: result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: get status (active, current plan, counts, last evaluation)
+  ipcMain.handle('planner-status', async () => {
+    try {
+      return { success: true, status: getNexExecutivePlanner().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: decompose a request into sub-tasks (preview, no execution)
+  ipcMain.handle('planner-decompose', async (_event, request: string) => {
+    try {
+      const { getExpertRouter } = await import('./ai/expert-router');
+      const route = getExpertRouter().route(request);
+      const subTasks = getNexExecutivePlanner().decompose(request, route.domain);
+      return { success: true, subTasks, primaryDomain: route.domain };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: compose the swarm (experts collaborating)
+  ipcMain.handle('planner-swarm', async (_event, plan: any) => {
+    try {
+      const swarm = getNexExecutivePlanner().composeSwarm(plan);
+      return { success: true, swarm };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: self-evaluate a plan
+  ipcMain.handle('planner-evaluate', async (_event, plan: any) => {
+    try {
+      const evaluation = getNexExecutivePlanner().selfEvaluate(plan);
+      return { success: true, evaluation };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: set personality
+  ipcMain.handle('planner-set-personality', async (_event, type: string) => {
+    try {
+      getNexExecutivePlanner().setPersonality(type as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: get all experts (for UI swarm display)
+  ipcMain.handle('planner-experts', async () => {
+    try {
+      return { success: true, experts: getNexExecutivePlanner().getAllExperts() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: get all skills (for UI display)
+  ipcMain.handle('planner-skills', async () => {
+    try {
+      return { success: true, skills: getNexExecutivePlanner().getAllSkills() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Planner: security audit
+  ipcMain.handle('planner-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyPlannerSecurity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

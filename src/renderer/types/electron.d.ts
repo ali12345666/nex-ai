@@ -145,6 +145,26 @@ export interface NexAPI {
   onVoiceConversationCommand: (callback: (ev: any) => void) => () => void;
   onVoiceConversationError: (callback: (ev: any) => void) => () => void;
 
+  // Phase 57: Executive Planner & Multi-Agent Orchestration
+  plannerCreate: (request: string, opts?: { projectId?: string }) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  plannerExecute: (plan: any, opts?: { speakResults?: boolean }) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  plannerAbort: (plan: any) => Promise<{ success: boolean; plan?: any; error?: string }>;
+  plannerStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  plannerDecompose: (request: string) => Promise<{ success: boolean; subTasks?: string[]; primaryDomain?: string; error?: string }>;
+  plannerSwarm: (plan: any) => Promise<{ success: boolean; swarm?: any[]; error?: string }>;
+  plannerEvaluate: (plan: any) => Promise<{ success: boolean; evaluation?: any; error?: string }>;
+  plannerSetPersonality: (type: string) => Promise<{ success: boolean; error?: string }>;
+  plannerExperts: () => Promise<{ success: boolean; experts?: any[]; error?: string }>;
+  plannerSkills: () => Promise<{ success: boolean; skills?: any[]; error?: string }>;
+  plannerSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
+  onPlannerPlanCreated: (callback: (ev: any) => void) => () => void;
+  onPlannerPlanUpdated: (callback: (ev: any) => void) => () => void;
+  onPlannerPlanCompleted: (callback: (ev: any) => void) => () => void;
+  onPlannerSubTaskStarted: (callback: (ev: any) => void) => () => void;
+  onPlannerSubTaskCompleted: (callback: (ev: any) => void) => () => void;
+  onPlannerSelfEvaluation: (callback: (ev: any) => void) => () => void;
+  onPlannerError: (callback: (ev: any) => void) => () => void;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

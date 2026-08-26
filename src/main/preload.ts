@@ -167,6 +167,54 @@ contextBridge.exposeInMainWorld('nexAPI', {
     return () => ipcRenderer.removeListener('voice-conversation-error', listener);
   },
 
+  // ── Phase 57: Executive Planner & Multi-Agent Orchestration ──
+  plannerCreate: (request: string, opts?: { projectId?: string }) => ipcRenderer.invoke('planner-create', request, opts),
+  plannerExecute: (plan: any, opts?: { speakResults?: boolean }) => ipcRenderer.invoke('planner-execute', plan, opts),
+  plannerAbort: (plan: any) => ipcRenderer.invoke('planner-abort', plan),
+  plannerStatus: () => ipcRenderer.invoke('planner-status'),
+  plannerDecompose: (request: string) => ipcRenderer.invoke('planner-decompose', request),
+  plannerSwarm: (plan: any) => ipcRenderer.invoke('planner-swarm', plan),
+  plannerEvaluate: (plan: any) => ipcRenderer.invoke('planner-evaluate', plan),
+  plannerSetPersonality: (type: string) => ipcRenderer.invoke('planner-set-personality', type),
+  plannerExperts: () => ipcRenderer.invoke('planner-experts'),
+  plannerSkills: () => ipcRenderer.invoke('planner-skills'),
+  plannerSecurityAudit: () => ipcRenderer.invoke('planner-security-audit'),
+  onPlannerPlanCreated: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-plan-created', listener);
+    return () => ipcRenderer.removeListener('planner-plan-created', listener);
+  },
+  onPlannerPlanUpdated: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-plan-updated', listener);
+    return () => ipcRenderer.removeListener('planner-plan-updated', listener);
+  },
+  onPlannerPlanCompleted: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-plan-completed', listener);
+    return () => ipcRenderer.removeListener('planner-plan-completed', listener);
+  },
+  onPlannerSubTaskStarted: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-subtask-started', listener);
+    return () => ipcRenderer.removeListener('planner-subtask-started', listener);
+  },
+  onPlannerSubTaskCompleted: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-subtask-completed', listener);
+    return () => ipcRenderer.removeListener('planner-subtask-completed', listener);
+  },
+  onPlannerSelfEvaluation: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-self-evaluation', listener);
+    return () => ipcRenderer.removeListener('planner-self-evaluation', listener);
+  },
+  onPlannerError: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('planner-error', listener);
+    return () => ipcRenderer.removeListener('planner-error', listener);
+  },
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

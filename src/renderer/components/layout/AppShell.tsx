@@ -46,6 +46,8 @@ const RuntimeSetupPanel = lazy(() => import('./RuntimeSetupPanel'));
 const ExpertKnowledgePanel = lazy(() => import('../ExpertKnowledgePanel'));
 // Phase 56: Voice Center (advanced voice conversation)
 const VoiceCenterPanel = lazy(() => import('../VoiceCenterPanel'));
+// Phase 57: Executive Planner (multi-agent orchestration)
+const PlannerPanel = lazy(() => import('../PlannerPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -200,6 +202,7 @@ export default function AppShell() {
       case 'runtime': return <Suspense fallback={<PanelLoading />}><RuntimeSetupPanel /></Suspense>;
       case 'expertise': return <Suspense fallback={<PanelLoading />}><ExpertKnowledgePanel /></Suspense>;
       case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceCenterPanel /></Suspense>;
+      case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
       default: return <NoProject />;
     }
   };
