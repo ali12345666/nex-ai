@@ -1465,6 +1465,136 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 58: Local AI Runtime & Model Activation ──
+  const { getMultiModelRuntimeManager, verifyRuntimeSecurity } = await import('./ai/multi-model-runtime-manager');
+  const runtimeManager = getMultiModelRuntimeManager();
+
+  // Runtime: list installed models with loaded/hardware metadata
+  ipcMain.handle('local-runtime-list-models', async () => {
+    try {
+      return { success: true, models: getMultiModelRuntimeManager().listInstalledModels() };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Runtime: get full status (loaded model, telemetry, hardware, health)
+  ipcMain.handle('local-runtime-status', async () => {
+    try {
+      return { success: true, status: getMultiModelRuntimeManager().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: load a model by id (SAFE — reads a disk file)
+  ipcMain.handle('local-runtime-load-model', async (_event, modelId: string, opts?: any) => {
+    try {
+      const model = await getMultiModelRuntimeManager().loadModel(modelId, opts);
+      return { success: true, model };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: unload the currently-loaded model (SAFE — frees memory)
+  ipcMain.handle('local-runtime-unload-model', async () => {
+    try {
+      await getMultiModelRuntimeManager().unloadModel();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: abort in-progress inference
+  ipcMain.handle('local-runtime-abort', async () => {
+    try {
+      getMultiModelRuntimeManager().abort();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: route a task to the best model via Brain Controller
+  ipcMain.handle('local-runtime-route-task', async (_event, request: any) => {
+    try {
+      const route = await getMultiModelRuntimeManager().routeTask(request);
+      return { success: true, route };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: generate a full response (requires loaded model)
+  ipcMain.handle('local-runtime-generate', async (_event, messages: any[], opts?: any) => {
+    try {
+      const result = await getMultiModelRuntimeManager().generate(messages, opts);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: provider info (backend, capabilities, loaded model, hardware)
+  ipcMain.handle('local-runtime-provider-info', async () => {
+    try {
+      return { success: true, info: getMultiModelRuntimeManager().getProviderInfo() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: health check
+  ipcMain.handle('local-runtime-health-check', async () => {
+    try {
+      return { success: true, health: getMultiModelRuntimeManager().healthCheck() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: hardware detection
+  ipcMain.handle('local-runtime-hardware', async () => {
+    try {
+      return { success: true, hardware: getMultiModelRuntimeManager().detectHardware() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: models grouped by category
+  ipcMain.handle('local-runtime-models-by-category', async () => {
+    try {
+      const grouped = getMultiModelRuntimeManager().getModelsByCategory();
+      const counts = getMultiModelRuntimeManager().countModelsByCategory();
+      return { success: true, grouped, counts };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: GGUF detection
+  ipcMain.handle('local-runtime-is-gguf', async (_event, filePath: string) => {
+    try {
+      return { success: true, isGguf: getMultiModelRuntimeManager().isGgufFile(filePath) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Runtime: security audit
+  ipcMain.handle('local-runtime-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyRuntimeSecurity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void runtimeManager;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

@@ -48,6 +48,8 @@ const ExpertKnowledgePanel = lazy(() => import('../ExpertKnowledgePanel'));
 const VoiceCenterPanel = lazy(() => import('../VoiceCenterPanel'));
 // Phase 57: Executive Planner (multi-agent orchestration)
 const PlannerPanel = lazy(() => import('../PlannerPanel'));
+// Phase 58: Local AI Runtime (model activation + telemetry)
+const LocalRuntimePanel = lazy(() => import('../LocalRuntimePanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -203,6 +205,7 @@ export default function AppShell() {
       case 'expertise': return <Suspense fallback={<PanelLoading />}><ExpertKnowledgePanel /></Suspense>;
       case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceCenterPanel /></Suspense>;
       case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
+      case 'localai': return <Suspense fallback={<PanelLoading />}><LocalRuntimePanel /></Suspense>;
       default: return <NoProject />;
     }
   };

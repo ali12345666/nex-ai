@@ -165,6 +165,21 @@ export interface NexAPI {
   onPlannerSelfEvaluation: (callback: (ev: any) => void) => () => void;
   onPlannerError: (callback: (ev: any) => void) => () => void;
 
+  // Phase 58: Local AI Runtime & Model Activation
+  localRuntimeListModels: () => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  localRuntimeStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  localRuntimeLoadModel: (modelId: string, opts?: any) => Promise<{ success: boolean; model?: any; error?: string }>;
+  localRuntimeUnloadModel: () => Promise<{ success: boolean; error?: string }>;
+  localRuntimeAbort: () => Promise<{ success: boolean; error?: string }>;
+  localRuntimeRouteTask: (request: any) => Promise<{ success: boolean; route?: any; error?: string }>;
+  localRuntimeGenerate: (messages: any[], opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  localRuntimeProviderInfo: () => Promise<{ success: boolean; info?: any; error?: string }>;
+  localRuntimeHealthCheck: () => Promise<{ success: boolean; health?: any; error?: string }>;
+  localRuntimeHardware: () => Promise<{ success: boolean; hardware?: any; error?: string }>;
+  localRuntimeModelsByCategory: () => Promise<{ success: boolean; grouped?: any; counts?: any; error?: string }>;
+  localRuntimeIsGguf: (filePath: string) => Promise<{ success: boolean; isGguf?: boolean; error?: string }>;
+  localRuntimeSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

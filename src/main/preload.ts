@@ -215,6 +215,21 @@ contextBridge.exposeInMainWorld('nexAPI', {
     return () => ipcRenderer.removeListener('planner-error', listener);
   },
 
+  // ── Phase 58: Local AI Runtime & Model Activation ──
+  localRuntimeListModels: () => ipcRenderer.invoke('local-runtime-list-models'),
+  localRuntimeStatus: () => ipcRenderer.invoke('local-runtime-status'),
+  localRuntimeLoadModel: (modelId: string, opts?: any) => ipcRenderer.invoke('local-runtime-load-model', modelId, opts),
+  localRuntimeUnloadModel: () => ipcRenderer.invoke('local-runtime-unload-model'),
+  localRuntimeAbort: () => ipcRenderer.invoke('local-runtime-abort'),
+  localRuntimeRouteTask: (request: any) => ipcRenderer.invoke('local-runtime-route-task', request),
+  localRuntimeGenerate: (messages: any[], opts?: any) => ipcRenderer.invoke('local-runtime-generate', messages, opts),
+  localRuntimeProviderInfo: () => ipcRenderer.invoke('local-runtime-provider-info'),
+  localRuntimeHealthCheck: () => ipcRenderer.invoke('local-runtime-health-check'),
+  localRuntimeHardware: () => ipcRenderer.invoke('local-runtime-hardware'),
+  localRuntimeModelsByCategory: () => ipcRenderer.invoke('local-runtime-models-by-category'),
+  localRuntimeIsGguf: (filePath: string) => ipcRenderer.invoke('local-runtime-is-gguf', filePath),
+  localRuntimeSecurityAudit: () => ipcRenderer.invoke('local-runtime-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>
