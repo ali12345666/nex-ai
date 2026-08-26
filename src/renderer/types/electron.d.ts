@@ -252,6 +252,14 @@ export interface NexAPI {
   hwFixWindowsPath: (filePath: string) => Promise<{ success: boolean; fixed?: string; error?: string }>;
   hwSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
 
+  // Phase 68: Download State Architecture
+  downloadGetActive: () => Promise<{ success: boolean; downloads?: any[]; error?: string }>;
+  downloadStart: (opts: any) => Promise<{ success: boolean; downloadId?: string; error?: string }>;
+  downloadStartRecommended: () => Promise<{ success: boolean; downloadId?: string; error?: string }>;
+  onDownloadState: (callback: (state: any) => void) => () => void;
+  onDownloadCompleted: (callback: (ev: any) => void) => () => void;
+  onDownloadError: (callback: (ev: any) => void) => () => void;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

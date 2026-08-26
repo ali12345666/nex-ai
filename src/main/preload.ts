@@ -310,6 +310,26 @@ contextBridge.exposeInMainWorld('nexAPI', {
   hwFixWindowsPath: (filePath: string) => ipcRenderer.invoke('hw-fix-windows-path', filePath),
   hwSecurityAudit: () => ipcRenderer.invoke('hw-security-audit'),
 
+  // ── Phase 68: Download State Architecture ──
+  downloadGetActive: () => ipcRenderer.invoke('download-get-active'),
+  downloadStart: (opts: any) => ipcRenderer.invoke('download-start', opts),
+  downloadStartRecommended: () => ipcRenderer.invoke('download-start-recommended'),
+  onDownloadState: (callback: (state: any) => void) => {
+    const listener = (_e: any, state: any) => callback(state);
+    ipcRenderer.on('download:state', listener);
+    return () => ipcRenderer.removeListener('download:state', listener);
+  },
+  onDownloadCompleted: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('download:completed', listener);
+    return () => ipcRenderer.removeListener('download:completed', listener);
+  },
+  onDownloadError: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('download:error', listener);
+    return () => ipcRenderer.removeListener('download:error', listener);
+  },
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

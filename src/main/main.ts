@@ -2197,6 +2197,169 @@ async function setupIPC(): Promise<void> {
 
   void hwDiagEngine;
 
+  // ── Phase 68: Download State Architecture ──
+  // The main process is the source of truth for download state.
+  // The renderer subscribes to events + can query active state.
+  const activeDownloads: Map<string, any> = new Map();
+
+  // Helper: emit download state to renderer
+  const emitDownloadState = (downloadId: string) => {
+    const entry = activeDownloads.get(downloadId);
+    if (entry) {
+      mainWindow?.webContents.send('download:state', entry);
+    }
+  };
+
+  // Override the deployment manager's progress callback to update activeDownloads
+  getModelDeploymentManager().setProgressCallback((progress) => {
+    // Forward to renderer
+    mainWindow?.webContents.send('model-deployment-progress', progress);
+
+    // Update active downloads map
+    for (const [id, entry] of activeDownloads.entries()) {
+      if (entry.status === 'downloading' || entry.status === 'requesting-permission') {
+        activeDownloads.set(id, {
+          ...entry,
+          status: progress.stage as any,
+          progress: progress.percent ?? 0,
+          downloadedBytes: progress.bytesDownloaded ?? 0,
+          totalBytes: progress.totalBytes ?? 0,
+          speedBytesPerSec: progress.speedBytesPerSec ?? 0,
+          stageMessage: progress.message || '',
+          stageMessageFa: progress.messageFa || '',
+        });
+        emitDownloadState(id);
+        break; // Only update the first active download
+      }
+    }
+  });
+
+  // Override the permission callback to also update activeDownloads
+  getModelDeploymentManager().setCallbacks({
+    onRequestPermission: (req) => {
+      mainWindow?.webContents.send('model-deployment-permission-request', req);
+    },
+  });
+
+  // IPC: Get all active downloads (renderer calls this on mount)
+  ipcMain.handle('download-get-active', async () => {
+    return { success: true, downloads: Array.from(activeDownloads.values()) };
+  });
+
+  // IPC: Start a model download (returns immediately with downloadId)
+  ipcMain.handle('download-start', async (_event, opts: any) => {
+    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry = {
+      id: downloadId,
+      modelName: opts.name || opts.url || 'model',
+      url: opts.url,
+      status: 'requesting-permission',
+      progress: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      speedBytesPerSec: 0,
+      etaSeconds: -1,
+      stageMessage: 'Starting...',
+      stageMessageFa: 'در حال شروع...',
+      startedAt: Date.now(),
+    };
+    activeDownloads.set(downloadId, entry);
+    emitDownloadState(downloadId);
+
+    // Start the actual download asynchronously (non-blocking)
+    console.log('[DOWNLOAD_START] id:', downloadId, 'url:', opts.url, 'name:', opts.name);
+
+    (async () => {
+      try {
+        const result = await getModelDeploymentManager().downloadFromUrl(opts);
+        const finalEntry = activeDownloads.get(downloadId);
+        if (finalEntry) {
+          activeDownloads.set(downloadId, {
+            ...finalEntry,
+            status: result.success ? 'deployed' : (result.stage || 'download-failed'),
+            progress: result.success ? 100 : finalEntry.progress,
+            result,
+            error: result.error,
+            completedAt: Date.now(),
+          });
+          emitDownloadState(downloadId);
+          mainWindow?.webContents.send('download:completed', { id: downloadId, result });
+        }
+      } catch (err: any) {
+        const finalEntry = activeDownloads.get(downloadId);
+        if (finalEntry) {
+          activeDownloads.set(downloadId, {
+            ...finalEntry,
+            status: 'download-failed',
+            error: err?.message || String(err),
+            completedAt: Date.now(),
+          });
+          emitDownloadState(downloadId);
+          mainWindow?.webContents.send('download:error', { id: downloadId, error: err?.message });
+        }
+      }
+    })();
+
+    return { success: true, downloadId };
+  });
+
+  // IPC: Start recommended model download (returns immediately with downloadId)
+  ipcMain.handle('download-start-recommended', async () => {
+    const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { RECOMMENDED_FIRST_MODEL } = await import('./ai/first-run-wizard');
+    const entry = {
+      id: downloadId,
+      modelName: RECOMMENDED_FIRST_MODEL.name,
+      url: RECOMMENDED_FIRST_MODEL.downloadUrl,
+      status: 'requesting-permission',
+      progress: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      speedBytesPerSec: 0,
+      etaSeconds: -1,
+      stageMessage: 'Starting...',
+      stageMessageFa: 'در حال شروع...',
+      startedAt: Date.now(),
+    };
+    activeDownloads.set(downloadId, entry);
+    emitDownloadState(downloadId);
+
+    console.log('[DOWNLOAD_START] id:', downloadId, 'recommended model:', RECOMMENDED_FIRST_MODEL.name);
+
+    (async () => {
+      try {
+        const result = await getFirstRunWizard().installRecommendedModel();
+        const finalEntry = activeDownloads.get(downloadId);
+        if (finalEntry) {
+          activeDownloads.set(downloadId, {
+            ...finalEntry,
+            status: result.success ? 'deployed' : 'download-failed',
+            progress: result.success ? 100 : finalEntry.progress,
+            result,
+            error: result.error,
+            completedAt: Date.now(),
+          });
+          emitDownloadState(downloadId);
+          mainWindow?.webContents.send('download:completed', { id: downloadId, result });
+        }
+      } catch (err: any) {
+        const finalEntry = activeDownloads.get(downloadId);
+        if (finalEntry) {
+          activeDownloads.set(downloadId, {
+            ...finalEntry,
+            status: 'download-failed',
+            error: err?.message || String(err),
+            completedAt: Date.now(),
+          });
+          emitDownloadState(downloadId);
+          mainWindow?.webContents.send('download:error', { id: downloadId, error: err?.message });
+        }
+      }
+    })();
+
+    return { success: true, downloadId };
+  });
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');
