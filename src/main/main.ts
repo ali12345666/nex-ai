@@ -1962,6 +1962,111 @@ async function setupIPC(): Promise<void> {
 
   void deploymentManager;
 
+  // ── Phase 62: Basic Interaction MVP ──
+  const { getInteractionLoopManager, verifyInteractionSecurity } = await import('./ai/interaction-loop');
+  const { detectLanguage: detectLang, normalizePersian: normalizeFa, buildSystemPrompt: buildSysPrompt, getLanguageLabelFa: getLangLabelFa, verifyLanguageSecurity: verifyLangSec } = await import('./ai/language-foundation');
+  const interactionLoop = getInteractionLoopManager();
+
+  // Interaction: process text input (text → language detect → GGUF → response)
+  ipcMain.handle('interaction-process-text', async (_event, request: any) => {
+    try {
+      const result = await getInteractionLoopManager().processText(request);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: process voice transcript (STT → GGUF → TTS)
+  ipcMain.handle('interaction-process-voice', async (_event, transcript: string, opts?: any) => {
+    try {
+      const result = await getInteractionLoopManager().processVoice(transcript, opts);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: speak text via TTS
+  ipcMain.handle('interaction-speak', async (_event, text: string) => {
+    try {
+      const spoken = await getInteractionLoopManager().speakText(text);
+      return { success: true, spoken };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: stop inference + TTS
+  ipcMain.handle('interaction-stop', async () => {
+    try {
+      getInteractionLoopManager().stop();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: set personality
+  ipcMain.handle('interaction-set-personality', async (_event, type: string) => {
+    try {
+      getInteractionLoopManager().setPersonality(type as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: status (model + runtime + STT/TTS + language)
+  ipcMain.handle('interaction-status', async () => {
+    try {
+      return { success: true, status: getInteractionLoopManager().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Language foundation: detect language
+  ipcMain.handle('language-detect', async (_event, text: string) => {
+    try {
+      const result = detectLang(text);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Language foundation: normalize Persian
+  ipcMain.handle('language-normalize-persian', async (_event, text: string) => {
+    try {
+      const result = normalizeFa(text);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Language foundation: build system prompt
+  ipcMain.handle('language-build-prompt', async (_event, language: string, personality?: string) => {
+    try {
+      const prompt = buildSysPrompt(language as any, personality as any);
+      return { success: true, prompt };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Interaction: security audit
+  ipcMain.handle('interaction-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyInteractionSecurity(), languageAudit: verifyLangSec() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void interactionLoop;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

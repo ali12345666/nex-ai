@@ -223,6 +223,18 @@ export interface NexAPI {
   modelDeploySecurityAudit: () => Promise<{ success: boolean; audit?: any; verifierAudit?: any; testerAudit?: any; error?: string }>;
   onModelDeploymentPermissionRequest: (callback: (req: any) => void) => () => void;
 
+  // Phase 62: Basic Interaction MVP
+  interactionProcessText: (request: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  interactionProcessVoice: (transcript: string, opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  interactionSpeak: (text: string) => Promise<{ success: boolean; spoken?: boolean; error?: string }>;
+  interactionStop: () => Promise<{ success: boolean; error?: string }>;
+  interactionSetPersonality: (type: string) => Promise<{ success: boolean; error?: string }>;
+  interactionStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  languageDetect: (text: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  languageNormalizePersian: (text: string) => Promise<{ success: boolean; result?: string; error?: string }>;
+  languageBuildPrompt: (language: string, personality?: string) => Promise<{ success: boolean; prompt?: string; error?: string }>;
+  interactionSecurityAudit: () => Promise<{ success: boolean; audit?: any; languageAudit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

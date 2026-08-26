@@ -9,10 +9,10 @@
 
 import React from 'react';
 import {
-  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes, Globe, PackageCheck,
+  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes, Globe, PackageCheck, Activity,
 } from 'lucide-react';
 
-export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem' | 'uknowledge' | 'deploy';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem' | 'uknowledge' | 'deploy' | 'interact';
 
 /** Workspace sub-tabs — accessible when view === 'workspace'. */
 export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
@@ -37,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'ecosystem', icon: <Boxes size={20} strokeWidth={1.5} />, label: 'Models' },
   { id: 'uknowledge', icon: <Globe size={20} strokeWidth={1.5} />, label: 'Univ. Knowledge' },
   { id: 'deploy', icon: <PackageCheck size={20} strokeWidth={1.5} />, label: 'Deploy' },
+  { id: 'interact', icon: <Activity size={20} strokeWidth={1.5} />, label: 'Interact' },
   { id: 'settings', icon: <Settings size={20} strokeWidth={1.5} />, label: 'Settings' },
 ];
 

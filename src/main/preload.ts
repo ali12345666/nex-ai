@@ -277,6 +277,18 @@ contextBridge.exposeInMainWorld('nexAPI', {
     return () => ipcRenderer.removeListener('model-deployment-permission-request', listener);
   },
 
+  // ── Phase 62: Basic Interaction MVP ──
+  interactionProcessText: (request: any) => ipcRenderer.invoke('interaction-process-text', request),
+  interactionProcessVoice: (transcript: string, opts?: any) => ipcRenderer.invoke('interaction-process-voice', transcript, opts),
+  interactionSpeak: (text: string) => ipcRenderer.invoke('interaction-speak', text),
+  interactionStop: () => ipcRenderer.invoke('interaction-stop'),
+  interactionSetPersonality: (type: string) => ipcRenderer.invoke('interaction-set-personality', type),
+  interactionStatus: () => ipcRenderer.invoke('interaction-status'),
+  languageDetect: (text: string) => ipcRenderer.invoke('language-detect', text),
+  languageNormalizePersian: (text: string) => ipcRenderer.invoke('language-normalize-persian', text),
+  languageBuildPrompt: (language: string, personality?: string) => ipcRenderer.invoke('language-build-prompt', language, personality),
+  interactionSecurityAudit: () => ipcRenderer.invoke('interaction-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>
