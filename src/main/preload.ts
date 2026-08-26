@@ -244,6 +244,34 @@ contextBridge.exposeInMainWorld('nexAPI', {
   skillGet: (id: string) => ipcRenderer.invoke('skill-get', id),
   skillByDomain: (domain: string) => ipcRenderer.invoke('skill-by-domain', domain),
 
+  // ── Phase 55: Offline Expert Knowledge Engine ──
+  expertKnowledgeList: () => ipcRenderer.invoke('expert-knowledge-list'),
+  expertKnowledgeGet: (id: string) => ipcRenderer.invoke('expert-knowledge-get', id),
+  expertKnowledgeByDomain: (domain: string) => ipcRenderer.invoke('expert-knowledge-by-domain', domain),
+  expertKnowledgeStatus: () => ipcRenderer.invoke('expert-knowledge-status'),
+  expertKnowledgeInstalled: () => ipcRenderer.invoke('expert-knowledge-installed'),
+  expertKnowledgeMissing: () => ipcRenderer.invoke('expert-knowledge-missing'),
+  expertKnowledgeRecommend: (domain?: string) => ipcRenderer.invoke('expert-knowledge-recommend', domain),
+  expertKnowledgeRetrieve: (query: string, opts?: { domain?: string; limit?: number }) => ipcRenderer.invoke('expert-knowledge-retrieve', query, opts),
+  expertKnowledgeRecommendationFa: (domain: string) => ipcRenderer.invoke('expert-knowledge-recommendation-fa', domain),
+  expertKnowledgeCapabilitiesFa: (domain: string) => ipcRenderer.invoke('expert-knowledge-capabilities-fa', domain),
+  expertKnowledgeSelfDescFa: () => ipcRenderer.invoke('expert-knowledge-self-desc-fa'),
+  knowledgePackScan: () => ipcRenderer.invoke('knowledge-pack-scan'),
+  knowledgePackInstall: (packId: string) => ipcRenderer.invoke('knowledge-pack-install', packId),
+  knowledgePackRemove: (packId: string) => ipcRenderer.invoke('knowledge-pack-remove', packId),
+  knowledgePackUpdate: (packId: string) => ipcRenderer.invoke('knowledge-pack-update', packId),
+  knowledgePackVerify: (packId: string) => ipcRenderer.invoke('knowledge-pack-verify', packId),
+  knowledgePackVerifyAll: () => ipcRenderer.invoke('knowledge-pack-verify-all'),
+  knowledgePackStorage: () => ipcRenderer.invoke('knowledge-pack-storage'),
+  knowledgePackPendingPermission: () => ipcRenderer.invoke('knowledge-pack-pending-permission'),
+  knowledgePackRespondPermission: (userResponse: string) => ipcRenderer.invoke('knowledge-pack-respond-permission', userResponse),
+  knowledgePackRespondVoice: () => ipcRenderer.invoke('knowledge-pack-respond-voice'),
+  onKnowledgePackPermissionRequest: (callback: (req: any) => void) => {
+    const listener = (_event: any, req: any) => callback(req);
+    ipcRenderer.on('knowledge-pack-permission-request', listener);
+    return () => ipcRenderer.removeListener('knowledge-pack-permission-request', listener);
+  },
+
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),

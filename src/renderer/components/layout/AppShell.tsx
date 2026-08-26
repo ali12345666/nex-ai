@@ -42,6 +42,8 @@ const SettingsPanel = lazy(() => import('../SettingsPanel'));
 const ModelAdvisorPanel = lazy(() => import('./ModelAdvisorPanel'));
 // Phase 46: Runtime Setup Center (first-run detection + component status)
 const RuntimeSetupPanel = lazy(() => import('./RuntimeSetupPanel'));
+// Phase 55: Expert Knowledge Center (offline knowledge packs)
+const ExpertKnowledgePanel = lazy(() => import('../ExpertKnowledgePanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -194,6 +196,7 @@ export default function AppShell() {
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
       case 'advisor': return <Suspense fallback={<PanelLoading />}><ModelAdvisorPanel /></Suspense>;
       case 'runtime': return <Suspense fallback={<PanelLoading />}><RuntimeSetupPanel /></Suspense>;
+      case 'expertise': return <Suspense fallback={<PanelLoading />}><ExpertKnowledgePanel /></Suspense>;
       default: return <NoProject />;
     }
   };

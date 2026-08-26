@@ -250,6 +250,30 @@ export interface NexAPI {
   skillGet: (id: string) => Promise<{ success: boolean; skill?: any; error?: string }>;
   skillByDomain: (domain: string) => Promise<{ success: boolean; skills?: any[]; error?: string }>;
 
+  // Phase 55: Offline Expert Knowledge Engine
+  expertKnowledgeList: () => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  expertKnowledgeGet: (id: string) => Promise<{ success: boolean; pack?: any; error?: string }>;
+  expertKnowledgeByDomain: (domain: string) => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  expertKnowledgeStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  expertKnowledgeInstalled: () => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  expertKnowledgeMissing: () => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  expertKnowledgeRecommend: (domain?: string) => Promise<{ success: boolean; packs?: any[]; error?: string }>;
+  expertKnowledgeRetrieve: (query: string, opts?: { domain?: string; limit?: number }) => Promise<{ success: boolean; query?: string; results?: any[]; framed?: string; installedPackCount?: number; offline?: boolean; error?: string }>;
+  expertKnowledgeRecommendationFa: (domain: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  expertKnowledgeCapabilitiesFa: (domain: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  expertKnowledgeSelfDescFa: () => Promise<{ success: boolean; message?: string; error?: string }>;
+  knowledgePackScan: () => Promise<{ success: boolean; records?: any[]; error?: string }>;
+  knowledgePackInstall: (packId: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  knowledgePackRemove: (packId: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  knowledgePackUpdate: (packId: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  knowledgePackVerify: (packId: string) => Promise<{ success: boolean; verification?: any; error?: string }>;
+  knowledgePackVerifyAll: () => Promise<{ success: boolean; verifications?: any[]; error?: string }>;
+  knowledgePackStorage: () => Promise<{ success: boolean; storage?: any; error?: string }>;
+  knowledgePackPendingPermission: () => Promise<{ success: boolean; hasPending?: boolean; permission?: any; error?: string }>;
+  knowledgePackRespondPermission: (userResponse: string) => Promise<{ success: boolean; error?: string }>;
+  knowledgePackRespondVoice: () => Promise<{ success: boolean; error?: string }>;
+  onKnowledgePackPermissionRequest: (callback: (req: any) => void) => () => void;
+
   // Agent Core (Phase 7)
   agentCreateTask: (request: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;

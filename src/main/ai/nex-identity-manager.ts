@@ -42,6 +42,20 @@ export interface NexSelfAwareness {
   knowledgeStatus: { ready: boolean; documentCount: number };
   voiceStatus: { sttReady: boolean; ttsReady: boolean };
   visionStatus: { ready: boolean; providerName: string | null };
+  /** Phase 55: Offline Expert Knowledge Engine — what NEX knows / is missing. */
+  expertKnowledgeStatus?: {
+    totalPacks: number;
+    installedPacks: number;
+    missingPacks: number;
+    totalDocuments: number;
+    installedDocuments: number;
+    offline: boolean;
+    installedPackNames: string[];
+    missingPackNames: string[];
+    recommendedForElectronics: number;
+  };
+  /** Phase 55: Persian self-description of installed vs missing knowledge. */
+  expertKnowledgeSummaryFa?: string;
   systemSummary: string;
   systemSummaryFa: string;
 }
@@ -250,9 +264,68 @@ export class NexIdentityManager {
       availableTools = listToolDefinitions().map((t) => t.name);
     } catch { /* */ }
 
+    // ── Phase 55: Offline Expert Knowledge Engine ──
+    // NEX knows which expert knowledge packs are installed, which are missing,
+    // and which are recommended. This makes the assistant self-aware of its
+    // own offline expertise gaps (e.g. "در زمینه PCB دانش نصب شده دارم.
+    // برای RF design نیاز به بسته تخصصی دارم.").
+    let expertKnowledgeStatus: NexSelfAwareness['expertKnowledgeStatus'];
+    let expertKnowledgeSummaryFa: string | undefined;
+    try {
+      const { getExpertKnowledgeEngine, DOMAIN_LABELS_FA, knowledgeDomainToExpertDomain } = await import('../knowledge/expert-knowledge-engine');
+      const engine = getExpertKnowledgeEngine();
+      const status = engine.getKnowledgeStatus();
+      const installedPacks = engine.getInstalledPacks();
+      const missingPacks = engine.getMissingPacks();
+      // Recommended for electronics (the headline example in the Phase 55 spec)
+      const electronicsDomain = 'electronics-engineering' as const;
+      const recommendedForElectronics = engine.getRecommendedPacks(electronicsDomain).length;
+
+      expertKnowledgeStatus = {
+        totalPacks: status.totalPacks,
+        installedPacks: status.installedPacks,
+        missingPacks: status.missingPacks,
+        totalDocuments: status.totalDocuments,
+        installedDocuments: status.installedDocuments,
+        offline: status.offline,
+        installedPackNames: installedPacks.map((p) => p.nameFa),
+        missingPackNames: missingPacks.map((p) => p.nameFa),
+        recommendedForElectronics,
+      };
+
+      // Persian self-description per domain — mirrors the spec example.
+      const lines: string[] = [];
+      const domains: Array<keyof typeof DOMAIN_LABELS_FA> = [
+        'software-engineering', 'electronics-engineering', 'ai-engineering',
+        'system-architecture', 'science',
+      ];
+      for (const dom of domains) {
+        const installed = engine.getPacksByDomain(dom).filter((p) => p.installed);
+        const missing = engine.getPacksByDomain(dom).filter((p) => !p.installed);
+        const labelFa = DOMAIN_LABELS_FA[dom];
+        if (installed.length > 0 && missing.length > 0) {
+          lines.push(`در زمینه ${labelFa} دانش نصب شده دارم (${installed.map((p) => p.nameFa).join('، ')}). برای ${missing.map((p) => p.nameFa).join('، ')} نیاز به بسته تخصصی دارم.`);
+        } else if (installed.length > 0) {
+          lines.push(`در زمینه ${labelFa} دانش کامل نصب شده است.`);
+        } else if (missing.length > 0) {
+          lines.push(`در زمینه ${labelFa} دانش نصب شده ندارم. برای پاسخ تخصصی نیاز به نصب بسته‌های مرتبط دارم.`);
+        }
+        void knowledgeDomainToExpertDomain;
+      }
+      expertKnowledgeSummaryFa = lines.join(' ');
+
+      // Promote expert knowledge as a capability
+      if (installedPacks.length > 0) {
+        capabilities.push('expert-knowledge');
+        capabilitiesFa.push('دانش تخصصی آفلاین');
+      }
+    } catch { /* expert knowledge engine optional — degrade gracefully */ }
+
     // Summary
-    const systemSummary = `NEX AI v${this.identity.version}. ${models.length} models, ${availableTools.length} tools, ${capabilities.length} capabilities.`;
-    const systemSummaryFa = `NEX AI نسخه ${this.identity.version}. ${models.length} مدل، ${availableTools.length} ابزار، ${capabilities.length} قابلیت فعال.`;
+    const expertPart = expertKnowledgeStatus ? `, ${expertKnowledgeStatus.installedPacks}/${expertKnowledgeStatus.totalPacks} knowledge packs` : '';
+    const expertPartFa = expertKnowledgeStatus ? `، ${expertKnowledgeStatus.installedPacks} از ${expertKnowledgeStatus.totalPacks} بسته دانش` : '';
+    const systemSummary = `NEX AI v${this.identity.version}. ${models.length} models, ${availableTools.length} tools, ${capabilities.length} capabilities${expertPart}.`;
+    const systemSummaryFa = `NEX AI نسخه ${this.identity.version}. ${models.length} مدل، ${availableTools.length} ابزار، ${capabilities.length} قابلیت فعال${expertPartFa}.`;
 
     return {
       identity: this.getIdentity(),
@@ -267,6 +340,8 @@ export class NexIdentityManager {
       knowledgeStatus: { ready: knowledgeReady, documentCount: 0 },
       voiceStatus: { sttReady, ttsReady },
       visionStatus: { ready: models.some((m) => m.category === 'vision'), providerName: null },
+      expertKnowledgeStatus,
+      expertKnowledgeSummaryFa,
       systemSummary,
       systemSummaryFa,
     };

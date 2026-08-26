@@ -2276,6 +2276,201 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 55: Offline Expert Knowledge Engine ──
+  const { getExpertKnowledgeEngine } = await import('./knowledge/expert-knowledge-engine');
+  const { getKnowledgePackManager } = await import('./knowledge/knowledge-pack-manager');
+
+  // Wire the pack manager's permission callbacks → forward to renderer.
+  const knowledgePackManager = getKnowledgePackManager();
+  knowledgePackManager.setCallbacks({
+    onRequestPermission: (req) => {
+      mainWindow?.webContents.send('knowledge-pack-permission-request', req);
+    },
+  });
+
+  // Expert knowledge catalog + retrieval (read-only operations)
+  ipcMain.handle('expert-knowledge-list', async () => {
+    try {
+      return { success: true, packs: getExpertKnowledgeEngine().listPacks() };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-get', async (_event, id: string) => {
+    try {
+      const pack = getExpertKnowledgeEngine().getPack(id);
+      return { success: true, pack };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-by-domain', async (_event, domain: string) => {
+    try {
+      return { success: true, packs: getExpertKnowledgeEngine().getPacksByDomain(domain as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-status', async () => {
+    try {
+      return { success: true, status: getExpertKnowledgeEngine().getKnowledgeStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-installed', async () => {
+    try {
+      return { success: true, packs: getExpertKnowledgeEngine().getInstalledPacks() };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-missing', async () => {
+    try {
+      return { success: true, packs: getExpertKnowledgeEngine().getMissingPacks() };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-recommend', async (_event, domain?: string) => {
+    try {
+      return { success: true, packs: getExpertKnowledgeEngine().getRecommendedPacks(domain as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, packs: [] };
+    }
+  });
+
+  // RAG retrieval from installed packs (the core Knowledge Engine → Brain path)
+  ipcMain.handle('expert-knowledge-retrieve', async (_event, query: string, opts?: { domain?: string; limit?: number }) => {
+    try {
+      const result = await getExpertKnowledgeEngine().retrieveKnowledge(query, opts as any);
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err.message, results: [], framed: '', installedPackCount: 0, offline: true };
+    }
+  });
+
+  // Knowledge Advisor — Persian recommendation messages
+  ipcMain.handle('expert-knowledge-recommendation-fa', async (_event, domain: string) => {
+    try {
+      const message = getExpertKnowledgeEngine().generateRecommendationFa(domain as any);
+      return { success: true, message };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-capabilities-fa', async (_event, domain: string) => {
+    try {
+      const message = getExpertKnowledgeEngine().getCapabilitiesFa(domain as any);
+      return { success: true, message };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('expert-knowledge-self-desc-fa', async () => {
+    try {
+      const message = getExpertKnowledgeEngine().getKnowledgeSelfDescriptionFa();
+      return { success: true, message };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Knowledge pack lifecycle (ALL permission-gated — never autonomous)
+  ipcMain.handle('knowledge-pack-scan', async () => {
+    try {
+      return { success: true, records: getKnowledgePackManager().scanInstalledPacks() };
+    } catch (err: any) {
+      return { success: false, error: err.message, records: [] };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-install', async (_event, packId: string) => {
+    try {
+      const result = await getKnowledgePackManager().installPack(packId);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-remove', async (_event, packId: string) => {
+    try {
+      const result = await getKnowledgePackManager().removePack(packId);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-update', async (_event, packId: string) => {
+    try {
+      const result = await getKnowledgePackManager().updatePack(packId);
+      return { success: result.success, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-verify', async (_event, packId: string) => {
+    try {
+      return { success: true, verification: getKnowledgePackManager().verifyChecksum(packId) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-verify-all', async () => {
+    try {
+      return { success: true, verifications: getKnowledgePackManager().verifyAllChecksums() };
+    } catch (err: any) {
+      return { success: false, error: err.message, verifications: [] };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-storage', async () => {
+    try {
+      return { success: true, storage: getKnowledgePackManager().getStorageInfo() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-pending-permission', async () => {
+    try {
+      const pending = getKnowledgePackManager().getPendingPermission();
+      return { success: true, hasPending: pending !== null, permission: pending };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-respond-permission', async (_event, userResponse: string) => {
+    try {
+      getKnowledgePackManager().respondToPermission(userResponse);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('knowledge-pack-respond-voice', async () => {
+    try {
+      await getKnowledgePackManager().respondViaVoice();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Agent Core (Phase 7) ──
   // Register built-in tools and start the agent
   ensureBuiltinToolsRegistered().catch((err) => {
