@@ -1,28 +1,22 @@
 /**
- * NEX AI — Secure Downloader (Phase 66 rewrite)
+ * NEX AI — Secure Downloader (Phase 69 — socket hang up fix)
  *
- * Complete rewrite to fix ECONNRESET and all download issues.
+ * Fixes "socket hang up" error during large file downloads.
  *
- * Key improvements over previous version:
- *   1. Uses https.request() with full options object (headers set BEFORE request)
- *   2. Proper redirect following with new request options per redirect
- *   3. Idle timeout (resets on every data chunk)
- *   4. Automatic retry with exponential backoff for transient errors
- *   5. Resume via HTTP Range header (correctly set in request options)
- *   6. SHA-256 hash computed correctly on resume (hashes existing + new bytes)
- *   7. User-Agent header (required by HuggingFace CDN)
- *   8. Accept-Encoding: identity (prevents compression breaking byte offsets)
- *   9. Handles 200, 206, 416 status codes correctly
- *  10. Error classification with Persian user messages
- *  11. Abort/cancel support
- *  12. Progress reporting (bytes, speed, ETA)
+ * Root causes fixed:
+ *   1. "socket hang up" was NOT in TRANSIENT_ERRORS list → no retry
+ *   2. No HTTPS Agent with keepAlive → connection dropped mid-download
+ *   3. No response.aborted handler → aborted responses not caught
+ *   4. Content-Length not verified at end → incomplete files reported as success
+ *   5. Idle timeout too short for slow CDN initial response (60s → 120s)
+ *   6. No request-level timeout (only idle timeout) → DNS/connection hang forever
  *
  * CRITICAL SECURITY:
  *   - HTTPS ONLY (HTTP URLs rejected)
- *   - TLS verification NEVER disabled
- *   - Sandbox destination (never writes to target directly)
- *   - This module does NOT decide whether to download — only executes
- *     AFTER PermissionGate has approved.
+ *   - TLS verification NEVER disabled (rejectUnauthorized stays true)
+ *   - Sandbox destination
+ *   - SHA-256 checksum
+ *   - PermissionGate not bypassed
  */
 
 import * as fs from 'fs';
@@ -65,14 +59,22 @@ export interface DownloadOptions {
 
 // ─── Error Classification ─────────────────────────────────────────────────
 
+// "socket hang up" is Node's generic message for ECONNRESET on HTTPS.
+// It occurs when the remote server closes the connection unexpectedly.
 const TRANSIENT_ERRORS = [
   'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EHOSTUNREACH',
   'ENETUNREACH', 'EAI_AGAIN', 'ECONNABORTED', 'UND_ERR_SOCKET',
+  'socket hang up',           // ← THE MISSING ONE
+  'EPROTO',                   // TLS protocol error (sometimes transient)
+  'HPE_INVALID_CONSTANT',     // HTTP parser error (sometimes transient)
 ];
 
 function isTransientError(err: any): boolean {
-  const code = err?.code || err?.message || '';
-  return TRANSIENT_ERRORS.some(e => code.includes(e));
+  const code = err?.code || '';
+  const message = err?.message || String(err);
+  return TRANSIENT_ERRORS.some(e =>
+    code.includes(e) || message.includes(e)
+  );
 }
 
 export interface DownloadErrorInfo {
@@ -88,7 +90,7 @@ export interface DownloadErrorInfo {
 export function classifyDownloadError(err: any, hasPartialFile: boolean): DownloadErrorInfo {
   const code = err?.code || '';
   const message = err?.message || String(err);
-  const isInterrupt = TRANSIENT_ERRORS.slice(0, 4).some(e => (code || message).includes(e));
+  const isInterrupt = TRANSIENT_ERRORS.slice(0, 10).some(e => (code + ' ' + message).includes(e));
 
   if (isInterrupt) {
     return { code, message, isTransient: true, canResume: hasPartialFile,
@@ -102,7 +104,7 @@ export function classifyDownloadError(err: any, hasPartialFile: boolean): Downlo
       userMessage: 'Download timed out (no data received). Retry or resume available.',
       userMessageFa: 'دانلود زمان‌سوت شد. تلاش مجدد یا ازسراری در دسترس است.' };
   }
-  if (code.includes('CERT') || code.includes('TLS') || code.includes('SSL')) {
+  if (code.includes('CERT') || code.includes('TLS') || code.includes('SSL') || code.includes('EPROTO')) {
     return { code, message, isTransient: false, canResume: false,
       classification: 'tls',
       userMessage: 'TLS/SSL certificate error. Check your system certificates.',
@@ -125,6 +127,19 @@ export function classifyDownloadError(err: any, hasPartialFile: boolean): Downlo
     userMessage: `Download failed: ${message}`,
     userMessageFa: `دانلود ناموفق: ${message}` };
 }
+
+// ─── HTTPS Agent (keepAlive for stable connections) ───────────────────────
+
+// Use a shared agent with keepAlive enabled for stable connections.
+// This prevents the socket from being closed prematurely by Node's
+// default agent (which has keepAlive=false).
+const downloadAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 4,
+  maxFreeSockets: 2,
+  timeout: 120_000,           // 2 min socket timeout
+  // rejectUnauthorized stays true (default) — TLS verification NEVER disabled
+});
 
 // ─── Secure Downloader ─────────────────────────────────────────────────────
 
@@ -150,12 +165,12 @@ export class SecureDownloader {
 
   /**
    * Download a file securely to the sandbox.
-   * HTTPS only. Resume support. Automatic retry on transient errors.
+   * HTTPS only. Resume support. Automatic retry on transient errors (including socket hang up).
    */
   async download(opts: DownloadOptions): Promise<DownloadResult> {
     const startMs = Date.now();
-    const maxRetries = opts.maxRetries ?? 3;
-    const idleTimeoutMs = opts.timeoutMs ?? 60_000;
+    const maxRetries = opts.maxRetries ?? 5;   // Increased from 3 to 5
+    const idleTimeoutMs = opts.timeoutMs ?? 120_000;  // Increased from 60s to 120s
 
     if (!opts.url.startsWith('https://')) {
       return { success: false, hash: '', bytesDownloaded: 0, durationMs: Date.now() - startMs,
@@ -178,7 +193,7 @@ export class SecureDownloader {
       const existingBytes = this.getPartialSize(sandboxPath);
 
       try {
-        const result = await this.attemptDownload(opts.url, sandboxPath, existingBytes, opts, startMs, idleTimeoutMs);
+        const result = await this.attemptDownload(opts.url, sandboxPath, existingBytes, opts, startMs, idleTimeoutMs, attempt);
 
         if (result.success) {
           return { ...result, resumed: existingBytes > 0, retries: attempt };
@@ -186,12 +201,13 @@ export class SecureDownloader {
 
         lastError = result.error;
         const errInfo = classifyDownloadError({ message: result.error }, this.getPartialSize(sandboxPath) > 0);
+
         if (!errInfo.isTransient) {
           return { ...result, resumed: this.getPartialSize(sandboxPath) > 0, retries: attempt };
         }
 
         if (attempt < maxRetries) {
-          const waitMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+          const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000);  // 2s, 4s, 8s, 16s, 30s
           console.log(`[NEX SecureDownloader] Attempt ${attempt + 1} failed: ${result.error}. Retrying in ${waitMs}ms...`);
           await new Promise(r => setTimeout(r, waitMs));
           retries = attempt + 1;
@@ -199,7 +215,7 @@ export class SecureDownloader {
       } catch (err: any) {
         lastError = err;
         if (isTransientError(err) && attempt < maxRetries) {
-          const waitMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+          const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000);
           console.log(`[NEX SecureDownloader] Attempt ${attempt + 1} threw: ${err.message}. Retrying in ${waitMs}ms...`);
           await new Promise(r => setTimeout(r, waitMs));
           retries = attempt + 1;
@@ -217,20 +233,22 @@ export class SecureDownloader {
   }
 
   /**
-   * Single download attempt. Handles redirects, resume, idle timeout, streaming.
+   * Single download attempt with full request tracing.
    */
   private attemptDownload(
     url: string, destPath: string, existingBytes: number,
     opts: DownloadOptions, startMs: number, idleTimeoutMs: number,
+    attemptNum: number,
   ): Promise<DownloadResult> {
     return new Promise((resolve) => {
       const urlObj = new URL(url);
+      const requestId = `HTTP:${String(attemptNum + 1).padStart(3, '0')}`;
 
       // Build headers — ALL set BEFORE the request is made
       const headers: Record<string, string> = {
         'User-Agent': 'NEX-AI/1.0 (local-ai-assistant; +https://github.com/ali12345666/nex-ai)',
         'Accept': 'application/octet-stream, */*',
-        'Accept-Encoding': 'identity', // no compression — exact byte offsets for resume
+        'Accept-Encoding': 'identity',
         'Connection': 'keep-alive',
       };
       if (existingBytes > 0) {
@@ -243,24 +261,27 @@ export class SecureDownloader {
         path: urlObj.pathname + urlObj.search,
         method: 'GET',
         headers,
+        agent: downloadAgent,          // ← Use shared keepAlive agent
+        timeout: 30_000,               // ← Initial connection timeout (30s)
       };
 
-      console.log('[HTTP_REQUEST] →', requestOpts.method, 'https://' + requestOpts.hostname + ':' + (requestOpts.port || 443) + requestOpts.path);
-      console.log('[HTTP_REQUEST] Headers:', JSON.stringify(headers));
-      console.log('[HTTP_REQUEST] Dest:', destPath, '— existingBytes:', existingBytes);
+      console.log(`[${requestId}] REQUEST → GET https://${requestOpts.hostname}:${requestOpts.port || 443}${requestOpts.path}`);
+      console.log(`[${requestId}] HOST=${requestOpts.hostname}`);
+      console.log(`[${requestId}] Headers=${JSON.stringify(headers)}`);
+      console.log(`[${requestId}] Dest=${destPath} — existingBytes=${existingBytes}`);
+      console.log(`[${requestId}] Agent: keepAlive=${(downloadAgent as any).keepAlive}, maxSockets=${(downloadAgent as any).maxSockets}`);
 
       let bytesDownloaded = existingBytes;
       let totalBytes = opts.expectedSize || 0;
+      let expectedContentLength = 0;
       let lastProgressMs = Date.now();
       let lastProgressBytes = bytesDownloaded;
       let settled = false;
       let idleTimer: NodeJS.Timeout | null = null;
       let writeStream: fs.WriteStream | null = null;
-      let needFullHash = false; // true if server sends 200 despite Range request
+      let needFullHash = false;
+      let redirectCount = 0;
 
-      // Hash: if resuming (existingBytes > 0), we'll hash the existing file
-      // first, then continue with new bytes. If server ignores Range (200),
-      // we set needFullHash=true and hash the whole file at the end.
       const hash = crypto.createHash('sha256');
       let hashInitialized = false;
 
@@ -276,6 +297,7 @@ export class SecureDownloader {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
           if (!settled) {
+            console.log(`[${requestId}] IDLE_TIMEOUT — no data for ${idleTimeoutMs}ms — bytes received: ${bytesDownloaded}`);
             settled = true;
             requestRef?.destroy();
             try { writeStream?.close(); } catch { /* */ }
@@ -289,27 +311,52 @@ export class SecureDownloader {
         }, idleTimeoutMs);
       };
 
+      const failWith = (error: string, errObj?: any) => {
+        if (settled) return;
+        settled = true;
+        if (idleTimer) clearTimeout(idleTimer);
+        try { writeStream?.close(); } catch { /* */ }
+        console.log(`[${requestId}] SOCKET_ERROR code=${errObj?.code || 'N/A'} message=${error}`);
+        console.log(`[${requestId}] bytes received before error: ${bytesDownloaded}`);
+        console.log(`[${requestId}] content-length was: ${expectedContentLength}`);
+        console.log(`[${requestId}] redirect count: ${redirectCount}`);
+        resolve({
+          success: false, hash: '', bytesDownloaded,
+          durationMs: Date.now() - startMs, error,
+          resumed: existingBytes > 0, retries: 0,
+        });
+      };
+
       let requestRef: any = null;
 
-      // Initialize hash for resume BEFORE opening write stream
+      // Initialize hash for resume
       initHashForResume();
 
-      // Open write stream (append if resuming, write if fresh)
+      // Open write stream
       const writeFlags = existingBytes > 0 ? 'a' : 'w';
       writeStream = fs.createWriteStream(destPath, { flags: writeFlags });
 
+      // Handle writeStream errors
+      writeStream.on('error', (err) => {
+        console.log(`[${requestId}] WRITE_STREAM_ERROR: ${err.message}`);
+        failWith(`Write error: ${err.message}`, err);
+      });
+
       requestRef = https.request(requestOpts, (response) => {
-        console.log('[HTTP_REQUEST] ← Response status:', response.statusCode, response.statusMessage);
-        console.log('[HTTP_REQUEST] ← Response headers:', JSON.stringify({
+        console.log(`[${requestId}] RESPONSE ← status=${response.statusCode} ${response.statusMessage}`);
+        console.log(`[${requestId}] RESPONSE headers: ${JSON.stringify({
           'content-length': response.headers['content-length'],
           'content-range': response.headers['content-range'],
           'content-type': response.headers['content-type'],
           'location': response.headers['location'] ? '(redirect)' : undefined,
-        }));
+          'transfer-encoding': response.headers['transfer-encoding'],
+        })}`);
 
         // ── Handle redirects (3xx) ──
         if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          console.log('[HTTP_REQUEST] Redirect →', response.headers.location);
+          redirectCount++;
+          console.log(`[${requestId}] REDIRECT → ${response.headers.location}`);
+
           response.resume();
           try { writeStream?.close(); } catch { /* */ }
           if (idleTimer) clearTimeout(idleTimer);
@@ -320,15 +367,16 @@ export class SecureDownloader {
           } else if (!redirectUrl.startsWith('https://')) {
             redirectUrl = new URL(redirectUrl, url).href;
           }
-          console.log('[HTTP_REQUEST] Following redirect to:', redirectUrl);
+          console.log(`[${requestId}] Following redirect to: ${redirectUrl}`);
 
           const currentBytes = this.getPartialSize(destPath);
-          this.attemptDownload(redirectUrl, destPath, currentBytes, opts, startMs, idleTimeoutMs).then(resolve);
+          this.attemptDownload(redirectUrl, destPath, currentBytes, opts, startMs, idleTimeoutMs, attemptNum).then(resolve);
           return;
         }
 
-        // ── Handle 416 (Range Not Satisfiable — file already complete) ──
+        // ── Handle 416 (Range Not Satisfiable) ──
         if (response.statusCode === 416) {
+          console.log(`[${requestId}] 416 Range Not Satisfiable — file may already be complete`);
           response.resume();
           try { writeStream?.close(); } catch { /* */ }
           if (idleTimer) clearTimeout(idleTimer);
@@ -342,6 +390,7 @@ export class SecureDownloader {
 
         // ── Handle non-200/206 ──
         if (response.statusCode !== 200 && response.statusCode !== 206) {
+          console.log(`[${requestId}] HTTP_ERROR: ${response.statusCode}`);
           response.resume();
           try { writeStream?.close(); } catch { /* */ }
           if (idleTimer) clearTimeout(idleTimer);
@@ -354,44 +403,55 @@ export class SecureDownloader {
 
         // ── Handle 200 when we expected 206 (server ignored Range) ──
         if (response.statusCode === 200 && existingBytes > 0) {
-          // Server sent full file — restart from scratch
+          console.log(`[${requestId}] Server sent 200 (ignored Range) — restarting from scratch`);
           try { writeStream?.close(); } catch { /* */ }
           writeStream = fs.createWriteStream(destPath, { flags: 'w' });
           bytesDownloaded = 0;
-          needFullHash = true; // hash the whole file at the end
+          needFullHash = true;
         }
 
         // ── Get total size ──
         const contentRange = response.headers['content-range'];
         if (contentRange) {
           const match = contentRange.match(/\/(\d+)/);
-          if (match) totalBytes = parseInt(match[1], 10);
+          if (match) {
+            totalBytes = parseInt(match[1], 10);
+            expectedContentLength = totalBytes;
+          }
         } else if (response.headers['content-length']) {
           const cl = parseInt(response.headers['content-length'], 10);
+          expectedContentLength = cl;
           totalBytes = (response.statusCode === 206) ? existingBytes + cl : cl;
         }
 
+        console.log(`[${requestId}] STREAM_START — totalBytes=${totalBytes} — statusCode=${response.statusCode}`);
+
         resetIdleTimer();
+
+        // ── Handle response aborted (server closes connection) ──
+        response.on('aborted', () => {
+          console.log(`[${requestId}] RESPONSE_ABORTED — bytes received: ${bytesDownloaded}`);
+          failWith('socket hang up', { code: 'ECONNRESET', message: 'socket hang up' });
+        });
 
         // ── Stream data to file + hash + progress ──
         response.on('data', (chunk: Buffer) => {
           if (opts.shouldAbort?.()) {
-            try { writeStream?.close(); } catch { /* */ }
-            if (idleTimer) clearTimeout(idleTimer);
-            requestRef?.destroy();
-            if (!settled) {
-              settled = true;
-              resolve({ success: false, hash: '', bytesDownloaded,
-                durationMs: Date.now() - startMs, error: 'Download aborted by user',
-                resumed: existingBytes > 0, retries: 0 });
-            }
+            failWith('Download aborted by user');
             return;
           }
 
           resetIdleTimer();
-          writeStream?.write(chunk);
 
-          // Update hash (only with new bytes if resuming via 206)
+          // Write to stream — handle backpressure
+          const ok = writeStream?.write(chunk);
+          if (!ok) {
+            // Backpressure — pause response until drain
+            response.pause();
+            writeStream?.once('drain', () => response.resume());
+          }
+
+          // Update hash
           if (!needFullHash) {
             hash.update(chunk);
           }
@@ -420,18 +480,30 @@ export class SecureDownloader {
           if (idleTimer) clearTimeout(idleTimer);
           if (settled) return;
 
+          console.log(`[${requestId}] STREAM_END — bytes received: ${bytesDownloaded} — expected: ${totalBytes}`);
+
+          // Verify content-length if available
+          if (expectedContentLength > 0 && response.statusCode === 200 && bytesDownloaded !== totalBytes) {
+            console.log(`[${requestId}] INCOMPLETE — received ${bytesDownloaded} but expected ${totalBytes}`);
+            failWith(`Incomplete download: received ${bytesDownloaded} bytes but expected ${totalBytes}`);
+            return;
+          }
+
           writeStream?.end(() => {
             if (settled) return;
             settled = true;
 
+            console.log(`[${requestId}] DOWNLOAD_COMPLETE — file: ${destPath}`);
+
             let finalHash: string;
             if (needFullHash) {
-              // Server sent 200 — hash the entire file
               const fileBuf = fs.readFileSync(destPath);
               finalHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
             } else {
               finalHash = hash.digest('hex');
             }
+
+            console.log(`[${requestId}] SHA-256: ${finalHash.slice(0, 16)}...`);
 
             resolve({ success: true, sandboxPath: destPath, hash: finalHash,
               bytesDownloaded, durationMs: Date.now() - startMs,
@@ -440,26 +512,31 @@ export class SecureDownloader {
         });
 
         response.on('error', (err: Error) => {
-          if (idleTimer) clearTimeout(idleTimer);
-          try { writeStream?.close(); } catch { /* */ }
-          if (!settled) {
-            settled = true;
-            resolve({ success: false, hash: '', bytesDownloaded,
-              durationMs: Date.now() - startMs, error: err.message,
-              resumed: existingBytes > 0, retries: 0 });
+          console.log(`[${requestId}] RESPONSE_ERROR: ${err.message} — code: ${(err as any).code}`);
+          failWith(err.message, err);
+        });
+
+        response.on('close', () => {
+          // 'close' fires after 'end' or 'error' — don't double-handle
+          if (!settled && !writeStream?.destroyed) {
+            // If close fires without end or error, it's an unexpected close
+            console.log(`[${requestId}] RESPONSE_CLOSE without end/error — treating as error`);
+            failWith('socket hang up', { code: 'ECONNRESET', message: 'socket hang up' });
           }
         });
       });
 
+      // ── Request-level error handler ──
       requestRef.on('error', (err: Error) => {
-        if (idleTimer) clearTimeout(idleTimer);
-        try { writeStream?.close(); } catch { /* */ }
-        if (!settled) {
-          settled = true;
-          resolve({ success: false, hash: '', bytesDownloaded,
-            durationMs: Date.now() - startMs, error: err.message,
-            resumed: existingBytes > 0, retries: 0 });
-        }
+        console.log(`[${requestId}] REQUEST_ERROR: ${err.message} — code: ${(err as any).code}`);
+        failWith(err.message, err);
+      });
+
+      // ── Request-level timeout (initial connection / DNS) ──
+      requestRef.on('timeout', () => {
+        console.log(`[${requestId}] REQUEST_TIMEOUT — destroying request`);
+        requestRef.destroy();
+        failWith('Connection timeout (30s)');
       });
 
       requestRef.end();
