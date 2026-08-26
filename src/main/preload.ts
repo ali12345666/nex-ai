@@ -276,6 +276,11 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('model-deployment-permission-request', listener);
     return () => ipcRenderer.removeListener('model-deployment-permission-request', listener);
   },
+  onModelDeploymentProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any) => callback(progress);
+    ipcRenderer.on('model-deployment-progress', listener);
+    return () => ipcRenderer.removeListener('model-deployment-progress', listener);
+  },
 
   // ── Phase 62: Basic Interaction MVP ──
   interactionProcessText: (request: any) => ipcRenderer.invoke('interaction-process-text', request),

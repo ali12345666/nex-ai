@@ -222,6 +222,7 @@ export interface NexAPI {
   modelDeployRespondVoice: () => Promise<{ success: boolean; error?: string }>;
   modelDeploySecurityAudit: () => Promise<{ success: boolean; audit?: any; verifierAudit?: any; testerAudit?: any; error?: string }>;
   onModelDeploymentPermissionRequest: (callback: (req: any) => void) => () => void;
+  onModelDeploymentProgress: (callback: (progress: any) => void) => () => void;
 
   // Phase 62: Basic Interaction MVP
   interactionProcessText: (request: any) => Promise<{ success: boolean; result?: any; error?: string }>;

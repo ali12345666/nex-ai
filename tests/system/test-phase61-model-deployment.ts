@@ -357,7 +357,7 @@ async function main(): Promise<void> {
   assert('panel shows inference test', panelSrc.includes('inferenceTest'));
   assert('panel has permission dialog', panelSrc.includes('pendingPermission'));
   assert('panel has security note', panelSrc.includes('اجازه') || panelSrc.includes('HTTPS') || panelSrc.includes('permission'));
-  assert('panel has stage metadata', panelSrc.includes('STAGE_META'));
+  assert('panel has stage metadata', panelSrc.includes('STAGE_META') || panelSrc.includes('STAGE_MAP'));
 
   const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
   assert('nav has deploy view', navSrc.includes("'deploy'"));

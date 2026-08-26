@@ -1846,11 +1846,15 @@ async function setupIPC(): Promise<void> {
   const { getModelInferenceTester, verifyInferenceTesterSecurity } = await import('./ai/model-inference-tester');
   const deploymentManager = getModelDeploymentManager();
 
-  // Wire deployment manager's permission callbacks → forward to renderer
+  // Wire deployment manager's permission + progress callbacks → forward to renderer
   deploymentManager.setCallbacks({
     onRequestPermission: (req) => {
       mainWindow?.webContents.send('model-deployment-permission-request', req);
     },
+  });
+  // Phase 63: forward real-time deployment progress (download %, speed, stage) to the renderer
+  deploymentManager.setProgressCallback((progress) => {
+    mainWindow?.webContents.send('model-deployment-progress', progress);
   });
 
   // Model deployment: import a local GGUF file (SAFE — no permission needed)
