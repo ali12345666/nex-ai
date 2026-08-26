@@ -230,6 +230,24 @@ contextBridge.exposeInMainWorld('nexAPI', {
   localRuntimeIsGguf: (filePath: string) => ipcRenderer.invoke('local-runtime-is-gguf', filePath),
   localRuntimeSecurityAudit: () => ipcRenderer.invoke('local-runtime-security-audit'),
 
+  // ── Phase 59: Advanced Model Ecosystem ──
+  ecosystemCatalog: () => ipcRenderer.invoke('ecosystem-catalog'),
+  ecosystemCatalogByType: (type: string) => ipcRenderer.invoke('ecosystem-catalog-by-type', type),
+  ecosystemCatalogByProvider: (provider: string) => ipcRenderer.invoke('ecosystem-catalog-by-provider', provider),
+  ecosystemCatalogEntry: (id: string) => ipcRenderer.invoke('ecosystem-catalog-entry', id),
+  ecosystemModelsByTier: (tier: string) => ipcRenderer.invoke('ecosystem-models-by-tier', tier),
+  ecosystemPersianModels: () => ipcRenderer.invoke('ecosystem-persian-models'),
+  ecosystemProfiles: () => ipcRenderer.invoke('ecosystem-profiles'),
+  ecosystemProfile: (catalogId: string) => ipcRenderer.invoke('ecosystem-profile', catalogId),
+  ecosystemRecommend: (request: any) => ipcRenderer.invoke('ecosystem-recommend', request),
+  ecosystemCollaboration: (request: any) => ipcRenderer.invoke('ecosystem-collaboration', request),
+  ecosystemCompare: (modelAId: string, modelBId: string) => ipcRenderer.invoke('ecosystem-compare', modelAId, modelBId),
+  ecosystemInstalledWithCatalog: () => ipcRenderer.invoke('ecosystem-installed-with-catalog'),
+  ecosystemTierFit: (tier: string) => ipcRenderer.invoke('ecosystem-tier-fit', tier),
+  ecosystemCanRun: (catalogId: string) => ipcRenderer.invoke('ecosystem-can-run', catalogId),
+  ecosystemStatus: () => ipcRenderer.invoke('ecosystem-status'),
+  ecosystemSecurityAudit: () => ipcRenderer.invoke('ecosystem-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

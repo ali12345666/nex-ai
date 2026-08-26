@@ -50,6 +50,8 @@ const VoiceCenterPanel = lazy(() => import('../VoiceCenterPanel'));
 const PlannerPanel = lazy(() => import('../PlannerPanel'));
 // Phase 58: Local AI Runtime (model activation + telemetry)
 const LocalRuntimePanel = lazy(() => import('../LocalRuntimePanel'));
+// Phase 59: Model Ecosystem (catalog + advisor + comparison + collaboration)
+const ModelEcosystemPanel = lazy(() => import('../ModelEcosystemPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -206,6 +208,7 @@ export default function AppShell() {
       case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceCenterPanel /></Suspense>;
       case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
       case 'localai': return <Suspense fallback={<PanelLoading />}><LocalRuntimePanel /></Suspense>;
+      case 'ecosystem': return <Suspense fallback={<PanelLoading />}><ModelEcosystemPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

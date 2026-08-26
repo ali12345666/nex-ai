@@ -180,6 +180,24 @@ export interface NexAPI {
   localRuntimeIsGguf: (filePath: string) => Promise<{ success: boolean; isGguf?: boolean; error?: string }>;
   localRuntimeSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
 
+  // Phase 59: Advanced Model Ecosystem
+  ecosystemCatalog: () => Promise<{ success: boolean; catalog?: any[]; error?: string }>;
+  ecosystemCatalogByType: (type: string) => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  ecosystemCatalogByProvider: (provider: string) => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  ecosystemCatalogEntry: (id: string) => Promise<{ success: boolean; entry?: any; error?: string }>;
+  ecosystemModelsByTier: (tier: string) => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  ecosystemPersianModels: () => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  ecosystemProfiles: () => Promise<{ success: boolean; profiles?: any[]; error?: string }>;
+  ecosystemProfile: (catalogId: string) => Promise<{ success: boolean; profile?: any; error?: string }>;
+  ecosystemRecommend: (request: any) => Promise<{ success: boolean; recommendation?: any; error?: string }>;
+  ecosystemCollaboration: (request: any) => Promise<{ success: boolean; collaboration?: any; error?: string }>;
+  ecosystemCompare: (modelAId: string, modelBId: string) => Promise<{ success: boolean; comparison?: any; error?: string }>;
+  ecosystemInstalledWithCatalog: () => Promise<{ success: boolean; models?: any[]; error?: string }>;
+  ecosystemTierFit: (tier: string) => Promise<{ success: boolean; recommendations?: any[]; error?: string }>;
+  ecosystemCanRun: (catalogId: string) => Promise<{ success: boolean; verdict?: any; error?: string }>;
+  ecosystemStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  ecosystemSecurityAudit: () => Promise<{ success: boolean; audit?: any; catalogAudit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

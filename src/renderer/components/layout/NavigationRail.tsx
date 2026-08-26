@@ -9,10 +9,10 @@
 
 import React from 'react';
 import {
-  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu,
+  MessageSquare, LayoutGrid, Brain, BookOpen, Settings, Sparkles, Rocket, GraduationCap, Mic, Network, Cpu, Boxes,
 } from 'lucide-react';
 
-export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'knowledge' | 'settings' | 'advisor' | 'runtime' | 'expertise' | 'voice' | 'planner' | 'localai' | 'ecosystem';
 
 /** Workspace sub-tabs — accessible when view === 'workspace'. */
 export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
@@ -34,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'voice', icon: <Mic size={20} strokeWidth={1.5} />, label: 'Voice' },
   { id: 'planner', icon: <Network size={20} strokeWidth={1.5} />, label: 'Planner' },
   { id: 'localai', icon: <Cpu size={20} strokeWidth={1.5} />, label: 'Local AI' },
+  { id: 'ecosystem', icon: <Boxes size={20} strokeWidth={1.5} />, label: 'Models' },
   { id: 'settings', icon: <Settings size={20} strokeWidth={1.5} />, label: 'Settings' },
 ];
 

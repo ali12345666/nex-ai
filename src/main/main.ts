@@ -1595,6 +1595,157 @@ async function setupIPC(): Promise<void> {
 
   void runtimeManager;
 
+  // ── Phase 59: Advanced Model Ecosystem ──
+  const { getModelEcosystemManager, verifyEcosystemSecurity } = await import('./ai/model-intelligence/model-ecosystem-manager');
+  const { verifyCatalogSecurity: verifyCatalogSec } = await import('./ai/model-intelligence/model-profiles');
+  const ecosystemManager = getModelEcosystemManager();
+
+  // Ecosystem: full catalog (Phase 49 + Phase 59 expansion)
+  ipcMain.handle('ecosystem-catalog', async () => {
+    try {
+      return { success: true, catalog: getModelEcosystemManager().getCatalog() };
+    } catch (err: any) {
+      return { success: false, error: err.message, catalog: [] };
+    }
+  });
+
+  ipcMain.handle('ecosystem-catalog-by-type', async (_event, type: string) => {
+    try {
+      return { success: true, models: getModelEcosystemManager().getCatalogByType(type) };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  ipcMain.handle('ecosystem-catalog-by-provider', async (_event, provider: string) => {
+    try {
+      return { success: true, models: getModelEcosystemManager().getCatalogByProvider(provider) };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  ipcMain.handle('ecosystem-catalog-entry', async (_event, id: string) => {
+    try {
+      return { success: true, entry: getModelEcosystemManager().getCatalogEntry(id) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('ecosystem-models-by-tier', async (_event, tier: string) => {
+    try {
+      return { success: true, models: getModelEcosystemManager().getModelsByTier(tier as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  ipcMain.handle('ecosystem-persian-models', async () => {
+    try {
+      return { success: true, models: getModelEcosystemManager().getPersianModels() };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Ecosystem: model profiles (identity per model)
+  ipcMain.handle('ecosystem-profiles', async () => {
+    try {
+      return { success: true, profiles: getModelEcosystemManager().getProfiles() };
+    } catch (err: any) {
+      return { success: false, error: err.message, profiles: [] };
+    }
+  });
+
+  ipcMain.handle('ecosystem-profile', async (_event, catalogId: string) => {
+    try {
+      return { success: true, profile: getModelEcosystemManager().getProfile(catalogId) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: intelligent advisor — recommend best model for a task
+  ipcMain.handle('ecosystem-recommend', async (_event, request: any) => {
+    try {
+      const rec = await getModelEcosystemManager().recommendForTask(request);
+      return { success: true, recommendation: rec };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: multi-model collaboration
+  ipcMain.handle('ecosystem-collaboration', async (_event, request: any) => {
+    try {
+      const collab = await getModelEcosystemManager().composeCollaboration(request);
+      return { success: true, collaboration: collab };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: model comparison
+  ipcMain.handle('ecosystem-compare', async (_event, modelAId: string, modelBId: string) => {
+    try {
+      const comparison = getModelEcosystemManager().compareModels(modelAId, modelBId);
+      return { success: true, comparison };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: catalog ↔ installed matching (gap analysis)
+  ipcMain.handle('ecosystem-installed-with-catalog', async () => {
+    try {
+      return { success: true, models: getModelEcosystemManager().getInstalledWithCatalog() };
+    } catch (err: any) {
+      return { success: false, error: err.message, models: [] };
+    }
+  });
+
+  // Ecosystem: hardware tier fit
+  ipcMain.handle('ecosystem-tier-fit', async (_event, tier: string) => {
+    try {
+      return { success: true, recommendations: getModelEcosystemManager().recommendByTierFit(tier as any) };
+    } catch (err: any) {
+      return { success: false, error: err.message, recommendations: [] };
+    }
+  });
+
+  // Ecosystem: hardware verdict for a catalog model
+  ipcMain.handle('ecosystem-can-run', async (_event, catalogId: string) => {
+    try {
+      const entry = getModelEcosystemManager().getCatalogEntry(catalogId);
+      if (!entry) return { success: false, error: 'Catalog entry not found' };
+      const verdict = getModelEcosystemManager().canRun(entry);
+      return { success: true, verdict };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: full status
+  ipcMain.handle('ecosystem-status', async () => {
+    try {
+      return { success: true, status: getModelEcosystemManager().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Ecosystem: security audit
+  ipcMain.handle('ecosystem-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyEcosystemSecurity(), catalogAudit: verifyCatalogSec() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void ecosystemManager;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');
