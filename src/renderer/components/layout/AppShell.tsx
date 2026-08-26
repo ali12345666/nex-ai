@@ -44,6 +44,8 @@ const ModelAdvisorPanel = lazy(() => import('./ModelAdvisorPanel'));
 const RuntimeSetupPanel = lazy(() => import('./RuntimeSetupPanel'));
 // Phase 55: Expert Knowledge Center (offline knowledge packs)
 const ExpertKnowledgePanel = lazy(() => import('../ExpertKnowledgePanel'));
+// Phase 56: Voice Center (advanced voice conversation)
+const VoiceCenterPanel = lazy(() => import('../VoiceCenterPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -197,6 +199,7 @@ export default function AppShell() {
       case 'advisor': return <Suspense fallback={<PanelLoading />}><ModelAdvisorPanel /></Suspense>;
       case 'runtime': return <Suspense fallback={<PanelLoading />}><RuntimeSetupPanel /></Suspense>;
       case 'expertise': return <Suspense fallback={<PanelLoading />}><ExpertKnowledgePanel /></Suspense>;
+      case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceCenterPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

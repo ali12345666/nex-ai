@@ -116,6 +116,35 @@ export interface NexAPI {
   voiceListVoices: () => Promise<{ success: boolean; voices?: Array<{ name: string; language: string; gender?: string }>; error?: string }>;
   voiceFindBinaries: () => Promise<{ success: boolean; whisper: string | null; piper: string | null }>;
 
+  // Phase 56: Advanced Voice Conversation System
+  voiceConversationStart: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationStop: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationToggle: () => Promise<{ success: boolean; active?: boolean; error?: string }>;
+  voiceConversationStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  voiceConversationFeed: (text: string) => Promise<{ success: boolean; error?: string }>;
+  voiceConversationSpeak: (text: string) => Promise<{ success: boolean; error?: string }>;
+  voiceConversationStartTurn: (initialText?: string) => Promise<{ success: boolean; error?: string }>;
+  voiceConversationAbort: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationStopSpeaking: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationSetPersonality: (type: string) => Promise<{ success: boolean; error?: string }>;
+  voiceConversationPersonalityPrefix: () => Promise<{ success: boolean; prefix?: string; error?: string }>;
+  voiceConversationEnableWakeWord: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationDisableWakeWord: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationRestoreContext: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationReset: () => Promise<{ success: boolean; error?: string }>;
+  voiceConversationOrbColor: () => Promise<{ success: boolean; color?: string; state?: string; error?: string }>;
+  wakeWordDetect: (text: string) => Promise<{ success: boolean; match?: any; error?: string }>;
+  wakeWordFeed: (text: string) => Promise<{ success: boolean; match?: any; error?: string }>;
+  wakeWordStatus: () => Promise<{ success: boolean; lastMatch?: any; matchCount?: number; config?: any; error?: string }>;
+  voiceCommandParse: (text: string) => Promise<{ success: boolean; result?: any; error?: string }>;
+  onVoiceConversationState: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationWake: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationUser: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationNex: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationInterrupted: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationCommand: (callback: (ev: any) => void) => () => void;
+  onVoiceConversationError: (callback: (ev: any) => void) => () => void;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

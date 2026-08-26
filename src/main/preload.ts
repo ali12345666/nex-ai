@@ -110,6 +110,63 @@ contextBridge.exposeInMainWorld('nexAPI', {
   voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
   voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
 
+  // ── Phase 56: Advanced Voice Conversation System ──
+  voiceConversationStart: () => ipcRenderer.invoke('voice-conversation-start'),
+  voiceConversationStop: () => ipcRenderer.invoke('voice-conversation-stop'),
+  voiceConversationToggle: () => ipcRenderer.invoke('voice-conversation-toggle'),
+  voiceConversationStatus: () => ipcRenderer.invoke('voice-conversation-status'),
+  voiceConversationFeed: (text: string) => ipcRenderer.invoke('voice-conversation-feed', text),
+  voiceConversationSpeak: (text: string) => ipcRenderer.invoke('voice-conversation-speak', text),
+  voiceConversationStartTurn: (initialText?: string) => ipcRenderer.invoke('voice-conversation-start-turn', initialText),
+  voiceConversationAbort: () => ipcRenderer.invoke('voice-conversation-abort'),
+  voiceConversationStopSpeaking: () => ipcRenderer.invoke('voice-conversation-stop-speaking'),
+  voiceConversationSetPersonality: (type: string) => ipcRenderer.invoke('voice-conversation-set-personality', type),
+  voiceConversationPersonalityPrefix: () => ipcRenderer.invoke('voice-conversation-personality-prefix'),
+  voiceConversationEnableWakeWord: () => ipcRenderer.invoke('voice-conversation-enable-wake-word'),
+  voiceConversationDisableWakeWord: () => ipcRenderer.invoke('voice-conversation-disable-wake-word'),
+  voiceConversationRestoreContext: () => ipcRenderer.invoke('voice-conversation-restore-context'),
+  voiceConversationReset: () => ipcRenderer.invoke('voice-conversation-reset'),
+  voiceConversationOrbColor: () => ipcRenderer.invoke('voice-conversation-orb-color'),
+  wakeWordDetect: (text: string) => ipcRenderer.invoke('wake-word-detect', text),
+  wakeWordFeed: (text: string) => ipcRenderer.invoke('wake-word-feed', text),
+  wakeWordStatus: () => ipcRenderer.invoke('wake-word-status'),
+  voiceCommandParse: (text: string) => ipcRenderer.invoke('voice-command-parse', text),
+  onVoiceConversationState: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-state', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-state', listener);
+  },
+  onVoiceConversationWake: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-wake', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-wake', listener);
+  },
+  onVoiceConversationUser: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-user', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-user', listener);
+  },
+  onVoiceConversationNex: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-nex', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-nex', listener);
+  },
+  onVoiceConversationInterrupted: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-interrupted', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-interrupted', listener);
+  },
+  onVoiceConversationCommand: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-command', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-command', listener);
+  },
+  onVoiceConversationError: (callback: (ev: any) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-conversation-error', listener);
+    return () => ipcRenderer.removeListener('voice-conversation-error', listener);
+  },
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

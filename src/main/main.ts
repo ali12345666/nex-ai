@@ -1108,6 +1108,240 @@ async function setupIPC(): Promise<void> {
     };
   });
 
+  // ── Phase 56: Advanced Voice Conversation System ──
+  const { getNexVoiceConversation, CONVERSATION_ORB_COLOR } = await import('./voice/nex-voice-conversation');
+  const { getWakeWordDetector, parseVoiceCommand, WakeWordDetector, AudioEnergyGate } = await import('./voice/wake-word-detector');
+
+  // Wire the conversation system's voice-capture hook into PermissionGate
+  // (Phase 43) so sensitive actions can be confirmed by voice.
+  const conversation = getNexVoiceConversation();
+  conversation.setPermissionVoiceCapture(async () => {
+    return await conversation.captureVoiceConfirmation();
+  });
+
+  // Voice conversation: lifecycle
+  ipcMain.handle('voice-conversation-start', async () => {
+    try {
+      await getNexVoiceConversation().start();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-stop', async () => {
+    try {
+      await getNexVoiceConversation().stop();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-toggle', async () => {
+    try {
+      await getNexVoiceConversation().toggle();
+      return { success: true, active: getNexVoiceConversation().isActive };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-status', async () => {
+    try {
+      return { success: true, status: getNexVoiceConversation().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: feed a transcript (from STT or text input)
+  ipcMain.handle('voice-conversation-feed', async (_event, text: string) => {
+    try {
+      getNexVoiceConversation().feedTranscript(text);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: speak a response (TTS) — called by the brain/chat after generating a reply
+  ipcMain.handle('voice-conversation-speak', async (_event, text: string) => {
+    try {
+      await getNexVoiceConversation().speakResponse(text);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: start a turn manually (no wake word needed)
+  ipcMain.handle('voice-conversation-start-turn', async (_event, initialText?: string) => {
+    try {
+      await getNexVoiceConversation().startConversationTurn(initialText);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: abort current turn (cancel)
+  ipcMain.handle('voice-conversation-abort', async () => {
+    try {
+      getNexVoiceConversation().abortCurrentTurn();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: stop speaking (interrupt TTS)
+  ipcMain.handle('voice-conversation-stop-speaking', async () => {
+    try {
+      const engine = getLocalVoiceEngine();
+      engine.stopSpeaking();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: personality control
+  ipcMain.handle('voice-conversation-set-personality', async (_event, type: string) => {
+    try {
+      getNexVoiceConversation().setPersonality(type as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-personality-prefix', async () => {
+    try {
+      return { success: true, prefix: getNexVoiceConversation().getPersonalityPrefixFa() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: wake word control
+  ipcMain.handle('voice-conversation-enable-wake-word', async () => {
+    try {
+      getNexVoiceConversation().enableWakeWord();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-disable-wake-word', async () => {
+    try {
+      getNexVoiceConversation().disableWakeWord();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: restore context from long-term memory
+  ipcMain.handle('voice-conversation-restore-context', async () => {
+    try {
+      await getNexVoiceConversation().restoreContext();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-conversation-reset', async () => {
+    try {
+      getNexVoiceConversation().reset();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice conversation: orb color (for UI integration)
+  ipcMain.handle('voice-conversation-orb-color', async () => {
+    try {
+      const conv = getNexVoiceConversation();
+      return { success: true, color: conv.orbColor, state: conv.currentState };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Wake word detector: detect in a transcript (stateless check)
+  ipcMain.handle('wake-word-detect', async (_event, text: string) => {
+    try {
+      const match = getWakeWordDetector().detect(text);
+      return { success: true, match };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Wake word detector: feed a transcript (emits wake event if matched)
+  ipcMain.handle('wake-word-feed', async (_event, text: string) => {
+    try {
+      const match = getWakeWordDetector().feedTranscript(text);
+      return { success: true, match };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Wake word detector: status (last match, count)
+  ipcMain.handle('wake-word-status', async () => {
+    try {
+      const d = getWakeWordDetector();
+      return { success: true, lastMatch: d.getLastMatch(), matchCount: d.getMatchCount(), config: d.getConfig() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Voice command parser: parse natural speech control commands
+  ipcMain.handle('voice-command-parse', async (_event, text: string) => {
+    try {
+      return { success: true, result: parseVoiceCommand(text) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Wire conversation state changes → forward to renderer (for orb + UI)
+  conversation.setCallbacks({
+    onStateChange: (state, prev) => {
+      mainWindow?.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state] });
+    },
+    onWakeWord: (match) => {
+      mainWindow?.webContents.send('voice-conversation-wake', match);
+    },
+    onUserUtterance: (text) => {
+      mainWindow?.webContents.send('voice-conversation-user', { text });
+    },
+    onNexResponse: (text) => {
+      mainWindow?.webContents.send('voice-conversation-nex', { text });
+    },
+    onPartialTranscript: (text) => {
+      mainWindow?.webContents.send('voice-conversation-partial', { text });
+    },
+    onInterruption: () => {
+      mainWindow?.webContents.send('voice-conversation-interrupted', {});
+    },
+    onVoiceCommand: (command, phrase) => {
+      mainWindow?.webContents.send('voice-conversation-command', { command, phrase });
+    },
+    onError: (message) => {
+      mainWindow?.webContents.send('voice-conversation-error', { message });
+    },
+  });
+
+  void WakeWordDetector;
+  void AudioEnergyGate;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');
