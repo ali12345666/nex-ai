@@ -60,6 +60,8 @@ const ModelDeploymentPanel = lazy(() => import('../ModelDeploymentPanel'));
 const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));
 // Phase 64: First-Run Wizard (model activation)
 const FirstRunWizardPanel = lazy(() => import('../FirstRunWizardPanel'));
+// Phase 65: Hardware Validation (diagnostics + benchmark + pipeline test)
+const HardwareValidationPanel = lazy(() => import('../HardwareValidationPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -221,6 +223,7 @@ export default function AppShell() {
       case 'deploy': return <Suspense fallback={<PanelLoading />}><ModelDeploymentPanel /></Suspense>;
       case 'interact': return <Suspense fallback={<PanelLoading />}><BasicInteractionPanel /></Suspense>;
       case 'firstrun': return <Suspense fallback={<PanelLoading />}><FirstRunWizardPanel /></Suspense>;
+      case 'hwvalid': return <Suspense fallback={<PanelLoading />}><HardwareValidationPanel /></Suspense>;
       default: return <NoProject />;
     }
   };

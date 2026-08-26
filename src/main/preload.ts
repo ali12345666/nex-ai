@@ -302,6 +302,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
   firstrunBrainReady: () => ipcRenderer.invoke('firstrun-brain-ready'),
   firstrunSecurityAudit: () => ipcRenderer.invoke('firstrun-security-audit'),
 
+  // ── Phase 65: Real Local AI Hardware Validation ──
+  hwDiagnostics: () => ipcRenderer.invoke('hw-diagnostics'),
+  hwBenchmark: (modelId: string, opts?: any) => ipcRenderer.invoke('hw-benchmark', modelId, opts),
+  hwValidatePipeline: (opts?: any) => ipcRenderer.invoke('hw-validate-pipeline', opts),
+  hwDetailedStatus: () => ipcRenderer.invoke('hw-detailed-status'),
+  hwFixWindowsPath: (filePath: string) => ipcRenderer.invoke('hw-fix-windows-path', filePath),
+  hwSecurityAudit: () => ipcRenderer.invoke('hw-security-audit'),
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
   visionStatus: () => ipcRenderer.invoke('vision-status'),
   visionLoadModel: (modelPath: string, mmprojPath?: string) =>

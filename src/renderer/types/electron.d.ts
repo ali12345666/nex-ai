@@ -244,6 +244,14 @@ export interface NexAPI {
   firstrunBrainReady: () => Promise<{ success: boolean; ready?: boolean; error?: string }>;
   firstrunSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
 
+  // Phase 65: Real Local AI Hardware Validation
+  hwDiagnostics: () => Promise<{ success: boolean; diagnostics?: any; error?: string }>;
+  hwBenchmark: (modelId: string, opts?: any) => Promise<{ success: boolean; benchmark?: any; error?: string }>;
+  hwValidatePipeline: (opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;
+  hwDetailedStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  hwFixWindowsPath: (filePath: string) => Promise<{ success: boolean; fixed?: string; error?: string }>;
+  hwSecurityAudit: () => Promise<{ success: boolean; audit?: any; error?: string }>;
+
   // Phase 42: Local Vision Engine
   visionStatus: () => Promise<{
     success: boolean; hasProvider: boolean; hasLocalProvider: boolean;

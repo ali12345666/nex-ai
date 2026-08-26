@@ -2134,6 +2134,69 @@ async function setupIPC(): Promise<void> {
 
   void firstRunWizard;
 
+  // ── Phase 65: Real Local AI Hardware Validation ──
+  const { getHardwareDiagnosticsEngine, verifyDiagnosticsSecurity } = await import('./ai/hardware-diagnostics');
+  const hwDiagEngine = getHardwareDiagnosticsEngine();
+
+  // Hardware diagnostics: get CPU/RAM/GPU/VRAM snapshot
+  ipcMain.handle('hw-diagnostics', async () => {
+    try {
+      return { success: true, diagnostics: getHardwareDiagnosticsEngine().getDiagnostics() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Hardware diagnostics: run inference benchmark on a model
+  ipcMain.handle('hw-benchmark', async (_event, modelId: string, opts?: any) => {
+    try {
+      const result = await getHardwareDiagnosticsEngine().runBenchmark(modelId, opts);
+      return { success: true, benchmark: result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Hardware diagnostics: validate full pipeline (hardware + model + inference + Persian + conversation)
+  ipcMain.handle('hw-validate-pipeline', async (_event, opts?: any) => {
+    try {
+      const result = await getHardwareDiagnosticsEngine().validatePipeline(opts);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Hardware diagnostics: detailed runtime status (model + context + threads + GPU layers + tokens/sec)
+  ipcMain.handle('hw-detailed-status', async () => {
+    try {
+      return { success: true, status: getHardwareDiagnosticsEngine().getDetailedStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Hardware diagnostics: fix Windows path
+  ipcMain.handle('hw-fix-windows-path', async (_event, filePath: string) => {
+    try {
+      const fixed = getHardwareDiagnosticsEngine().fixWindowsPath(filePath);
+      return { success: true, fixed };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Hardware diagnostics: security audit
+  ipcMain.handle('hw-security-audit', async () => {
+    try {
+      return { success: true, audit: verifyDiagnosticsSecurity() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  void hwDiagEngine;
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');
