@@ -60,6 +60,10 @@ export default function NexLibraryPanel() {
   const [downloadableModels, setDownloadableModels] = useState<any[]>([]);
   const [unifiedDownloads, setUnifiedDownloads] = useState<Map<string, any>>(new Map());
   const [showImportDialog, setShowImportDialog] = useState(false);
+  // ── Phase 76: Unified Voice Components state ──
+  const [voiceComponents, setVoiceComponents] = useState<any[]>([]);
+  const [voiceInstallProgress, setVoiceInstallProgress] = useState<Map<string, any>>(new Map());
+  const [voiceRuntimeStatus, setVoiceRuntimeStatus] = useState<any | null>(null);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -77,16 +81,20 @@ export default function NexLibraryPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, installedRes, statusRes, dlModelsRes] = await Promise.all([
+      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes] = await Promise.all([
         window.nexAPI.ecosystemCatalog(),
         window.nexAPI.localRuntimeListModels(),
         window.nexAPI.interactionStatus(),
         window.nexAPI.modelDownloadList(),
+        window.nexAPI.componentUnifiedVoiceList(),
+        window.nexAPI.voiceFindBinaries().catch(() => ({ success: false })),
       ]);
       if (catRes.success) setCatalog(catRes.catalog || []);
       if (installedRes.success) setInstalled(installedRes.models || []);
       if (statusRes.success) setStatus(statusRes.status);
       if (dlModelsRes.success) setDownloadableModels(dlModelsRes.models || []);
+      if (voiceRes.success) setVoiceComponents(voiceRes.components || []);
+      if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
     } catch (err: any) {
       setError(err?.message);
     } finally {
@@ -184,12 +192,29 @@ export default function NexLibraryPanel() {
       }
     });
 
+    // ── Phase 76: Subscribe to component install progress ──
+    const unsubComponent = window.nexAPI.onComponentInstallProgress((progress) => {
+      setVoiceInstallProgress((prev) => {
+        const next = new Map(prev);
+        next.set(progress.componentId, progress);
+        return next;
+      });
+      if (progress.state === 'completed') {
+        setToast({ kind: 'ok', msg: `${progress.componentName} نصب شد` });
+        refresh();
+      }
+      if (progress.state === 'download-failed') {
+        setToast({ kind: 'err', msg: `نصب ناموفق: ${progress.componentName}` });
+      }
+    });
+
     return () => {
       unsubState();
       unsubCompleted();
       unsubError();
       unsubPerm();
       unsubUnified();
+      unsubComponent();
     };
   }, []);
 
@@ -377,6 +402,62 @@ export default function NexLibraryPanel() {
     }
   };
 
+  // ── Phase 76: Unified Voice Component Install ──
+  const handleInstallVoiceComponent = async (componentId: string, componentName: string) => {
+    setError(null);
+    console.log('[VOICE_INSTALL] Starting:', componentId, componentName);
+    try {
+      const res = await window.nexAPI.componentUnifiedInstall(componentId);
+      if (res.success) {
+        showToast('ok', `${componentName} نصب شد`);
+        refresh();
+      } else if ((res as any).status === 'permission-denied') {
+        console.log('[VOICE_INSTALL] Permission denied');
+      } else {
+        console.log('[VOICE_INSTALL] Failed:', res.error);
+        setError(res.error || 'نصب ناموفق بود');
+      }
+    } catch (err: any) {
+      console.log('[VOICE_INSTALL] Error:', err?.message);
+      setError(err?.message);
+    }
+  };
+
+  // ── Phase 76: Import voice component from local file ──
+  const handleImportVoiceComponent = async (componentId: string) => {
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      // Accept appropriate extensions based on component
+      const component = voiceComponents.find(c => c.id === componentId);
+      const acceptExt = component?.filename?.toLowerCase().endsWith('.gguf') ? '.gguf'
+        : component?.filename?.toLowerCase().endsWith('.bin') ? '.bin'
+        : component?.filename?.toLowerCase().endsWith('.onnx') ? '.onnx'
+        : '.gguf,.bin,.onnx';
+      input.accept = acceptExt;
+      input.onchange = async (e: any) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const filePath = (file as any).path;
+        if (!filePath) {
+          setError('Cannot get file path');
+          return;
+        }
+        console.log('[VOICE_IMPORT] Importing:', filePath, 'as', componentId);
+        const res = await window.nexAPI.componentUnifiedImportLocal(filePath, componentId);
+        if (res.success) {
+          showToast('ok', `${file.name} ایمپورت شد`);
+          refresh();
+        } else {
+          setError(res.error || 'ایمپورت ناموفق بود');
+        }
+      };
+      input.click();
+    } catch (err: any) {
+      setError(err?.message);
+    }
+  };
+
   const handleRemoveModel = async (modelId: string, name: string) => {
     try {
       const res = await window.nexAPI.modelDeployRemove(modelId, true);
@@ -495,18 +576,124 @@ export default function NexLibraryPanel() {
           })}
         </div>
 
-        {/* ═══ Voice ═══ */}
-        <div style={{ display: tab === 'voice' ? 'block' : 'none' }} className="p-3 space-y-1.5">
-          {catalog.filter(m => m.type === 'voice-stt' || m.type === 'voice-tts').map((m: any) => {
-            const isInstalled = installedNames.has(m.name.toLowerCase());
-            return (
-              <div key={m.id} className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-                <div className="flex items-center gap-1.5">
-                  <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
-                  <span className="text-[10px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
-                  {isInstalled ? <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} /> : <button onClick={() => handleInstallModel(m.downloadUrl, m.name)} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>نصب</button>}
+        {/* ═══ Voice (Phase 76: Unified Component Installer) ═══ */}
+        <div style={{ display: tab === 'voice' ? 'block' : 'none' }} className="p-3 space-y-2">
+          {/* Voice Runtime Status */}
+          {voiceRuntimeStatus && (
+            <div className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
+                <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>وضعیت رانتایم صوت</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[8px]">
+                <div style={{ color: voiceRuntimeStatus.whisperReady ? '#86efac' : '#fca5a5' }}>
+                  Whisper: {voiceRuntimeStatus.whisperReady ? 'آماده ✓' : 'ناقص ✗'}
                 </div>
-                <div className="text-[8px] ml-4" style={{ color: 'var(--nex-text-muted)' }}>{m.type === 'voice-stt' ? 'تشخیص گفتار' : 'تولید گفتار'} • {m.sizeGB.toFixed(1)} GB</div>
+                <div style={{ color: voiceRuntimeStatus.piperReady ? '#86efac' : '#fca5a5' }}>
+                  Piper: {voiceRuntimeStatus.piperReady ? 'آماده ✓' : 'ناقص ✗'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Speech Recognition (STT) Section */}
+          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>تشخیص گفتار (Speech Recognition)</div>
+          {voiceComponents.filter(c => c.type === 'voice-stt-binary' || c.type === 'voice-stt').map((c: any) => {
+            const progress = voiceInstallProgress.get(c.id);
+            const isActive = progress && !['completed', 'download-failed', 'cancelled', 'permission-denied'].includes(progress.state);
+            const isInstalled = voiceRuntimeStatus && (
+              (c.id === 'whisper-cli-binary' && voiceRuntimeStatus.whisper) ||
+              (c.id === 'whisper-base-en' && voiceRuntimeStatus.whisperModels?.length > 0) ||
+              (c.id === 'whisper-medium-q5' && voiceRuntimeStatus.whisperModels?.length > 0)
+            );
+            return (
+              <div key={c.id} className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  {c.type === 'voice-stt-binary' ? <Cpu size={10} style={{ color: 'var(--nex-accent)' }} /> : <Mic size={10} style={{ color: 'var(--nex-accent)' }} />}
+                  <span className="text-[10px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{c.name}</span>
+                  {c.type === 'voice-stt-binary' && <span className="text-[7px] px-1 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>رانتایم</span>}
+                  {isInstalled ? (
+                    <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
+                  ) : isActive ? (
+                    <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
+                  ) : (
+                    <button onClick={() => handleInstallVoiceComponent(c.id, c.name)} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>نصب</button>
+                  )}
+                </div>
+                <div className="text-[8px] ml-4 mb-1" style={{ color: 'var(--nex-text-muted)' }}>{c.purposeFa}</div>
+                {/* Source display */}
+                <div className="text-[8px] ml-4 mb-1">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>منبع: </span>
+                  {c.sources.map((s: any, i: number) => (
+                    <span key={i} className="ml-1 px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
+                  ))}
+                </div>
+                {/* Progress */}
+                {isActive && progress && (
+                  <div className="mt-1">
+                    <div className="text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
+                      {progress.stageMessageFa} {progress.currentSource ? `• ${progress.currentSource}` : ''} {progress.attempt ? `• تلاش ${progress.attempt}/${progress.maxAttempts}` : ''}
+                    </div>
+                    {progress.percentage !== null && (
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, progress.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Import button for models (not binaries) */}
+                {!isInstalled && !isActive && c.type !== 'voice-stt-binary' && (
+                  <button onClick={() => handleImportVoiceComponent(c.id)} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>ایمپورت فایل محلی</button>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Text To Speech (TTS) Section */}
+          <div className="text-[10px] font-medium mt-3" style={{ color: 'var(--nex-text-muted)' }}>تولید گفتار (Text To Speech)</div>
+          {voiceComponents.filter(c => c.type === 'voice-tts-binary' || c.type === 'voice-tts').map((c: any) => {
+            const progress = voiceInstallProgress.get(c.id);
+            const isActive = progress && !['completed', 'download-failed', 'cancelled', 'permission-denied'].includes(progress.state);
+            const isInstalled = voiceRuntimeStatus && (
+              (c.id === 'piper-binary' && voiceRuntimeStatus.piper) ||
+              (c.id === 'piper-en-us-lessac-medium' && voiceRuntimeStatus.piperVoices?.length > 0)
+            );
+            return (
+              <div key={c.id} className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  {c.type === 'voice-tts-binary' ? <Cpu size={10} style={{ color: 'var(--nex-accent)' }} /> : <Mic size={10} style={{ color: 'var(--nex-accent)' }} />}
+                  <span className="text-[10px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{c.name}</span>
+                  {c.type === 'voice-tts-binary' && <span className="text-[7px] px-1 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>رانتایم</span>}
+                  {isInstalled ? (
+                    <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
+                  ) : isActive ? (
+                    <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
+                  ) : (
+                    <button onClick={() => handleInstallVoiceComponent(c.id, c.name)} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>نصب</button>
+                  )}
+                </div>
+                <div className="text-[8px] ml-4 mb-1" style={{ color: 'var(--nex-text-muted)' }}>{c.purposeFa}</div>
+                <div className="text-[8px] ml-4 mb-1">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>منبع: </span>
+                  {c.sources.map((s: any, i: number) => (
+                    <span key={i} className="ml-1 px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
+                  ))}
+                </div>
+                {isActive && progress && (
+                  <div className="mt-1">
+                    <div className="text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
+                      {progress.stageMessageFa} {progress.currentSource ? `• ${progress.currentSource}` : ''}
+                    </div>
+                    {progress.percentage !== null && (
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, progress.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!isInstalled && !isActive && c.type !== 'voice-tts-binary' && (
+                  <button onClick={() => handleImportVoiceComponent(c.id)} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>ایمپورت فایل محلی</button>
+                )}
               </div>
             );
           })}

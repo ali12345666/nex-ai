@@ -1112,11 +1112,41 @@ async function setupIPC(): Promise<void> {
   });
 
   // Voice: find available binaries (for UI diagnostics)
+  // Phase 76: Enhanced with model discovery + [VOICE_RUNTIME] diagnostics
   ipcMain.handle('voice-find-binaries', async () => {
+    const whisperBin = findWhisperBinary();
+    const piperBin = findPiperBinary();
+
+    // Phase 76: Also discover models
+    let whisperModels: any[] = [];
+    let piperVoices: any[] = [];
+    try {
+      const { findWhisperModels } = await import('./voice/local-whisper-provider');
+      const { findPiperVoices } = await import('./voice/local-piper-provider');
+      whisperModels = findWhisperModels();
+      piperVoices = findPiperVoices();
+    } catch {}
+
+    // [VOICE_RUNTIME] diagnostics
+    console.log(`[VOICE_RUNTIME]`);
+    console.log(`  whisperBinary=${whisperBin || '(not found)'}`);
+    console.log(`  whisperBinaryExists=${whisperBin ? 'true' : 'false'}`);
+    console.log(`  whisperModel=${whisperModels[0]?.path || '(not found)'}`);
+    console.log(`  whisperModelExists=${whisperModels.length > 0 ? 'true' : 'false'}`);
+    console.log(`  piperBinary=${piperBin || '(not found)'}`);
+    console.log(`  piperBinaryExists=${piperBin ? 'true' : 'false'}`);
+    console.log(`  piperVoice=${piperVoices[0]?.path || '(not found)'}`);
+    console.log(`  piperVoiceExists=${piperVoices.length > 0 ? 'true' : 'false'}`);
+
     return {
       success: true,
-      whisper: findWhisperBinary(),
-      piper: findPiperBinary(),
+      whisper: whisperBin,
+      piper: piperBin,
+      whisperModels,
+      piperVoices,
+      // Phase 76: ready flags for UI
+      whisperReady: !!whisperBin && whisperModels.length > 0,
+      piperReady: !!piperBin && piperVoices.length > 0,
     };
   });
 

@@ -48,24 +48,47 @@ import { AgentLogger } from '../agent/logger';
 // ─── Whisper Binary Resolution ─────────────────────────────────────────────
 
 const WHISPER_BIN_NAMES = ['whisper-cli', 'whisper', 'main'];
-const WHISPER_SEARCH_PATHS = [
-  '/usr/local/bin',
-  '/usr/bin',
-  '/opt/whisper.cpp',
-  path.join(os.homedir(), '.local', 'bin'),
-  // Windows common paths
-  'C:\\Program Files\\whisper.cpp',
-  path.join(os.homedir(), 'whisper.cpp'),
-  // App-local
-  path.join(process.cwd(), 'bin'),
-];
+
+/**
+ * Get the NEX AI managed runtime directory for whisper.
+ * Phase 76: <userData>/runtime/whisper/
+ */
+function getNexWhisperRuntimeDir(): string {
+  try {
+    // Dynamic import to avoid circular dependency at module load time
+    const { app } = require('electron');
+    return path.join(app.getPath('userData'), 'runtime', 'whisper');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Get whisper search paths. Includes the NEX managed runtime directory
+ * (where the unified installer extracts whisper-bin-x64.zip).
+ */
+function getWhisperSearchPaths(): string[] {
+  const paths = [
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt/whisper.cpp',
+    path.join(os.homedir(), '.local', 'bin'),
+    'C:\\Program Files\\whisper.cpp',
+    path.join(os.homedir(), 'whisper.cpp'),
+    path.join(process.cwd(), 'bin'),
+  ];
+  const nexDir = getNexWhisperRuntimeDir();
+  if (nexDir) paths.push(nexDir);
+  return paths;
+}
 
 /**
  * Find the whisper.cpp binary. Returns the absolute path or null.
  * Checks:
  *   1. NEX_WHISPER_BIN env var
- *   2. Common whisper binary names in PATH
- *   3. Common installation directories
+ *   2. Common whisper binary names in common paths
+ *   3. NEX managed runtime directory (<userData>/runtime/whisper/)
+ *   4. Scan NEX runtime dir for any .exe containing "whisper" or "main"
  */
 export function findWhisperBinary(): string | null {
   // 1. Env var override
@@ -73,14 +96,32 @@ export function findWhisperBinary(): string | null {
   if (envBin && fs.existsSync(envBin)) return envBin;
 
   // 2. Search common names in common paths
-  for (const searchPath of WHISPER_SEARCH_PATHS) {
+  const searchPaths = getWhisperSearchPaths();
+  for (const searchPath of searchPaths) {
     for (const binName of WHISPER_BIN_NAMES) {
       const binPath = path.join(searchPath, binName + (process.platform === 'win32' ? '.exe' : ''));
       if (fs.existsSync(binPath)) return binPath;
     }
   }
 
-  // 3. Try `which` / `where` (best-effort, non-blocking)
+  // 3. Scan NEX runtime dir for any executable containing "whisper" or "main"
+  // (the extracted ZIP may have a different name than expected)
+  const nexDir = getNexWhisperRuntimeDir();
+  if (nexDir && fs.existsSync(nexDir)) {
+    try {
+      const entries = fs.readdirSync(nexDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const name = entry.name.toLowerCase();
+          const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
+          if (isExe && (name.includes('whisper') || name === 'main' || name === 'main.exe')) {
+            return path.join(nexDir, entry.name);
+          }
+        }
+      }
+    } catch {}
+  }
+
   return null;
 }
 
@@ -95,6 +136,30 @@ export function findFfmpegBinary(): string | null {
     if (fs.existsSync(p)) return p;
   }
   return null;
+}
+
+/**
+ * Phase 76: Find whisper model files (.bin) in the NEX managed directory.
+ * Scans <userData>/models/whisper/ for ggml-*.bin files.
+ * Returns array of {name, path, sizeBytes}.
+ */
+export function findWhisperModels(): Array<{ name: string; path: string; sizeBytes: number }> {
+  const results: Array<{ name: string; path: string; sizeBytes: number }> = [];
+  try {
+    const { app } = require('electron');
+    const modelsDir = path.join(app.getPath('userData'), 'models', 'whisper');
+    if (fs.existsSync(modelsDir)) {
+      const entries = fs.readdirSync(modelsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith('.bin')) {
+          const fullPath = path.join(modelsDir, entry.name);
+          const stat = fs.statSync(fullPath);
+          results.push({ name: entry.name, path: fullPath, sizeBytes: stat.size });
+        }
+      }
+    }
+  } catch {}
+  return results;
 }
 
 // ─── LocalWhisperProvider ──────────────────────────────────────────────────

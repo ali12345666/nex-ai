@@ -50,28 +50,101 @@ import { AgentLogger } from '../agent/logger';
 // ─── Piper Binary Resolution ───────────────────────────────────────────────
 
 const PIPER_BIN_NAMES = ['piper', 'piper.exe'];
-const PIPER_SEARCH_PATHS = [
-  '/usr/local/bin',
-  '/usr/bin',
-  '/opt/piper',
-  path.join(os.homedir(), '.local', 'bin'),
-  'C:\\Program Files\\piper',
-  path.join(process.cwd(), 'bin'),
-];
+
+/**
+ * Get the NEX AI managed runtime directory for piper.
+ * Phase 76: <userData>/runtime/piper/
+ */
+function getNexPiperRuntimeDir(): string {
+  try {
+    const { app } = require('electron');
+    return path.join(app.getPath('userData'), 'runtime', 'piper');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Get piper search paths. Includes the NEX managed runtime directory.
+ */
+function getPiperSearchPaths(): string[] {
+  const paths = [
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt/piper',
+    path.join(os.homedir(), '.local', 'bin'),
+    'C:\\Program Files\\piper',
+    path.join(process.cwd(), 'bin'),
+  ];
+  const nexDir = getNexPiperRuntimeDir();
+  if (nexDir) paths.push(nexDir);
+  return paths;
+}
 
 /**
  * Find the piper binary. Returns the absolute path or null.
+ * Checks:
+ *   1. NEX_PIPER_BIN env var
+ *   2. Common piper binary names in common paths
+ *   3. NEX managed runtime directory (<userData>/runtime/piper/)
+ *   4. Scan NEX runtime dir for any .exe containing "piper"
  */
 export function findPiperBinary(): string | null {
+  // 1. Env var override
   const envBin = process.env.NEX_PIPER_BIN;
   if (envBin && fs.existsSync(envBin)) return envBin;
-  for (const searchPath of PIPER_SEARCH_PATHS) {
+
+  // 2. Search common names in common paths
+  const searchPaths = getPiperSearchPaths();
+  for (const searchPath of searchPaths) {
     for (const binName of PIPER_BIN_NAMES) {
       const binPath = path.join(searchPath, binName);
       if (fs.existsSync(binPath)) return binPath;
     }
   }
+
+  // 3. Scan NEX runtime dir for any executable containing "piper"
+  const nexDir = getNexPiperRuntimeDir();
+  if (nexDir && fs.existsSync(nexDir)) {
+    try {
+      const entries = fs.readdirSync(nexDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const name = entry.name.toLowerCase();
+          const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
+          if (isExe && name.includes('piper')) {
+            return path.join(nexDir, entry.name);
+          }
+        }
+      }
+    } catch {}
+  }
+
   return null;
+}
+
+/**
+ * Phase 76: Find piper voice models (.onnx) in the NEX managed directory.
+ * Scans <userData>/models/piper/ for *.onnx files.
+ * Returns array of {name, path, sizeBytes}.
+ */
+export function findPiperVoices(): Array<{ name: string; path: string; sizeBytes: number }> {
+  const results: Array<{ name: string; path: string; sizeBytes: number }> = [];
+  try {
+    const { app } = require('electron');
+    const modelsDir = path.join(app.getPath('userData'), 'models', 'piper');
+    if (fs.existsSync(modelsDir)) {
+      const entries = fs.readdirSync(modelsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith('.onnx')) {
+          const fullPath = path.join(modelsDir, entry.name);
+          const stat = fs.statSync(fullPath);
+          results.push({ name: entry.name, path: fullPath, sizeBytes: stat.size });
+        }
+      }
+    }
+  } catch {}
+  return results;
 }
 
 // ─── LocalPiperProvider ────────────────────────────────────────────────────
