@@ -301,10 +301,15 @@ export async function runTask(taskId: string): Promise<AgentTask> {
 
     // Ensure the model is loaded into the runtime before planning.
     // For the online backend `model` is a synthetic descriptor (no GGUF).
+    // gpuLayers: always -1 (auto) for local — the old check returned 0 for
+    // online (harmless, no GGUF) but could leak into local paths. -1 is safe
+    // for both since online ignores it.
+    // contextSize: cap at 1024 for GPU VRAM safety (inference.ts will
+    // auto-fallback if even 1024 is too large).
     await runtime.loadModel(model, {
-      contextSize: model.contextSize,
+      contextSize: Math.min(model.contextSize || 1024, 1024),
       threads: 4,
-      gpuLayers: task.backend === 'online' ? 0 : (model.gpuLayers ?? -1),
+      gpuLayers: -1,
       temperature: 0.7,
       maxTokens: model.contextSize ? Math.floor(model.contextSize / 2) : 1024,
     });

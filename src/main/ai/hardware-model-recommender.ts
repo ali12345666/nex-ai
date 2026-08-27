@@ -199,26 +199,20 @@ export function canModelRunOnHardware(
     }
   }
 
-  // Model fits — suggest optimal parameters
+  // Model fits — suggest optimal parameters.
+  // IMPORTANT: when a GPU is present, ALWAYS suggest gpuLayers=-1 ("auto").
+  // The actual GPU backend (Vulkan/CUDA/Metal) is only known AFTER the
+  // llama.cpp engine initializes (getLlamaInstance() in inference.ts).
+  // detectHardwareProfile() is often called BEFORE the engine is ready,
+  // so getGpuBackend() returns 'cpu' and supportsVulkan/Cuda/Metal are all
+  // false — which previously fell into the "No GPU" branch and returned
+  // gpuLayers=0 (CPU only). This caused the first model load to disable
+  // GPU offload entirely. By using -1 ("auto"), node-llama-cpp will detect
+  // the best backend at load time and offload as many layers as VRAM allows.
   let suggestedGpuLayers: number;
-  if (hw.gpu && hw.gpu.supportsCuda) {
-    // If we have enough VRAM, offload all layers (-1 = auto = all)
-    const vramHeadroom = hw.gpu.vramTotalBytes * 0.15;
-    const availableVram = hw.gpu.vramTotalBytes - vramHeadroom;
-    if (modelSize <= availableVram) {
-      suggestedGpuLayers = -1; // all layers on GPU
-    } else {
-      // Partial offload: estimate layers that fit
-      const layersThatFit = Math.floor(availableVram / (modelSize / 32));
-      suggestedGpuLayers = Math.max(1, layersThatFit);
-    }
-  } else if (hw.gpu && (hw.gpu.supportsMetal || hw.gpu.supportsVulkan)) {
-    // Metal/Vulkan — use "auto" (-1) so node-llama-cpp fits as many layers
-    // as VRAM allows (partial offload). Previously this returned 0 (CPU only)
-    // when the model exceeded 85% of VRAM, which DISABLED GPU offload entirely
-    // even though partial offload was possible. The "auto" mode in
-    // inference.ts translateGpuLayers() maps -1 → "auto", which lets
-    // llama.cpp compute the optimal layer count for the available VRAM.
+  if (hw.gpu) {
+    // GPU present — use "auto" regardless of detected backend type.
+    // node-llama-cpp's "auto" mode fits layers to available VRAM.
     suggestedGpuLayers = -1;
   } else {
     // No GPU — CPU only

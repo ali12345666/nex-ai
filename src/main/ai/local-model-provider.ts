@@ -122,6 +122,7 @@ export class LocalModelProvider {
   private _loadedModelId: string | null = null;
   private loadedModel: LocalModelInfo | null = null;
   private cachedHardware: HardwareProfile | null = null;
+  private cachedBackend: string | null = null;
 
   constructor(backend: ProviderBackend = 'llamacpp') {
     this.backend = backend;
@@ -305,10 +306,15 @@ export class LocalModelProvider {
 
   /**
    * Detect (and cache) the hardware profile for this machine.
+   * The cache is invalidated when the GPU backend changes (e.g. from 'cpu'
+   * to 'vulkan' after the llama.cpp engine initializes), so that
+   * suggestedGpuLayers is always computed with the correct backend.
    */
   detectHardware(): HardwareProfile {
-    if (!this.cachedHardware) {
-      this.cachedHardware = detectHardwareProfile(undefined, getGpuBackend());
+    const currentBackend = getGpuBackend();
+    if (!this.cachedHardware || this.cachedBackend !== currentBackend) {
+      this.cachedHardware = detectHardwareProfile(undefined, currentBackend);
+      this.cachedBackend = currentBackend;
     }
     return this.cachedHardware;
   }

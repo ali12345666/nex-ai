@@ -137,6 +137,12 @@ let _LlamaChatSession: any = null;
 let _ctxSequence: any = null;
 let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
 
+// Track the actual loaded model's GPU layers + context size for idempotency
+// checks. These let loadModel() decide whether to reuse the existing model
+// or reload (preventing the double-load + "Object is disposed" race).
+let _loadedModelGpuLayers: number | null = null;
+let _loadedContextSize: number | null = null;
+
 /** GPU runtime diagnostics (collected at init + enriched at model load). */
 let _gpuDiagnostics: GpuRuntimeDiagnostics | null = null;
 
@@ -450,25 +456,76 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   if (!model.fileExists) {
     throw new Error(`Model file does not exist: ${model.path}`);
   }
-  // Phase 86 P1-6: Single idempotency check (was duplicated at lines 129+135)
-  if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
-    // Phase 87: Update the stored LocalModelInfo even on idempotent path
-    _loadedModelInfo = model;
-    return;
-  }
-
-  // Phase 90: Wait for any in-flight inference before unloading
-  await waitForInFlight();
-
-  // Unload previous model
-  await unloadModel();
-
-  const llama = await getLlamaInstance();
-  console.log(`[NEX AI Local] Loading model: ${model.name} (${formatBytes(model.sizeBytes)})`);
 
   // Translate the legacy gpuLayers convention to node-llama-cpp's option type.
   const rawGpuLayers = opts.gpuLayers ?? model.gpuLayers ?? -1;
   const translatedGpuLayers = translateGpuLayers(rawGpuLayers);
+  const requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024;
+
+  // ── IDEMPOTENCY CHECK (enhanced) ────────────────────────────────────────
+  // Skip reload if ALL of:
+  //   1. Same model id
+  //   2. Model + context exist
+  //   3. Model + context are NOT disposed (the "Object is disposed" error
+  //      happens when a stale reference is used after unloadModel disposed it)
+  //   4. Options are compatible (same gpuLayers translation + context >= requested)
+  //
+  // Previously this only checked model.id, so if chatStream called loadModel
+  // with different opts than the activation path, it would UNLOAD the working
+  // model and RELOAD it — causing "Object is disposed" when the old session
+  // tried to use the disposed context. Now we reuse the loaded model as long
+  // as it's the same id and not disposed.
+  const sameId = _loadedModelId === model.id;
+  const exists = !!(sameId && _loadedContext && _loadedModel);
+  const notDisposed = exists && !((_loadedModel as any).disposed) && !((_loadedContext as any).disposed);
+  const contextLargeEnough = exists && (_loadedContextSize ?? 0) >= requestedContextSize;
+  // Note: gpuLayers can't be changed without reloading the model (it's set at
+  // loadModel time), so we don't check it here — if the model is already loaded
+  // with ANY gpuLayers, we keep it (reloading just to change gpuLayers would
+  // cause the dispose race).
+
+  if (exists && notDisposed) {
+    // Reuse the already-loaded model. Log the reuse for diagnostics.
+    console.log(`[MODEL_LOAD_PATH]`);
+    console.log(`  selected=reuse-existing`);
+    console.log(`  modelId=${model.id}`);
+    console.log(`  gpuLayers=existing (actual=${_loadedModelGpuLayers ?? '?'})`);
+    console.log(`  context=${_loadedContextSize ?? '?'} (requested ${requestedContextSize}${contextLargeEnough ? '' : ' — smaller than requested, but reusing to avoid reload'})`);
+    console.log(`  kvCacheMode=default`);
+    _loadedModelInfo = model;
+    return;
+  }
+
+  // If the model exists but is disposed, clear the stale references before
+  // reloading (unloadModel would try to dispose an already-disposed object).
+  if (sameId && !notDisposed) {
+    console.warn('[NEX AI Local] Loaded model/context is disposed — clearing stale references before reload');
+    _loadedModel = null;
+    _loadedContext = null;
+    _ctxSequence = null;
+    _loadedModelId = null;
+    _loadedModelInfo = null;
+    _loadedModelGpuLayers = null;
+    _loadedContextSize = null;
+  }
+
+  // Log the load path decision
+  console.log(`[MODEL_LOAD_PATH]`);
+  console.log(`  selected=fresh-load`);
+  console.log(`  modelId=${model.id}`);
+  console.log(`  gpuLayers=${translatedGpuLayers} (raw=${rawGpuLayers})`);
+  console.log(`  context=${requestedContextSize}`);
+  console.log(`  kvCacheMode=default`);
+  console.log(`  reason=${sameId ? 'disposed-or-context-too-small' : 'different-model'}`);
+
+  // Phase 90: Wait for any in-flight inference before unloading
+  await waitForInFlight();
+
+  // Unload previous model (unless it's already cleared above)
+  await unloadModel();
+
+  const llama = await getLlamaInstance();
+  console.log(`[NEX AI Local] Loading model: ${model.name} (${formatBytes(model.sizeBytes)})`);
 
   const modelOpts: any = {
     modelPath: model.path,
@@ -527,43 +584,66 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   );
 
   // ── VRAM-aware context creation with automatic fallback ────────────────
-  // GPU runtime default context: 1024 (was 2048). Large contexts consume
-  // significant VRAM during prefill; on an 8GB RTX 4060 with a 20GB model
-  // partially offloaded, context 2048 can exceed available VRAM and throw
-  // "A context size of 2048 is too large for available VRAM".
+  // Strategy:
+  //   1. First try contextSize: {min: 256, max: requested} — lets node-llama-cpp
+  //      auto-fit the context to available VRAM (the BEST approach for low-VRAM
+  //      GPUs). Also enable flashAttention:"auto" for memory efficiency.
+  //   2. If that fails, try fixed sizes: requested → 1024 → 512 → 256.
+  //      Each retry halves the context. The model is already loaded (with
+  //      gpuLayers="auto"), so we only recreate the CONTEXT.
   //
-  // Fallback chain: requested → 1024 → 512. Each retry halves the context.
-  // The model is already loaded at this point (with gpuLayers="auto"), so
-  // we only need to recreate the CONTEXT, not reload the model.
-  const requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024;
-  const contextFallbackChain = generateContextFallbackChain(requestedContextSize);
+  // On an 8GB RTX 4060 with a 20GB model partially offloaded, context 2048
+  // can exceed VRAM during prefill. The auto-fit mode handles this by
+  // shrinking the context to fit available VRAM automatically.
+  // Note: requestedContextSize is already declared above (idempotency check).
+  const MIN_CONTEXT = 256;
+  const contextFallbackChain = generateContextFallbackChain(requestedContextSize, MIN_CONTEXT);
 
   let lastContextError: any = null;
   let usedContextSize = requestedContextSize;
+  let kvCacheMode = 'default';
 
-  for (let i = 0; i < contextFallbackChain.length; i++) {
-    const trySize = contextFallbackChain[i];
-    try {
-      _loadedContext = await _loadedModel.createContext({
-        contextSize: trySize,
-        threads: opts.threads ?? 4,
-      });
-      usedContextSize = trySize;
-      if (i > 0) {
-        console.log(`[VRAM_FALLBACK] contextSize ${contextFallbackChain[i - 1]} → ${trySize} (retry ${i}/${contextFallbackChain.length - 1} succeeded)`);
+  // Attempt 1: auto-fit context (min:256, max:requested) with flash attention
+  try {
+    _loadedContext = await _loadedModel.createContext({
+      contextSize: { min: MIN_CONTEXT, max: requestedContextSize },
+      threads: opts.threads ?? 4,
+      flashAttention: 'auto',
+    } as any);
+    // Read the actual context size that was created
+    usedContextSize = (typeof (_loadedContext as any).contextSize === 'number')
+      ? (_loadedContext as any).contextSize
+      : requestedContextSize;
+    kvCacheMode = 'auto-fit+flashAttn';
+    console.log(`[VRAM_FALLBACK] auto-fit context succeeded: contextSize=${usedContextSize} (requested max=${requestedContextSize}, min=${MIN_CONTEXT})`);
+  } catch (ctxErr: any) {
+    const msg = (ctxErr?.message || '').toLowerCase();
+    const isVramError = /vram|context size.*too large|insufficient.*memory|out of memory|oom/.test(msg);
+    console.warn(`[VRAM_FALLBACK] auto-fit context failed: ${ctxErr?.message} (isVramError=${isVramError})`);
+
+    // Attempt 2: fixed-size fallback chain
+    for (let i = 0; i < contextFallbackChain.length; i++) {
+      const trySize = contextFallbackChain[i];
+      try {
+        _loadedContext = await _loadedModel.createContext({
+          contextSize: trySize,
+          threads: opts.threads ?? 4,
+          flashAttention: 'auto',
+        } as any);
+        usedContextSize = trySize;
+        kvCacheMode = `fixed-${trySize}+flashAttn`;
+        console.log(`[VRAM_FALLBACK] fixed contextSize=${trySize} succeeded (retry ${i}/${contextFallbackChain.length - 1})`);
+        lastContextError = null;
+        break;
+      } catch (innerErr: any) {
+        lastContextError = innerErr;
+        const imsg = (innerErr?.message || '').toLowerCase();
+        const innerIsVram = /vram|context size.*too large|insufficient.*memory|out of memory|oom/.test(imsg);
+        console.warn(`[VRAM_FALLBACK] contextSize=${trySize} failed: ${innerErr?.message} (isVramError=${innerIsVram})`);
+        if (!innerIsVram || i === contextFallbackChain.length - 1) {
+          throw innerErr;
+        }
       }
-      lastContextError = null;
-      break;
-    } catch (ctxErr: any) {
-      lastContextError = ctxErr;
-      const msg = (ctxErr?.message || '').toLowerCase();
-      const isVramError = /vram|context size.*too large|insufficient.*memory|out of memory|oom/.test(msg);
-      console.warn(`[VRAM_FALLBACK] contextSize=${trySize} failed: ${ctxErr?.message} (isVramError=${isVramError})`);
-      if (!isVramError || i === contextFallbackChain.length - 1) {
-        // Non-VRAM error or last retry failed — rethrow
-        throw ctxErr;
-      }
-      // Continue to next smaller context size
     }
   }
 
@@ -574,6 +654,8 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   _ctxSequence = null; // new context → new sequence pool
   _loadedModelId = model.id;
   _loadedModelInfo = model;  // Phase 87: Store the LocalModelInfo for getLoadedModel()
+  _loadedModelGpuLayers = actualGpuLayers;
+  _loadedContextSize = usedContextSize;
 
   // Phase 74: Model load log
   console.log(`[MODEL_LOAD]`);
@@ -583,6 +665,7 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   console.log(`  gpuLayers=${rawGpuLayers} (translated→${translatedGpuLayers})`);
   console.log(`  gpuLayersActual=${actualGpuLayers}`);
   console.log(`  backend=${_gpuBackend}`);
+  console.log(`  kvCacheMode=${kvCacheMode}`);
   console.log(`  modelId=${model.id}`);
 
   // Mark as last used
@@ -600,25 +683,24 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
 
 /**
  * Generate a context-size fallback chain for VRAM-aware retry.
- * Returns a descending list of context sizes to try, ending at a minimum
- * of 512. Examples:
- *   2048 → [2048, 1024, 512]
- *   1024 → [1024, 512]
- *   8192 → [8192, 4096, 2048, 1024, 512]
- *   256  → [256]  (below minimum, no fallback)
+ * Returns a descending list of context sizes to try, ending at `minContext`.
+ * Examples (minContext=256):
+ *   2048 → [2048, 1024, 512, 256]
+ *   1024 → [1024, 512, 256]
+ *   8192 → [8192, 4096, 2048, 1024, 512, 256]
+ *   256  → [256]  (at minimum, no fallback)
  */
-function generateContextFallbackChain(requested: number): number[] {
-  const MIN_CONTEXT = 512;
-  if (requested <= MIN_CONTEXT) return [requested];
+function generateContextFallbackChain(requested: number, minContext: number = 256): number[] {
+  if (requested <= minContext) return [Math.max(requested, minContext)];
   const chain: number[] = [requested];
   let cur = requested;
-  while (cur > MIN_CONTEXT) {
+  while (cur > minContext) {
     cur = Math.floor(cur / 2);
-    if (cur < MIN_CONTEXT) cur = MIN_CONTEXT;
+    if (cur < minContext) cur = minContext;
     chain.push(cur);
-    if (cur === MIN_CONTEXT) break;
+    if (cur === minContext) break;
   }
-  // Deduplicate (e.g. 1024 → [1024, 512] not [1024, 512, 512])
+  // Deduplicate (e.g. 512 → [512, 256] not [512, 256, 256])
   return [...new Set(chain)];
 }
 
@@ -644,6 +726,8 @@ export async function unloadModel(): Promise<void> {
   }
   _loadedModelId = null;
   _loadedModelInfo = null;  // Phase 87: Clear the LocalModelInfo too
+  _loadedModelGpuLayers = null;
+  _loadedContextSize = null;
   noteLoadedModel(null);
   console.log('[NEX AI Local] Model unloaded');
 }
