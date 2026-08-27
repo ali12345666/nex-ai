@@ -9,7 +9,7 @@
  *
  * The Library panel reads from the store; it does not own download state.
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Library, RefreshCw, Star, Brain, Mic, Cpu, BookOpen, CheckCircle2,
   Download, AlertCircle, Loader2, Package, Globe, Zap, Trash2,
@@ -17,17 +17,17 @@ import {
 } from 'lucide-react';
 import { useDownloadStore, isDownloading, type DownloadEntry } from '../store/download-store';
 
-type Tab = 'recommended' | 'models' | 'voice' | 'tools' | 'knowledge' | 'installed' | 'downloads';
+type Tab = 'models' | 'installed' | 'recommended' | 'downloads' | 'voice' | 'tools' | 'knowledge';
 
-// Phase 77: Compact tab labels (shorter Persian text to fit width without scrolling)
+// Phase 89: Short English labels for compact tab bar (no horizontal scroll)
 const TABS: Array<[Tab, string, React.ReactNode]> = [
-  ['recommended', 'پیشنهادی', <Star size={11} />],
-  ['models', 'مدل‌ها', <Brain size={11} />],
-  ['installed', 'نصب‌شده', <CheckCircle2 size={11} />],
-  ['downloads', 'دانلودها', <Download size={11} />],
-  ['voice', 'صوت', <Mic size={11} />],
-  ['tools', 'ابزارها', <Cpu size={11} />],
-  ['knowledge', 'دانش', <BookOpen size={11} />],
+  ['recommended', 'Recommended', <Star size={11} />],
+  ['models', 'Models', <Brain size={11} />],
+  ['installed', 'Installed', <CheckCircle2 size={11} />],
+  ['downloads', 'Downloads', <Download size={11} />],
+  ['voice', 'Voice', <Mic size={11} />],
+  ['tools', 'Runtime', <Cpu size={11} />],
+  ['knowledge', 'Knowledge', <BookOpen size={11} />],
 ];
 
 function formatBytes(n: number): string {
@@ -77,6 +77,11 @@ export default function NexLibraryPanel() {
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<any | null>(null);
   const [activating, setActivating] = useState(false);
+  // ── Phase 89: Search + Filter ──
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<string>('all');
+  // ── Phase 89: Storage info ──
+  const [storageInfo, setStorageInfo] = useState<any | null>(null);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -94,7 +99,7 @@ export default function NexLibraryPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes, storageRes] = await Promise.all([
+      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes, storageRes, storageInfoRes] = await Promise.all([
         window.nexAPI.ecosystemCatalog(),
         window.nexAPI.localRuntimeListModels(),
         window.nexAPI.interactionStatus(),
@@ -102,6 +107,7 @@ export default function NexLibraryPanel() {
         window.nexAPI.componentUnifiedVoiceList(),
         window.nexAPI.voiceFindBinaries().catch(() => ({ success: false })),
         window.nexAPI.aiStorageList().catch(() => ({ success: false })),
+        window.nexAPI.aiStorageInfo().catch(() => ({ success: false })),
       ]);
       if (catRes.success) setCatalog(catRes.catalog || []);
       if (installedRes.success) setInstalled(installedRes.models || []);
@@ -110,6 +116,7 @@ export default function NexLibraryPanel() {
       if (voiceRes.success) setVoiceComponents(voiceRes.components || []);
       if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
       if (storageRes.success && (storageRes as any).assets) setStorageAssets((storageRes as any).assets || []);
+      if (storageInfoRes.success) setStorageInfo(storageInfoRes);
 
       // Phase 82: Fetch active model + runtime status (with error logging)
       try {
@@ -671,31 +678,113 @@ export default function NexLibraryPanel() {
     ['deployed', 'download-failed', 'rolled-back', 'permission-denied'].includes(d.status)
   );
 
+  // Phase 89: Filtered models for Models tab (search + type filter)
+  const allModels = useMemo(() => {
+    return [
+      ...catalog.filter((m: any) => m.type === 'llm'),
+      ...downloadableModels,
+    ];
+  }, [catalog, downloadableModels]);
+
+  const filteredModels = useMemo(() => {
+    let result = allModels;
+    // Type filter
+    if (filterType !== 'all') {
+      result = result.filter((m: any) => {
+        const type = m.type || 'llm';
+        if (filterType === 'llm') return type === 'llm' || !m.sources;
+        if (filterType === 'voice') return m.type === 'voice-stt' || m.type === 'voice-tts';
+        if (filterType === 'vision') return m.type === 'vision';
+        return true;
+      });
+    }
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((m: any) => {
+        const name = (m.name || m.displayNameFa || '').toLowerCase();
+        const provider = (m.provider || '').toLowerCase();
+        const quant = (m.quantization || '').toLowerCase();
+        const params = (m.parameterCount || '').toLowerCase();
+        return name.includes(q) || provider.includes(q) || quant.includes(q) || params.includes(q);
+      });
+    }
+    return result;
+  }, [allModels, filterType, searchQuery]);
+
   return (
-    <div className="flex flex-col h-full relative">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
-        <div className="flex items-center gap-2">
-          <Library size={16} style={{ color: 'var(--nex-accent)' }} />
-          <span className="text-xs font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>NEX LIBRARY</span>
-          {status?.modelReady && <span className="flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}><CheckCircle2 size={8} /> آماده</span>}
-          {activeDownloads.length > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#06b6d4' }} />}
+    <div className="flex flex-col h-full relative overflow-hidden">
+      {/* Header with Storage Summary */}
+      <div className="flex items-center justify-between px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <Library size={14} style={{ color: 'var(--nex-accent)' }} />
+          <span className="text-[11px] font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>LIBRARY</span>
+          {status?.modelReady && <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}><CheckCircle2 size={8} /> Ready</span>}
+          {activeDownloads.length > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: '#06b6d4' }} />}
         </div>
-        <button onClick={refresh} disabled={loading} className="p-1 rounded transition-colors hover:bg-white/[0.06] disabled:opacity-50" style={{ color: 'var(--nex-text-muted)' }}>
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {storageInfo && (
+            <span className="text-[8px] px-1.5 py-0.5 rounded" style={{ background: 'var(--nex-bg)', color: 'var(--nex-text-muted)' }} title={storageInfo.path}>
+              {formatBytes(storageInfo.totalSize || 0)} • {storageInfo.modelCount || 0} models
+            </span>
+          )}
+          <button onClick={refresh} disabled={loading} className="p-1 rounded transition-colors hover:bg-white/[0.06] disabled:opacity-50" style={{ color: 'var(--nex-text-muted)' }}>
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
-      {/* Tabs — Phase 77: grid layout, no horizontal scroll */}
-      <div className="grid gap-1 px-3 py-2 shrink-0" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', borderBottom: '1px solid var(--nex-glass-border)' }}>
+      {/* Phase 89: Tab Bar — flex nowrap, no horizontal scroll */}
+      <div className="flex gap-0.5 px-2 py-1.5 shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
         {TABS.map(([id, label, icon]) => (
-          <button key={id} onClick={() => setTab(id)} className="nex-click nex-focus flex items-center justify-center gap-1 px-1.5 py-1 rounded-lg text-[10px] font-medium transition-all overflow-hidden"
-            style={{ background: tab === id ? 'var(--nex-accent-dim)' : 'transparent', color: tab === id ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: tab === id ? '1px solid var(--nex-accent-glow)' : '1px solid transparent', whiteSpace: 'nowrap' }}>
-            {icon} <span className="truncate">{label}</span>
-            {id === 'downloads' && activeDownloads.length > 0 && <span className="text-[8px] px-0.5 rounded shrink-0" style={{ background: '#06b6d4', color: '#fff' }}>{activeDownloads.length}</span>}
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            className="nex-click nex-focus flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-medium transition-all shrink-0"
+            style={{
+              background: tab === id ? 'var(--nex-accent-dim)' : 'transparent',
+              color: tab === id ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)',
+              border: tab === id ? '1px solid var(--nex-accent-glow)' : '1px solid transparent',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {icon}
+            <span>{label}</span>
+            {id === 'downloads' && activeDownloads.length > 0 && (
+              <span className="text-[7px] px-1 rounded shrink-0" style={{ background: '#06b6d4', color: '#fff' }}>{activeDownloads.length}</span>
+            )}
           </button>
         ))}
       </div>
+
+      {/* Phase 89: Search + Filter Bar (only on Models tab) */}
+      {tab === 'models' && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search models..."
+            className="flex-1 px-2 py-1 rounded-md text-[10px] outline-none min-w-0"
+            style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)' }}
+          />
+          <div className="flex gap-0.5 shrink-0">
+            {['all', 'llm', 'voice', 'vision'].map(ft => (
+              <button
+                key={ft}
+                onClick={() => setFilterType(ft)}
+                className="px-1.5 py-1 rounded-md text-[8px] font-medium capitalize nex-click"
+                style={{
+                  background: filterType === ft ? 'var(--nex-accent-dim)' : 'transparent',
+                  color: filterType === ft ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)',
+                  border: filterType === ft ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-panel-border)',
+                }}
+              >
+                {ft}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Body — all tabs kept mounted with display:none for persistence */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden nex-scroll" style={{ minHeight: 0 }}>
@@ -708,75 +797,124 @@ export default function NexLibraryPanel() {
 
         {/* ═══ Recommended ═══ */}
         <div style={{ display: tab === 'recommended' ? 'block' : 'none' }} className="p-3 space-y-2">
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>پیشنهادی برای سخت‌افزار شما</div>
+          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>Recommended for your system</div>
+          {recommended.length === 0 && downloadableModels.length === 0 && (
+            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
+              <Star size={24} className="mx-auto mb-2 opacity-50" />
+              <div className="text-[11px]">No recommendations available</div>
+              <div className="text-[9px] mt-1">Models will appear here after scanning</div>
+            </div>
+          )}
           {recommended.map((m: any) => (
             <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: '1px solid rgba(34,197,94,0.2)' }}>
               <div className="flex items-center gap-2 mb-1">
-                <Star size={12} style={{ color: 'var(--nex-success)' }} />
-                <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
+                <Star size={12} style={{ color: 'var(--nex-success)' }} className="shrink-0" />
+                <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa || m.name}</span>
                 {installedNames.has(m.name.toLowerCase()) ? (
-                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
+                  <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>
                 ) : (
-                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>موجود</span>
+                  <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-[9px] ml-4 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                <span>{m.sizeGB.toFixed(1)} GB</span><span>•</span>
-                <span>RAM {m.requiredRAM}GB</span>
-                {m.persianSupport && <><span>•</span><span style={{ color: '#86efac' }}>فارسی ✓</span></>}
+              <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
+                <span>{m.sizeGB?.toFixed(1)}GB</span>
+                {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
+                {m.persianSupport && <><span>•</span><span style={{ color: '#86efac' }}>Persian ✓</span></>}
               </div>
             </div>
           ))}
+          {/* Also show downloadable models as recommended */}
+          {downloadableModels.filter(m => !recommended.find((r: any) => r.id === m.id)).map((m: any) => {
+            const isInstalled = installedNames.has((m.name || '').toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
+            return (
+              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
+                <div className="flex items-center gap-2 mb-1">
+                  <Brain size={12} style={{ color: 'var(--nex-accent)' }} className="shrink-0" />
+                  <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
+                  {isInstalled ? (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>
+                  ) : (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
+                  {m.parameterCount && <span>{m.parameterCount}</span>}
+                  {m.quantization && <><span>•</span><span>{m.quantization}</span></>}
+                  {m.expectedSize && <><span>•</span><span>{formatBytes(m.expectedSize)}</span></>}
+                  <><span>•</span><span>GGUF</span></>
+                  {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
+                </div>
+              </div>
+            );
+          })}
           {!status?.modelReady && (
             <button onClick={handleInstallRecommended} className="nex-click nex-focus w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[11px] font-bold" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
-              {activeDownloads.length > 0 ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} نصب سریع مدل پیشنهادی (Qwen 0.5B)
+              {activeDownloads.length > 0 ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Quick Install (Qwen 0.5B)
             </button>
           )}
         </div>
 
-        {/* ═══ AI Models ═══ */}
-        <div style={{ display: tab === 'models' ? 'block' : 'none' }} className="p-3 space-y-1.5">
-          {catalog.filter(m => m.type === 'llm').map((m: any) => {
-            const isInstalled = installedNames.has(m.name.toLowerCase());
-            return (
-              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
-                  <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
-                  {isInstalled ? (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
-                  ) : (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>موجود</span>
+        {/* ═══ AI Models (Phase 89: Redesigned with search + filter) ═══ */}
+        <div style={{ display: tab === 'models' ? 'block' : 'none' }} className="p-3 space-y-2">
+          {filteredModels.length === 0 ? (
+            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
+              <Brain size={24} className="mx-auto mb-2 opacity-50" />
+              <div className="text-[11px]">No models found</div>
+              <div className="text-[9px] mt-1">Try a different search or filter</div>
+            </div>
+          ) : (
+            filteredModels.map((m: any) => {
+              const isInstalled = installedNames.has((m.name || '').toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
+              const isActiveModel = activeModelId === m.id;
+              const activeDl = Array.from(unifiedDownloads.values()).find((d: any) => d.modelId === m.id && !['completed', 'download-failed', 'cancelled'].includes(d.state));
+              return (
+                <div
+                  key={m.id}
+                  onClick={() => handleOpenModelDetails(m)}
+                  className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer"
+                  style={{ border: `1px solid ${isActiveModel ? 'rgba(6,182,212,0.3)' : isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}
+                >
+                  {/* Row 1: Icon + Name + Badges */}
+                  <div className="flex items-center gap-2 mb-1">
+                    <Brain size={12} style={{ color: 'var(--nex-accent)' }} className="shrink-0" />
+                    <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>
+                      {m.displayNameFa || m.nameFa || m.name}
+                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isActiveModel && <span className="text-[7px] px-1 py-0.5 rounded font-bold" style={{ background: 'rgba(6,182,212,0.2)', color: '#67e8f9' }}>ACTIVE</span>}
+                      {isInstalled && !isActiveModel && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>}
+                      {activeDl && <span className="text-[7px] px-1 py-0.5 rounded animate-pulse" style={{ background: 'rgba(6,182,212,0.2)', color: '#67e8f9' }}>DL</span>}
+                      {!isInstalled && !activeDl && m.sources?.length > 1 && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>}
+                    </div>
+                  </div>
+                  {/* Row 2: Metadata */}
+                  <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
+                    {m.parameterCount && <span>{m.parameterCount}</span>}
+                    {m.parameterCount && (m.quantization || m.sizeGB || m.expectedSize) && <span>•</span>}
+                    {m.quantization && <span>{m.quantization}</span>}
+                    {m.quantization && (m.sizeGB || m.expectedSize) && <span>•</span>}
+                    {m.sizeGB && <span>{m.sizeGB.toFixed(1)}GB</span>}
+                    {m.expectedSize && !m.sizeGB && <span>{formatBytes(m.expectedSize)}</span>}
+                    {(m.sizeGB || m.expectedSize) && <span>•</span>}
+                    <span>GGUF</span>
+                    {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
+                  </div>
+                  {/* Row 3: Download progress (if active) */}
+                  {activeDl && activeDl.percentage !== null && (
+                    <div className="mt-1.5">
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, activeDl.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
+                      </div>
+                      <div className="flex justify-between mt-0.5 text-[7px]" style={{ color: 'var(--nex-text-muted)' }}>
+                        <span>{activeDl.percentage.toFixed(0)}%</span>
+                        <span>{formatBytes(activeDl.receivedBytes)} / {activeDl.totalBytes > 0 ? formatBytes(activeDl.totalBytes) : '?'}</span>
+                      </div>
+                    </div>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 text-[8px] ml-4 mb-1 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                  <span>{m.provider}</span><span>•</span><span>{m.parameterCount}</span><span>•</span><span>{m.quantization}</span><span>•</span><span>{m.sizeGB.toFixed(1)}GB</span><span>•</span><span>RAM {m.requiredRAM}GB</span>
-                </div>
-              </div>
-            );
-          })}
-          {/* Phase 77: Also show unified downloadable models */}
-          {downloadableModels.map((m: any) => {
-            const isInstalled = installedNames.has(m.name.toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
-            return (
-              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
-                  <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
-                  {isInstalled ? (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
-                  ) : (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>دانلود</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5 text-[8px] ml-4 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                  {m.quantization && <><span>{m.quantization}</span><span>•</span></>}
-                  {m.parameterCount && <><span>{m.parameterCount}</span><span>•</span></>}
-                  <span>{m.sources?.length || 1} منبع</span>
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
 
         {/* ═══ Voice (Phase 76: Unified Component Installer) ═══ */}
@@ -945,9 +1083,16 @@ export default function NexLibraryPanel() {
             )}
           </div>
 
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>منابع نصب‌شده ({installed.length})</div>
-          {installed.length === 0 ? (
-            <div className="text-center py-6 text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>هیچ منبعی نصب نشده</div>
+          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>Installed Models ({installed.length})</div>
+          {installed.length === 0 && storageAssets.length === 0 ? (
+            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
+              <CheckCircle2 size={24} className="mx-auto mb-2 opacity-50" />
+              <div className="text-[11px]">No installed models</div>
+              <div className="text-[9px] mt-1">Download a model to start using NEX AI offline</div>
+              <button onClick={() => setTab('recommended')} className="mt-3 px-3 py-1.5 rounded-lg text-[10px] font-medium nex-click" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
+                Browse Models
+              </button>
+            </div>
           ) : (
             installed.map((m: any, i: number) => {
               const isActive = activeModelId === m.id;
@@ -1141,7 +1286,11 @@ export default function NexLibraryPanel() {
 
           {/* Active downloads */}
           {activeDownloads.length === 0 && completedDownloads.length === 0 ? (
-            <div className="text-center py-6 text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>دانلود فعالی وجود ندارد</div>
+            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
+              <Download size={24} className="mx-auto mb-2 opacity-50" />
+              <div className="text-[11px]">No active downloads</div>
+              <div className="text-[9px] mt-1">Download a model from the Models tab</div>
+            </div>
           ) : (
             <>
               {activeDownloads.map((dl: DownloadEntry) => (
@@ -1216,7 +1365,7 @@ export default function NexLibraryPanel() {
         {/* Security note */}
         <div className="p-2 mx-3 mb-3 rounded-lg text-[9px] flex items-start gap-1.5" style={{ background: 'rgba(34,197,94,0.06)', color: 'var(--nex-text-muted)' }}>
           <ShieldCheck size={10} className="mt-0.5 shrink-0" style={{ color: 'var(--nex-success)' }} />
-          <span>تمام دانلودها نیازمند اجازه صریح هستند. فقط HTTPS. تأیید چک‌سام. تمام استنتاج محلی و آفلاین است.</span>
+          <span>All downloads require explicit permission. HTTPS only. Checksum verified. All inference is local and offline.</span>
         </div>
       </div>
 
