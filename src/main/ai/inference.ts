@@ -66,7 +66,8 @@ export interface StreamChunk {
 
 let _llama: any = null;
 let _loadedModelId: string | null = null;
-let _loadedModel: any = null;
+let _loadedModel: any = null;              // node-llama-cpp LlamaModel object
+let _loadedModelInfo: LocalModelInfo | null = null;  // Phase 87: the LocalModelInfo that was passed to loadModel
 let _loadedContext: any = null;
 let _LlamaChatSession: any = null;
 // Phase 86 P2-8: _currentSession removed (was dead code — never held a real session)
@@ -119,12 +120,20 @@ export function getGpuBackend(): 'cpu' | 'cuda' | 'metal' | 'vulkan' {
  * unload it first. Subsequent inferences use this loaded model.
  */
 export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = {}): Promise<void> {
+  // Phase 87: Assert model has a valid path before proceeding
+  if (!model.path) {
+    console.error('[MODEL_PATH_MISSING]', JSON.stringify({ id: model.id, name: model.name, path: model.path }));
+    throw new Error(`Resolved model has no path: ${JSON.stringify({ id: model.id, name: model.name })}`);
+  }
   // Phase 86 P1-6: Fix idempotency — check fileExists BEFORE the fast path
   if (!model.fileExists) {
     throw new Error(`Model file does not exist: ${model.path}`);
   }
   // Phase 86 P1-6: Single idempotency check (was duplicated at lines 129+135)
   if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
+    // Phase 87: Update the stored LocalModelInfo even on idempotent path
+    // (the model object from registry may have been updated)
+    _loadedModelInfo = model;
     return;
   }
 
@@ -145,6 +154,7 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   });
   _ctxSequence = null; // new context → new sequence pool
   _loadedModelId = model.id;
+  _loadedModelInfo = model;  // Phase 87: Store the LocalModelInfo for getLoadedModel()
 
   // Phase 74: Model load log
   console.log(`[MODEL_LOAD]`);
@@ -187,6 +197,7 @@ export async function unloadModel(): Promise<void> {
     _loadedModel = null;
   }
   _loadedModelId = null;
+  _loadedModelInfo = null;  // Phase 87: Clear the LocalModelInfo too
   noteLoadedModel(null);
   console.log('[NEX AI Local] Model unloaded');
 }
@@ -225,12 +236,14 @@ export function getLoadedModelInfo(): { id: string } | null {
 }
 
 /**
- * Phase 86 P0-3: Get the full LocalModelInfo of the loaded model.
+ * Phase 86 P0-3 / Phase 87: Get the full LocalModelInfo of the loaded model.
+ * Returns the LocalModelInfo that was passed to loadModel() — NOT the
+ * node-llama-cpp LlamaModel object (which is _loadedModel).
  * Returns null if no model is loaded.
  */
 export function getLoadedModel(): LocalModelInfo | null {
-  if (!_loadedModelId || !_loadedModel) return null;
-  return _loadedModel;
+  if (!_loadedModelId || !_loadedModelInfo) return null;
+  return _loadedModelInfo;
 }
 
 /**
@@ -254,6 +267,11 @@ export async function chatComplete(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   opts: InferenceOptions = {}
 ): Promise<InferenceResult> {
+  // Phase 87: Assert model path before inference
+  if (!model.path) {
+    console.error('[MODEL_PATH_MISSING] chatComplete — model:', JSON.stringify({ id: model.id, name: model.name }));
+    throw new Error('Resolved model has no path — cannot perform inference');
+  }
   await loadModel(model, opts);
 
   if (!_loadedContext) {
@@ -331,6 +349,11 @@ export async function chatStream(
   onChunk: (chunk: StreamChunk) => void,
   opts: InferenceOptions = {}
 ): Promise<InferenceResult> {
+  // Phase 87: Assert model path before inference
+  if (!model.path) {
+    console.error('[MODEL_PATH_MISSING] chatStream — model:', JSON.stringify({ id: model.id, name: model.name }));
+    throw new Error('Resolved model has no path — cannot perform inference');
+  }
   await loadModel(model, opts);
 
   if (!_loadedContext) {
