@@ -67,6 +67,7 @@ export class VoiceService {
   private _chunksSent = 0;
   private _lastChunkSize = 0;
   private _ipcFeedingEnabled = false;
+  private _audioProcessEventCount = 0;
 
   constructor(config?: Partial<VoiceConfig>) {
     this.config = { ...DEFAULT_VOICE_CONFIG, ...config };
@@ -85,12 +86,30 @@ export class VoiceService {
   async enableMicrophone(): Promise<boolean> {
     if (this._stream) return true;
     try {
+      this._micPermission = null; // pending
+      console.log(`[VOICE_AUDIO_DEBUG] calling getUserMedia...`);
       this._stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       this._micPermission = true;
       this.callbacks.onPermissionChange?.(true);
+      console.log(`[VOICE_AUDIO_DEBUG] getUserMedia resolved — stream tracks: ${this._stream.getTracks().length}`);
+
       this._audioContext = new AudioContext();
+      console.log(`[VOICE_AUDIO_DEBUG] AudioContext created — state: ${this._audioContext.state}`);
+
+      // CRITICAL: AudioContext starts in 'suspended' state in Electron.
+      // Must resume it before ScriptProcessorNode will fire onaudioprocess.
+      if (this._audioContext.state === 'suspended') {
+        console.log(`[VOICE_AUDIO_DEBUG] AudioContext suspended — calling resume()...`);
+        try {
+          await this._audioContext.resume();
+          console.log(`[VOICE_AUDIO_DEBUG] AudioContext resumed — state: ${this._audioContext.state}`);
+        } catch (err: any) {
+          console.warn(`[VOICE_AUDIO_DEBUG] AudioContext resume failed: ${err?.message}`);
+        }
+      }
+
       const source = this._audioContext.createMediaStreamSource(this._stream);
       this._analyser = this._audioContext.createAnalyser();
       this._analyser.fftSize = 256;
@@ -99,22 +118,26 @@ export class VoiceService {
       this._dataArray = new Uint8Array(new ArrayBuffer(this._analyser.frequencyBinCount));
 
       // ── PCM audio capture for LocalVoiceEngine ──────────────────────────
-      // ScriptProcessorNode captures raw PCM audio (16-bit, mono, 16kHz-ish).
-      // We downsample from 48kHz to 16kHz and send via IPC to the main process
-      // where the whisper provider transcribes it.
-      // ScriptProcessor is deprecated but widely supported; AudioWorklet would
-      // require a separate worklet file which is harder to bundle in Electron.
       this._scriptProcessor = this._audioContext.createScriptProcessor(4096, 1, 1);
+      console.log(`[VOICE_AUDIO_DEBUG] ScriptProcessorNode created — bufferSize: ${this._scriptProcessor.bufferSize}`);
+
+      this._audioProcessEventCount = 0;
       this._scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
-        if (!this._ipcFeedingEnabled) return;
+        this._audioProcessEventCount++;
+        if (!this._ipcFeedingEnabled) {
+          // Log first few events even when disabled, to prove the processor is firing
+          if (this._audioProcessEventCount <= 3) {
+            console.log(`[VOICE_AUDIO_DEBUG] onaudioprocess firing (#${this._audioProcessEventCount}) but IPC feeding disabled`);
+          }
+          return;
+        }
         const inputBuffer = event.inputBuffer;
         const channelData = inputBuffer.getChannelData(0); // Float32Array, mono
 
-        // Downsample from 48kHz (AudioContext default) to 16kHz (whisper format).
-        // We take every 3rd sample (48000/16000 = 3).
+        // Downsample from 48kHz to 16kHz
         const downsampled = this.downsampleTo16k(channelData);
 
-        // Convert Float32 (-1.0..1.0) to Int16 PCM (whisper format)
+        // Convert Float32 to Int16 PCM
         const pcm16 = new Int16Array(downsampled.length);
         for (let i = 0; i < downsampled.length; i++) {
           const s = Math.max(-1, Math.min(1, downsampled[i]));
@@ -122,17 +145,25 @@ export class VoiceService {
         }
 
         // Send the PCM chunk to the main process via IPC
-        const chunkBuffer = pcm16.buffer; // ArrayBuffer
+        const chunkBuffer = pcm16.buffer;
         this._chunksSent++;
         this._lastChunkSize = chunkBuffer.byteLength;
         try {
-          window.nexAPI?.voiceFeedAudioChunk?.(chunkBuffer);
+          const ipcAvailable = !!(window as any).nexAPI?.voiceFeedAudioChunk;
+          if (!ipcAvailable) {
+            if (this._chunksSent <= 3) {
+              console.warn(`[VOICE_AUDIO_DEBUG] voiceFeedAudioChunk NOT available on window.nexAPI!`);
+            }
+            return;
+          }
+          window.nexAPI!.voiceFeedAudioChunk!(chunkBuffer);
         } catch (err: any) {
-          // Non-fatal — IPC may not be ready
+          if (this._chunksSent <= 3) {
+            console.warn(`[VOICE_AUDIO_DEBUG] voiceFeedAudioChunk error: ${err?.message}`);
+          }
         }
 
         // Also send the audio level (RMS) for VAD + Orb animation
-        // (computed from the same chunk to avoid double-work)
         let sum = 0;
         for (let i = 0; i < downsampled.length; i++) {
           sum += downsampled[i] * downsampled[i];
@@ -144,17 +175,20 @@ export class VoiceService {
           ? this.config.attackSpeed : this.config.releaseSpeed;
         this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
         this.callbacks.onAudioLevel?.(this._smoothedLevel);
-        // Send audio level to main process for VAD
         try {
           window.nexAPI?.voiceFeedAudioLevel?.(this._smoothedLevel);
         } catch { /* best-effort */ }
       };
-      // Connect: source → scriptProcessor → destination (destination needed for processing)
+      // Connect: source → scriptProcessor → destination
       source.connect(this._scriptProcessor);
       this._scriptProcessor.connect(this._audioContext.destination);
+      console.log(`[VOICE_AUDIO_DEBUG] ScriptProcessorNode connected — source→processor→destination`);
 
       this.startAudioLoop();
+
+      // Log the initial [VOICE_AUDIO] + [VOICE_AUDIO_DEBUG] blocks
       this.logVoiceAudio();
+      this.logVoiceAudioDebug();
       return true;
     } catch (err: any) {
       this._micPermission = false;
@@ -162,8 +196,10 @@ export class VoiceService {
       const msg = err.name === 'NotAllowedError' ? 'Microphone access denied'
         : err.name === 'NotFoundError' ? 'No microphone found'
         : `Microphone error: ${err.message}`;
+      console.error(`[VOICE_AUDIO_DEBUG] enableMicrophone failed: ${msg} (name=${err.name})`);
       this.callbacks.onError?.(msg);
       this.logVoiceAudio();
+      this.logVoiceAudioDebug();
       return false;
     }
   }
@@ -206,6 +242,29 @@ export class VoiceService {
     console.log(`  chunksSent=${this._chunksSent}`);
     console.log(`  lastChunkSize=${this._lastChunkSize}`);
     console.log(`  ipcFeedingEnabled=${this._ipcFeedingEnabled}`);
+  }
+
+  /**
+   * Log the [VOICE_AUDIO_DEBUG] diagnostic block — detailed pipeline trace.
+   * Shows exactly where the audio pipeline is broken:
+   *   permission → stream → audioContext → processor → onaudioprocess → IPC
+   */
+  logVoiceAudioDebug(): void {
+    const ipcAvailable = !!(window as any).nexAPI?.voiceFeedAudioChunk;
+    const streamTracks = this._stream ? this._stream.getTracks().length : 0;
+    console.log(`[VOICE_AUDIO_DEBUG]`);
+    console.log(`  permission=${this._micPermission === null ? 'pending' : this._micPermission ? 'granted' : 'denied'}`);
+    console.log(`  streamTracks=${streamTracks}`);
+    console.log(`  audioContext=${this._audioContext?.state || 'none'}`);
+    console.log(`  processorCreated=${!!this._scriptProcessor}`);
+    console.log(`  audioProcessEvents=${this._audioProcessEventCount}`);
+    console.log(`  ipcAvailable=${ipcAvailable}`);
+    if (this._audioContext && this._audioContext.state !== 'running') {
+      console.warn(`[VOICE_AUDIO_DEBUG] WARNING: AudioContext is ${this._audioContext.state} — onaudioprocess will NOT fire until resumed`);
+    }
+    if (!ipcAvailable) {
+      console.warn(`[VOICE_AUDIO_DEBUG] WARNING: window.nexAPI.voiceFeedAudioChunk is NOT available — IPC bridge missing`);
+    }
   }
 
   async startListening(): Promise<void> {

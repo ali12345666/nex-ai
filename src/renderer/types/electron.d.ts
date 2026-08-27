@@ -121,6 +121,10 @@ export interface NexAPI {
   voiceFeedAudioChunk: (chunk: ArrayBuffer | Uint8Array) => void;
   voicePipelineStatus: () => Promise<{ success: boolean }>;
 
+  // Voice mic capture events: main → renderer
+  onVoiceStartMicCapture: (callback: () => void) => () => void;
+  onVoiceStopMicCapture: (callback: () => void) => () => void;
+
   // Voice Manager: unified activation lifecycle
   voiceManagerDetect: () => Promise<{ success: boolean; status?: any; error?: string }>;
   voiceManagerActivate: () => Promise<{ success: boolean; activated: boolean; sttReady: boolean; ttsReady: boolean; missingComponents?: string[]; error?: string }>;

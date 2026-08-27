@@ -126,6 +126,18 @@ contextBridge.exposeInMainWorld('nexAPI', {
   },
   voicePipelineStatus: () => ipcRenderer.invoke('voice-pipeline-status'),
 
+  // Voice mic capture events: main → renderer (trigger mic capture start/stop)
+  onVoiceStartMicCapture: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('voice-start-mic-capture', listener);
+    return () => ipcRenderer.removeListener('voice-start-mic-capture', listener);
+  },
+  onVoiceStopMicCapture: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('voice-stop-mic-capture', listener);
+    return () => ipcRenderer.removeListener('voice-stop-mic-capture', listener);
+  },
+
   // ── Voice Manager: unified activation lifecycle ──
   voiceManagerDetect: () => ipcRenderer.invoke('voice-manager-detect'),
   voiceManagerActivate: () => ipcRenderer.invoke('voice-manager-activate'),

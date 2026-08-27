@@ -214,6 +214,32 @@ export default function AppShell() {
     return () => { if (off) off(); };
   }, []);
 
+  // ── Bridge: main-side voice-start-mic-capture → renderer mic capture ──────
+  // When VoiceManager.startConversation() runs on the main side, it sends
+  // 'voice-start-mic-capture' to tell the renderer to:
+  //   1. Call getUserMedia() (if not already active)
+  //   2. Enable IPC feeding (send PCM chunks to main → whisper)
+  // Without this bridge, the main engine listens but no audio arrives.
+  useEffect(() => {
+    const offStart = window.nexAPI?.onVoiceStartMicCapture?.(() => {
+      console.log('[VOICE_AUDIO_DEBUG] Received voice-start-mic-capture from main');
+      // Start the VoiceService: getUserMedia + ScriptProcessor + IPC feeding
+      voiceController.start().then(() => {
+        console.log('[VOICE_AUDIO_DEBUG] voiceController.start() completed — mic capture active');
+      }).catch((err: any) => {
+        console.error('[VOICE_AUDIO_DEBUG] voiceController.start() failed:', err?.message);
+      });
+    });
+    const offStop = window.nexAPI?.onVoiceStopMicCapture?.(() => {
+      console.log('[VOICE_AUDIO_DEBUG] Received voice-stop-mic-capture from main');
+      voiceController.stop();
+    });
+    return () => {
+      if (offStart) offStart();
+      if (offStop) offStop();
+    };
+  }, []);
+
   // Left workspace content based on active view
   // UI-15: Consolidated to 5 views — Chat, Workspace, Memory, Knowledge, Settings.
   // All other panels (Git/Diagnostics/Plugins/Hardware/Agents/Tools) accessible

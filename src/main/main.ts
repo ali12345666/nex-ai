@@ -1301,7 +1301,13 @@ async function setupIPC(): Promise<void> {
   ipcMain.handle('voice-manager-start-conversation', async () => {
     try {
       const { getVoiceManager } = await import('./ai/voice-manager');
-      return await getVoiceManager().startConversation();
+      const result = await getVoiceManager().startConversation();
+      if (result.success) {
+        // Tell the renderer to start mic capture + IPC feeding
+        mainWindow?.webContents.send('voice-start-mic-capture', {});
+        console.log(`[VOICE_MANAGER] Sent voice-start-mic-capture to renderer`);
+      }
+      return result;
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -1311,6 +1317,9 @@ async function setupIPC(): Promise<void> {
     try {
       const { getVoiceManager } = await import('./ai/voice-manager');
       await getVoiceManager().stopConversation();
+      // Tell the renderer to stop mic capture + IPC feeding
+      mainWindow?.webContents.send('voice-stop-mic-capture', {});
+      console.log(`[VOICE_MANAGER] Sent voice-stop-mic-capture to renderer`);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1320,7 +1329,18 @@ async function setupIPC(): Promise<void> {
   ipcMain.handle('voice-manager-toggle-conversation', async () => {
     try {
       const { getVoiceManager } = await import('./ai/voice-manager');
-      return await getVoiceManager().toggleConversation();
+      const result = await getVoiceManager().toggleConversation();
+      // Tell the renderer to start/stop mic capture based on the new state
+      if (result.success) {
+        if (result.active) {
+          mainWindow?.webContents.send('voice-start-mic-capture', {});
+          console.log(`[VOICE_MANAGER] Sent voice-start-mic-capture to renderer`);
+        } else {
+          mainWindow?.webContents.send('voice-stop-mic-capture', {});
+          console.log(`[VOICE_MANAGER] Sent voice-stop-mic-capture to renderer`);
+        }
+      }
+      return result;
     } catch (err: any) {
       return { success: false, error: err.message };
     }
