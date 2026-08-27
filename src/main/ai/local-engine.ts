@@ -168,7 +168,7 @@ export async function localChatComplete(
 
   try {
     const result = await chatComplete(model, messages, {
-      contextSize: config.localContextSize,
+      contextSize: config.localContextSize || model.contextSize || 2048,
       threads: config.localThreads,
       gpuLayers: config.localGpuLayers,
       temperature: config.localTemperature ?? config.temperature,
@@ -242,7 +242,7 @@ export async function localChatStream(
 
   try {
     const result = await chatStream(model, messages, onChunk, {
-      contextSize: config.localContextSize,
+      contextSize: config.localContextSize || model.contextSize || 2048,
       threads: config.localThreads,
       gpuLayers: config.localGpuLayers,
       temperature: config.localTemperature ?? config.temperature,

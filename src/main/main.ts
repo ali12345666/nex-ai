@@ -740,12 +740,46 @@ async function setupIPC(): Promise<void> {
           return { success: false, replyId, error: `Model file not found: ${model.path}` };
         }
 
-        // Phase 83: Check if the model is already loaded (by activation).
-        // If so, skip the reload — just use the already-loaded model.
+        // Phase 83/84: Check if the model is already loaded (by activation).
+        // If so, call inference.ts chatStream DIRECTLY — bypassing LlamaCppRuntime
+        // which has its own _loadedModel field that wasn't set by activation.
         const { getLoadedModelInfo } = await import('./ai/inference');
         const loadedInfo = getLoadedModelInfo();
         if (loadedInfo && loadedInfo.id === model.id) {
-          console.log(`[INFERENCE_START] Model already loaded: ${model.name} — skipping reload`);
+          console.log(`[INFERENCE_START] Model already loaded: ${model.name} — calling inference.ts directly`);
+
+          // Call inference.ts chatStream directly (not through LlamaCppRuntime)
+          const { chatStream: directChatStream } = await import('./ai/inference');
+          const streamer = createTokenStreamer(replyId, undefined, 'final', (payload) => {
+            mainWindow?.webContents.send('chat-token', { replyId, ...payload });
+          });
+
+          console.log(`[INFERENCE_START] Starting chatStream with ${messages.length} messages`);
+          const result = await directChatStream(
+            model,
+            messages.map((m) => ({ role: m.role, content: m.content })),
+            (chunk) => { if (chunk.content) streamer.push(chunk.content); },
+            {
+              temperature: config.localTemperature ?? config.temperature ?? 0.7,
+              maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+              systemPrompt: getSystemPromptFor(config),
+            }
+          );
+          streamer.end();
+          console.log(`[CHAT_RESPONSE]`);
+          console.log(`  source=local-stream-direct`);
+          console.log(`  tokens=${result.tokensGenerated || 0}`);
+          console.log(`  error=none`);
+          console.log(`  contentLength=${result.content?.length || 0}`);
+          return {
+            success: true,
+            replyId,
+            content: result.content,
+            tokens: result.tokensGenerated,
+            durationMs: result.durationMs,
+            modelId: result.modelId,
+            modelName: result.modelName,
+          };
         } else {
           console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path}`);
           const { getDefaultRuntime } = await import('./ai/runtime');
