@@ -13,27 +13,56 @@
  *  - Inference runs on a separate worker thread (node-llama-cpp default)
  *  - CPU fallback is always available (Vulkan/CUDA may fail to init)
  *
- * This is the REAL local AI — no mocks, no stubs. It actually loads and runs
- * GGUF models via llama.cpp under the hood.
- */
-
-/**
- * NEX AI — Local Inference Engine
- *
- * Wraps node-llama-cpp to provide:
- *  - Model loading (lazy + cached)
- *  - Chat completion (full response)
- *  - Streaming chat completion (token-by-token)
- *  - Stop / abort inference
- *
- * Key design:
- *  - One model loaded at a time (loading multiple is expensive in RAM)
- *  - Switching models unloads the previous one
- *  - Inference runs on a separate worker thread (node-llama-cpp default)
- *  - CPU fallback is always available (Vulkan/CUDA may fail to init)
- *
  * node-llama-cpp uses top-level await in its ESM exports, so we must
  * dynamically import it (not statically require it).
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * GPU OFFLOAD — ROOT-CAUSE FIX (this file)
+ * ════════════════════════════════════════════════════════════════════════════
+ * SYMPTOM (Windows / RTX 4060): `npx node-llama-cpp inspect gpu` reports
+ * "Vulkan AVAILABLE", but loading Qwen3-30B leaves VRAM at 768 MB while RAM
+ * spikes to ~26 GB and swap to ~19 GB. I.e. the model runs entirely on CPU.
+ *
+ * ROOT CAUSE (two compounding bugs):
+ *
+ *  1. `getLlama()` was called with NO options. The default `gpu: "auto"` plus
+ *     Electron's default `build: "never"` means node-llama-cpp will ONLY use
+ *     a prebuilt binary that is already installed in node_modules. The Vulkan
+ *     binary lives in a SEPARATE optional package `@node-llama-cpp/win-x64-vulkan`
+ *     which is NOT pulled in by a plain `npm install node-llama-cpp`. So
+ *     `getLlama()` silently resolves to the CPU binary
+ *     (`@node-llama-cpp/win-x64`), `llama.gpu` returns `false`, and
+ *     `gpuLayers` is forced to 0 by node-llama-cpp ("If GPU support is
+ *     disabled, will be set to 0 automatically").
+ *
+ *     The CLI `inspect gpu` can report "Vulkan AVAILABLE" because it tests
+ *     driver + binary *availability for the platform*, NOT whether the binary
+ *     is actually installed in THIS project. That divergence is exactly why
+ *     VRAM never moved.
+ *
+ *  2. `gpuLayers: -1` was passed as a raw number. Per node-llama-cpp's
+ *     `LlamaModelOptions.gpuLayers` type, a `number` means "store EXACTLY N
+ *     layers in VRAM" — `-1` is not "auto" and not "max". The correct value
+ *     for "offload as many layers as possible" is `"auto"`.
+ *
+ * FIX:
+ *  - `getLlamaInstance()` now does a preflight `getLlamaGpuTypes("supported")`,
+ *    then explicitly requests `gpu: "vulkan"` (with `build: "never"` +
+ *    `skipDownload: true` so we never auto-install/download a binary), and
+ *    falls back to `gpu: "auto"` only if Vulkan init fails. The chosen
+ *    backend + reason are captured for diagnostics.
+ *  - `loadModel()` translates the legacy `-1` → `"auto"` and `0` → `0`
+ *    before calling `llama.loadModel()`, then reads the ACTUAL offloaded
+ *    layer count from `model.gpuLayers` and the real VRAM usage from
+ *    `llama.getLlamaMemoryUsage()` / `llama.getVramState()` to PROVE offload.
+ *  - Every stage emits a structured log block:
+ *      [GPU_RUNTIME]   — at engine init
+ *      [GPU_MODEL_LOAD] — immediately after LlamaModel creation
+ *      [GPU_INFERENCE]  — at the start of each chatComplete/chatStream
+ *
+ * These diagnostics make it impossible to silently fall back to CPU again:
+ * if `backend=cpu` or `modelGpuLayersActual=0`, the log says so explicitly.
+ * ════════════════════════════════════════════════════════════════════════════
  */
 
 import { touchModel, LocalModelInfo } from './model-registry';
@@ -64,6 +93,41 @@ export interface StreamChunk {
   error?: string;
 }
 
+/**
+ * Structured GPU runtime diagnostics. Collected at engine init and enriched
+ * at model load. Surfaced to the UI/IPC via `getGpuRuntimeDiagnostics()`.
+ *
+ * Every field that can PROVE or DISPROVE real GPU offload is here:
+ *   - `backend`              — what llama.cpp actually initialized
+ *   - `buildType`            — prebuilt vs localBuild ( Electron = prebuilt )
+ *   - `supportsGpuOffloading`— llama.cpp's own answer
+ *   - `gpuDeviceNames`       — physical devices the backend can see
+ *   - `modelGpuLayersActual` — layers ACTUALLY stored in VRAM (from model getter)
+ *   - `llamaMemoryUsage`     — {gpuVram, cpuRam} reported by llama.cpp
+ *   - `vramBefore/vramAfter` — VRAM delta across model load (THE proof)
+ */
+export interface GpuRuntimeDiagnostics {
+  platform: string;
+  architecture: string;
+  electron: boolean;
+  backend: 'cpu' | 'cuda' | 'metal' | 'vulkan';
+  buildType: 'localBuild' | 'prebuilt' | 'unknown';
+  supportsGpuOffloading: boolean;
+  gpuDeviceNames: string[];
+  supportedGpuTypes: string[];   // from getLlamaGpuTypes("supported")
+  chosenReason: string;          // why this backend was selected
+  nativeBinaryInfo: string;      // buildType + release + cmake hint
+  systemInfo?: string;           // llama.cpp systemInfo string
+  // Populated at model load:
+  modelPath?: string;
+  modelGpuLayersRequested?: number | string;
+  modelGpuLayersActual?: number;  // REAL offloaded layer count
+  vramBeforeModelLoad?: { total: number; used: number; free: number };
+  vramAfterModelLoad?: { total: number; used: number; free: number };
+  llamaMemoryUsage?: { gpuVram: number; cpuRam: number };
+  collectedAt: number;
+}
+
 let _llama: any = null;
 let _loadedModelId: string | null = null;
 let _loadedModel: any = null;              // node-llama-cpp LlamaModel object
@@ -73,41 +137,242 @@ let _LlamaChatSession: any = null;
 let _ctxSequence: any = null;
 let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
 
+/** GPU runtime diagnostics (collected at init + enriched at model load). */
+let _gpuDiagnostics: GpuRuntimeDiagnostics | null = null;
+
 // Phase 90: Inference serialization — ONE active generation at a time
 let _inFlightPromise: Promise<any> | null = null;
 
 // Phase 90: Per-request abort (replaces global _abortFlag)
 let _activeAbortController: AbortController | null = null;
 
-async function getLlamaInstance() {
-  if (!_llama) {
-    console.log('[NEX AI Local] Initializing llama.cpp engine...');
-    // node-llama-cpp is ESM-only and uses top-level await, so we must
-    // dynamically import it. Direct `await import(...)` in our CJS-compiled
-    // module gets rewritten by TypeScript to `require()`, which fails on
-    // ESM-only deps. Use eval-based indirection to keep the `import()`
-    // call as a true dynamic import at runtime.
-    const importSrc = '(async (m) => await import(m))';
-    const dynamicImport = (0, eval)(importSrc) as (m: string) => Promise<any>;
-    const mod = await dynamicImport('node-llama-cpp');
-    _llama = await mod.getLlama();
-    _LlamaChatSession = mod.LlamaChatSession;
-    // UI-03: capture the ACTUAL GPU backend reported by llama.cpp (was
-    // previously hardcoded to 'cpu' in llamacpp-runtime.getStats — fake
-    // telemetry when GPU offload is actually active).
-    // node-llama-cpp v3 Llama.gpu returns: 'metal' | 'cuda' | 'vulkan' | false.
-    try {
-      const gpu = (_llama as any).gpu;
-      if (gpu === 'metal' || gpu === 'cuda' || gpu === 'vulkan') {
-        _gpuBackend = gpu;
-      } else {
-        _gpuBackend = 'cpu';
-      }
-    } catch {
-      _gpuBackend = 'cpu';
-    }
-    console.log(`[NEX AI Local] Engine ready (GPU backend: ${_gpuBackend})`);
+// Abort diagnostics: track the active request ID + creation time so we can
+// log [INFERENCE_ABORT_CONTROLLER] at creation and [INFERENCE_ABORT] with the
+// CALLER STACK TRACE when abortInference() is invoked. This makes it
+// impossible for a spurious abort to happen silently — the exact call site
+// is always logged.
+let _activeRequestId: string | null = null;
+let _activeRequestCreatedAt: number = 0;
+
+/**
+ * Detect whether we're running inside Electron (not plain Node).
+ * node-llama-cpp changes its default `build` option to `"never"` under
+ * Electron, which is the crux of the silent-CPU-fallback bug.
+ */
+function isRunningUnderElectron(): boolean {
+  return !!(process as any).versions?.electron ||
+    !!(process as any).type ||
+    (typeof process !== 'undefined' && (process as any).defaultApp !== undefined);
+}
+
+/**
+ * Format a byte count as a human-readable string for diagnostics.
+ */
+function fmtBytes(bytes: number): string {
+  if (!bytes || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * Print the [GPU_RUNTIME] diagnostic block. Called once at engine init.
+ */
+function logGpuRuntimeBlock(d: GpuRuntimeDiagnostics): void {
+  console.log('[GPU_RUNTIME]');
+  console.log(`  platform=${d.platform}`);
+  console.log(`  architecture=${d.architecture}`);
+  console.log(`  electron=${d.electron}`);
+  console.log(`  backend=${d.backend}`);
+  console.log(`  buildType=${d.buildType}`);
+  console.log(`  supportsGpuOffloading=${d.supportsGpuOffloading}`);
+  console.log(`  gpuDeviceNames=${d.gpuDeviceNames.length ? d.gpuDeviceNames.join(', ') : '(none — CPU backend)'}`);
+  console.log(`  supportedGpuTypes=${d.supportedGpuTypes.length ? d.supportedGpuTypes.join(', ') : '(none)'}`);
+  console.log(`  chosenReason=${d.chosenReason}`);
+  console.log(`  nativeBinary=${d.nativeBinaryInfo}`);
+}
+
+/**
+ * Print the [GPU_MODEL_LOAD] block. Called immediately after LlamaModel
+ * creation. This is the PROOF that GPU offload actually happened (or not).
+ */
+function logGpuModelLoadBlock(
+  modelPath: string,
+  requestedGpuLayers: number | string,
+  actualGpuLayers: number,
+  vramBefore: { total: number; used: number; free: number } | undefined,
+  vramAfter: { total: number; used: number; free: number } | undefined,
+  memUsage: { gpuVram: number; cpuRam: number } | undefined,
+  backend: string,
+): void {
+  const vramDelta = (vramBefore && vramAfter) ? (vramAfter.used - vramBefore.used) : undefined;
+  const offloadProven = actualGpuLayers > 0 || (memUsage != null && memUsage.gpuVram > 0);
+  console.log('[GPU_MODEL_LOAD]');
+  console.log(`  backend=${backend}`);
+  console.log(`  model=${modelPath}`);
+  console.log(`  gpuLayersRequested=${requestedGpuLayers}`);
+  console.log(`  gpuLayersActual=${actualGpuLayers}`);
+  console.log(`  vramBefore=${vramBefore ? `${fmtBytes(vramBefore.used)}/${fmtBytes(vramBefore.total)}` : '(unavailable)'}`);
+  console.log(`  vramAfter=${vramAfter ? `${fmtBytes(vramAfter.used)}/${fmtBytes(vramAfter.total)}` : '(unavailable)'}`);
+  console.log(`  vramDelta=${vramDelta != null ? fmtBytes(vramDelta) : '(unavailable)'}`);
+  console.log(`  llamaMemoryUsage=${memUsage ? `gpuVram=${fmtBytes(memUsage.gpuVram)} cpuRam=${fmtBytes(memUsage.cpuRam)}` : '(unavailable)'}`);
+  console.log(`  gpuOffloadProven=${offloadProven ? 'YES' : 'NO — model is running on CPU'}`);
+  if (!offloadProven) {
+    console.log('  [GPU_MODEL_LOAD] WARNING: gpuLayersActual=0 and gpuVram=0. The Vulkan prebuilt binary');
+    console.log('    is likely NOT installed. Run: npx node-llama-cpp download --gpu vulkan');
+    console.log('    (this installs @node-llama-cpp/win-x64-vulkan into node_modules).');
   }
+}
+
+/**
+ * Initialize the node-llama-cpp engine with EXPLICIT backend selection.
+ *
+ * Strategy (respects "do NOT auto-install binaries"):
+ *   1. Preflight: `getLlamaGpuTypes("supported")` — list what's possible.
+ *   2. If Vulkan is supported, explicitly request `gpu: "vulkan"` with
+ *      `build: "never"` + `skipDownload: true`. This uses the Vulkan binary
+ *      ONLY if it's already installed; it never downloads/builds.
+ *   3. If Vulkan init throws (binary missing / driver issue), fall back to
+ *      `gpu: "auto"` (which will land on CUDA if available, else CPU).
+ *   4. Capture + log the [GPU_RUNTIME] diagnostic block regardless of outcome.
+ *
+ * This makes the backend choice deterministic and observable instead of
+ * relying on `auto` + Electron's `build: "never"` default silently picking
+ * the CPU binary.
+ */
+async function getLlamaInstance() {
+  if (_llama) return _llama;
+  console.log('[NEX AI Local] Initializing llama.cpp engine...');
+
+  // node-llama-cpp is ESM-only and uses top-level await, so we must
+  // dynamically import it. Direct `await import(...)` in our CJS-compiled
+  // module gets rewritten by TypeScript to `require()`, which fails on
+  // ESM-only deps. Use eval-based indirection to keep the `import()`
+  // call as a true dynamic import at runtime.
+  const importSrc = '(async (m) => await import(m))';
+  const dynamicImport = (0, eval)(importSrc) as (m: string) => Promise<any>;
+  const mod = await dynamicImport('node-llama-cpp');
+  _LlamaChatSession = mod.LlamaChatSession;
+
+  // ── 1. Preflight: which GPU types are supported on THIS machine? ───────
+  let supportedGpus: string[] = [];
+  try {
+    supportedGpus = (await mod.getLlamaGpuTypes('supported')) as string[];
+  } catch (e: any) {
+    console.warn('[NEX AI Local] getLlamaGpuTypes("supported") failed:', e?.message || e);
+  }
+  console.log(`[NEX AI Local] Preflight: supportedGpuTypes=[${supportedGpus.join(', ')}]`);
+
+  // ── 2. Try Vulkan explicitly (best cross-vendor option on Win/Linux) ───
+  // build:"never" + skipDownload:true ⇒ NEVER builds from source or downloads.
+  // If the Vulkan prebuilt binary isn't installed, this throws and we fall
+  // through to the auto fallback. That's the desired, honest behavior.
+  let llama: any = null;
+  let chosenBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
+  let chosenReason = '';
+
+  if (supportedGpus.includes('vulkan')) {
+    try {
+      console.log('[NEX AI Local] Requesting Vulkan backend (build=never, skipDownload=true)...');
+      llama = await mod.getLlama({
+        gpu: 'vulkan',
+        build: 'never',
+        skipDownload: true,
+      });
+      const g = (llama as any).gpu;
+      chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
+      chosenReason = `explicit gpu:"vulkan" succeeded (llama.gpu="${g}")`;
+      console.log(`[NEX AI Local] Vulkan backend initialized OK`);
+    } catch (e: any) {
+      chosenReason = `vulkan request failed: ${(e?.message || e).toString().split('\n')[0]}`;
+      console.warn(`[NEX AI Local] Vulkan backend unavailable: ${e?.message || e}`);
+      console.warn('[NEX AI Local] → Falling back to gpu:"auto".');
+      console.warn('[NEX AI Local] → To enable Vulkan, install the binary: npx node-llama-cpp download --gpu vulkan');
+    }
+  } else {
+    chosenReason = `vulkan not in supportedGpuTypes=[${supportedGpus.join(', ')}]`;
+    console.log('[NEX AI Local] Vulkan not supported on this machine; using auto detection.');
+  }
+
+  // ── 3. Fallback: gpu:"auto" (CUDA → CPU) ───────────────────────────────
+  if (!llama) {
+    try {
+      llama = await mod.getLlama({
+        gpu: 'auto',
+        build: 'never',     // Electron-safe; never build from source
+        skipDownload: true, // never auto-download a binary
+      });
+      const g = (llama as any).gpu;
+      chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
+      if (chosenReason) chosenReason += ' | ';
+      chosenReason += `auto selected backend="${g}"`;
+    } catch (e: any) {
+      // Last resort: plain getLlama() (may build/download — but only if the
+      // above failed, which means no prebuilt binary was found at all).
+      console.warn(`[NEX AI Local] gpu:"auto" with build:"never" failed: ${e?.message || e}`);
+      console.warn('[NEX AI Local] → Final fallback: plain getLlama() (may trigger source build).');
+      llama = await mod.getLlama();
+      const g = (llama as any).gpu;
+      chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
+      if (chosenReason) chosenReason += ' | ';
+      chosenReason += `plain getLlama() returned backend="${g}"`;
+    }
+  }
+
+  _llama = llama;
+  _gpuBackend = chosenBackend;
+
+  // ── 4. Collect + log the [GPU_RUNTIME] diagnostic block ────────────────
+  let buildType: 'localBuild' | 'prebuilt' | 'unknown' = 'unknown';
+  let supportsGpuOffloading = false;
+  let gpuDeviceNames: string[] = [];
+  let systemInfo = '';
+  let nativeBinaryInfo = '';
+  try {
+    buildType = (llama as any).buildType ?? 'unknown';
+  } catch { /* */ }
+  try {
+    supportsGpuOffloading = !!(llama as any).supportsGpuOffloading;
+  } catch { /* */ }
+  try {
+    systemInfo = String((llama as any).systemInfo ?? '');
+  } catch { /* */ }
+  try {
+    const release = (llama as any).llamaCppRelease;
+    nativeBinaryInfo = `${buildType} (llama.cpp ${release?.repo || '?'}@${release?.release || '?'})`;
+  } catch { /* */ }
+  try {
+    gpuDeviceNames = await (llama as any).getGpuDeviceNames?.() ?? [];
+  } catch (e: any) {
+    gpuDeviceNames = [];
+  }
+
+  _gpuDiagnostics = {
+    platform: process.platform,
+    architecture: process.arch,
+    electron: isRunningUnderElectron(),
+    backend: chosenBackend,
+    buildType,
+    supportsGpuOffloading,
+    gpuDeviceNames,
+    supportedGpuTypes: supportedGpus,
+    chosenReason,
+    nativeBinaryInfo: nativeBinaryInfo || buildType,
+    systemInfo,
+    collectedAt: Date.now(),
+  };
+  logGpuRuntimeBlock(_gpuDiagnostics);
+
+  // Extra: dump llama.cpp systemInfo (contains "BLAS", "GGML_VULKAN", etc.)
+  if (systemInfo) {
+    console.log('[GPU_RUNTIME] llama.cpp systemInfo:');
+    for (const line of systemInfo.split('\n')) {
+      if (line.trim()) console.log(`  ${line}`);
+    }
+  }
+
+  console.log(`[NEX AI Local] Engine ready (GPU backend: ${_gpuBackend}, supportsGpuOffloading: ${supportsGpuOffloading})`);
   return _llama;
 }
 
@@ -117,6 +382,15 @@ async function getLlamaInstance() {
  */
 export function getGpuBackend(): 'cpu' | 'cuda' | 'metal' | 'vulkan' {
   return _gpuBackend;
+}
+
+/**
+ * Return the full GPU runtime diagnostics (engine + last model load).
+ * Used by the UI / IPC layer to surface real GPU-offload status.
+ * Returns null before the engine is initialized.
+ */
+export function getGpuRuntimeDiagnostics(): GpuRuntimeDiagnostics | null {
+  return _gpuDiagnostics ? { ..._gpuDiagnostics } : null;
 }
 
 /**
@@ -138,8 +412,33 @@ function markInFlight<T>(promise: Promise<T>): () => void {
 }
 
 /**
+ * Translate the legacy NEX AI `gpuLayers` convention to the node-llama-cpp
+ * `LlamaModelOptions.gpuLayers` option type.
+ *
+ *   -1  (auto)  → "auto"  (adapt to VRAM, fit as many layers as possible)
+ *    0  (CPU)   → 0       (force CPU-only: 0 layers in VRAM)
+ *   >0  (N)     → N       (exactly N layers; throws if VRAM insufficient)
+ *
+ * BUGFIX: previously `-1` was passed as a raw number. node-llama-cpp's
+ * `number` type means "store EXACTLY N layers", so `-1` was not "auto" and
+ * not "max" — it was an invalid layer count. Mapping to `"auto"` makes
+ * maximum offload actually happen when a GPU backend is active.
+ */
+function translateGpuLayers(value: number | undefined): number | string {
+  if (value === undefined || value === -1) return 'auto';
+  if (value === 0) return 0;
+  return value;
+}
+
+/**
  * Load a GGUF model into memory. If a different model is already loaded,
  * unload it first. Subsequent inferences use this loaded model.
+ *
+ * Emits the [GPU_MODEL_LOAD] diagnostic block immediately after LlamaModel
+ * creation, proving (or disproving) real GPU offload via:
+ *   - model.gpuLayers        (actual offloaded layer count)
+ *   - llama.getLlamaMemoryUsage()  ({gpuVram, cpuRam})
+ *   - llama.getVramState()         (before/after VRAM delta)
  */
 export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = {}): Promise<void> {
   // Phase 87: Assert model has a valid path before proceeding
@@ -167,11 +466,66 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   const llama = await getLlamaInstance();
   console.log(`[NEX AI Local] Loading model: ${model.name} (${formatBytes(model.sizeBytes)})`);
 
+  // Translate the legacy gpuLayers convention to node-llama-cpp's option type.
+  const rawGpuLayers = opts.gpuLayers ?? model.gpuLayers ?? -1;
+  const translatedGpuLayers = translateGpuLayers(rawGpuLayers);
+
   const modelOpts: any = {
-    gpuLayers: opts.gpuLayers ?? model.gpuLayers ?? -1,
+    modelPath: model.path,
+    gpuLayers: translatedGpuLayers,
   };
 
-  _loadedModel = await llama.loadModel({ modelPath: model.path, ...modelOpts });
+  // Capture VRAM state BEFORE model load (proves the delta after load).
+  let vramBefore: { total: number; used: number; free: number } | undefined;
+  try {
+    vramBefore = await (llama as any).getVramState?.();
+  } catch { /* CPU backend has no VRAM state */ }
+
+  _loadedModel = await llama.loadModel(modelOpts);
+
+  // ── PROVE GPU offload: read the ACTUAL offloaded layer count ───────────
+  let actualGpuLayers = 0;
+  try {
+    actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number')
+      ? (_loadedModel as any).gpuLayers
+      : 0;
+  } catch { /* */ }
+
+  // ── PROVE GPU offload: VRAM + memory usage AFTER model load ────────────
+  let vramAfter: { total: number; used: number; free: number } | undefined;
+  try {
+    vramAfter = await (llama as any).getVramState?.();
+  } catch { /* */ }
+  let memUsage: { gpuVram: number; cpuRam: number } | undefined;
+  try {
+    memUsage = await (llama as any).getLlamaMemoryUsage?.();
+  } catch { /* */ }
+
+  // Enrich the diagnostics object with model-load proof.
+  if (_gpuDiagnostics) {
+    _gpuDiagnostics = {
+      ..._gpuDiagnostics,
+      modelPath: model.path,
+      modelGpuLayersRequested: translatedGpuLayers,
+      modelGpuLayersActual: actualGpuLayers,
+      vramBeforeModelLoad: vramBefore,
+      vramAfterModelLoad: vramAfter,
+      llamaMemoryUsage: memUsage,
+      collectedAt: Date.now(),
+    };
+  }
+
+  // Emit the [GPU_MODEL_LOAD] proof block.
+  logGpuModelLoadBlock(
+    model.path,
+    translatedGpuLayers,
+    actualGpuLayers,
+    vramBefore,
+    vramAfter,
+    memUsage,
+    _gpuBackend,
+  );
+
   _loadedContext = await _loadedModel.createContext({
     contextSize: opts.contextSize ?? model.contextSize ?? 2048,
     threads: opts.threads ?? 4,
@@ -185,7 +539,9 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   console.log(`  path=${model.path}`);
   console.log(`  size=${model.sizeBytes}`);
   console.log(`  contextSize=${opts.contextSize ?? model.contextSize ?? 2048}`);
-  console.log(`  gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1}`);
+  console.log(`  gpuLayers=${rawGpuLayers} (translated→${translatedGpuLayers})`);
+  console.log(`  gpuLayersActual=${actualGpuLayers}`);
+  console.log(`  backend=${_gpuBackend}`);
   console.log(`  modelId=${model.id}`);
 
   // Mark as last used
@@ -249,6 +605,7 @@ export async function shutdownLlama(): Promise<void> {
     }
     _llama = null;
     _LlamaChatSession = null;
+    _gpuDiagnostics = null;
   }
 }
 
@@ -304,6 +661,13 @@ export async function chatComplete(
   if (!_loadedContext) throw new Error('Model context not initialized');
   await getLlamaInstance();
 
+  // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
+  // This is the identity check: the model used by chatComplete MUST be the
+  // same _loadedModel instance that was created with gpuLayers in loadModel().
+  let actualGpuLayers = 0;
+  try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
+  console.log(`[GPU_INFERENCE] chatComplete modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
+
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUserMsg) throw new Error('No user message in conversation');
 
@@ -312,9 +676,13 @@ export async function chatComplete(
     .slice(0, -1)
     .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-  // Phase 90: Per-request AbortController
+  // Phase 90: Per-request AbortController with diagnostics
+  const requestId = `chatComplete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const abortController = new AbortController();
   _activeAbortController = abortController;
+  _activeRequestId = requestId;
+  _activeRequestCreatedAt = Date.now();
+  console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatComplete createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
 
   const session = new _LlamaChatSession({
     contextSequence: getSharedSequence(),
@@ -345,7 +713,11 @@ export async function chatComplete(
       });
     } finally {
       try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
-      if (_activeAbortController === abortController) _activeAbortController = null;
+      if (_activeAbortController === abortController) {
+        _activeAbortController = null;
+        _activeRequestId = null;
+        _activeRequestCreatedAt = 0;
+      }
     }
   })();
 
@@ -391,6 +763,11 @@ export async function chatStream(
   if (!_loadedContext) throw new Error('Model context not initialized');
   await getLlamaInstance();
 
+  // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
+  let actualGpuLayers = 0;
+  try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
+  console.log(`[GPU_INFERENCE] chatStream modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
+
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUserMsg) throw new Error('No user message in conversation');
 
@@ -399,9 +776,13 @@ export async function chatStream(
     .slice(0, -1)
     .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-  // Phase 90: Per-request AbortController
+  // Phase 90: Per-request AbortController with diagnostics
+  const requestId = `chatStream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const abortController = new AbortController();
   _activeAbortController = abortController;
+  _activeRequestId = requestId;
+  _activeRequestCreatedAt = Date.now();
+  console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatStream createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
 
   const session = new _LlamaChatSession({
     contextSequence: getSharedSequence(),
@@ -455,7 +836,11 @@ export async function chatStream(
       throw err;
     } finally {
       try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
-      if (_activeAbortController === abortController) _activeAbortController = null;
+      if (_activeAbortController === abortController) {
+        _activeAbortController = null;
+        _activeRequestId = null;
+        _activeRequestCreatedAt = 0;
+      }
     }
   })();
 
@@ -471,12 +856,36 @@ export async function chatStream(
  * Phase 90: Abort the currently-active inference request.
  * Uses per-request AbortController — only aborts the active request,
  * not future ones.
+ *
+ * ABORT DIAGNOSTICS: logs [INFERENCE_ABORT] with the FULL CALLER STACK
+ * TRACE so that spurious/unexpected aborts can be traced to their exact
+ * call site. This is the single most important diagnostic for the
+ * "immediate abort after chatStream starts" issue.
+ *
+ * The stack trace is captured via `new Error().stack` at the call site,
+ * NOT from the AbortController itself. This reveals WHO called
+ * abortInference() — whether it was an IPC handler (ai-abort,
+ * ai-chat-stream-cancel, interaction-stop, local-runtime-abort) or
+ * an internal code path.
  */
-export function abortInference(): void {
+export function abortInference(reason?: string): void {
   if (_activeAbortController) {
+    const elapsedMs = _activeRequestCreatedAt > 0 ? Date.now() - _activeRequestCreatedAt : -1;
+    // Capture the caller stack trace for diagnostics.
+    const callerStack = new Error().stack || '(no stack)';
+    console.log(`[INFERENCE_ABORT]`);
+    console.log(`  requestId=${_activeRequestId || '(unknown)'}`);
+    console.log(`  reason=${reason || '(not specified)'}`);
+    console.log(`  elapsedMs=${elapsedMs}`);
+    console.log(`  callerStack=${callerStack.split('\n').slice(0, 12).join('\n  ')}`);
+    if (elapsedMs >= 0 && elapsedMs < 3000) {
+      console.warn(`[INFERENCE_ABORT] WARNING: abort called only ${elapsedMs}ms after request creation — possible spurious/immediate abort`);
+    }
     console.log('[NEX AI Local] Aborting active inference request');
     _activeAbortController.abort();
     _activeAbortController = null;
+    _activeRequestId = null;
+    _activeRequestCreatedAt = 0;
   } else {
     console.log('[NEX AI Local] No active inference to abort');
   }

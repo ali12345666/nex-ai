@@ -254,7 +254,7 @@ export class LocalModelProvider {
    * Abort an in-progress generate/stream call.
    */
   abort(): void {
-    abortInference();
+    abortInference('LocalModelProvider.abort()');
   }
 
   /**

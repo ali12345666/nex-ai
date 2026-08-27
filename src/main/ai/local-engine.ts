@@ -267,7 +267,8 @@ export async function localChatStream(
 
 /**
  * Abort in-progress local inference.
+ * @param reason Optional caller identifier for [INFERENCE_ABORT] diagnostics.
  */
-export function localAbort(): void {
-  abortInference();
+export function localAbort(reason?: string): void {
+  abortInference(reason);
 }

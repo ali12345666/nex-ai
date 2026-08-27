@@ -23,11 +23,66 @@ machine** before any release claim. This checklist is the contract.
 - [ ] Custom title bar, command palette (Ctrl+P), terminal toggle (Ctrl+`)
 
 ### 2. llama.cpp (local inference)
+
+**2a. Vulkan GPU binary (REQUIRED for GPU offload on Windows)**
+
+node-llama-cpp ships GPU backends as **separate optional packages**. A plain
+`npm install` pulls in the CPU binary (`@node-llama-cpp/win-x64`) but NOT the
+Vulkan binary (`@node-llama-cpp/win-x64-vulkan`). Without the Vulkan binary,
+NEX AI silently falls back to CPU even when `npx node-llama-cpp inspect gpu`
+reports "Vulkan AVAILABLE" (that command checks driver availability for the
+platform, not whether the binary is installed in this project).
+
+- [ ] Install the Vulkan binary into the project:
+      ```bat
+      cd <nex-ai project root>
+      npx node-llama-cpp download --gpu vulkan
+      ```
+- [ ] Confirm the binary package now exists:
+      ```bat
+      dir node_modules\@node-llama-cpp\win-x64-vulkan
+      ```
+      (must contain a `.node` / `.dll` native file, not be empty/absent)
+- [ ] If packaging with electron-builder, ensure `node-llama-cpp` and the
+      `@node-llama-cpp/*` packages are **unpacked** from asar (native modules
+      cannot load from inside an asar archive). Add to `build.asarUnpack`:
+      ```json
+      "asarUnpack": ["node_modules/node-llama-cpp/**", "node_modules/@node-llama-cpp/**"]
+      ```
+
+**2b. Model load + GPU-offload PROOF (do not skip — this is the real test)**
+
 - [ ] Settings → Local AI → add a `.gguf` model (e.g. Qwen2.5-0.5B Q4_K_M)
-- [ ] Model loads without error; check RAM usage in Task Manager
-- [ ] Local chat produces tokens (CPU path)
-- [ ] GPU (optional): set GPU layers > 0; verify backend in Model stats
-      (Vulkan/CUDA build of node-llama-cpp is auto-detected)
+- [ ] Open the NEX AI dev console (or check `%APPDATA%/nex-ai/logs`).
+- [ ] Load the model. Look for the **`[GPU_RUNTIME]`** block — verify:
+      - `backend=vulkan` (NOT `cpu`)
+      - `buildType=prebuilt`
+      - `supportsGpuOffloading=true`
+      - `gpuDeviceNames=` lists `NVIDIA GeForce RTX 4060`
+- [ ] Immediately after, look for the **`[GPU_MODEL_LOAD]`** block — verify:
+      - `gpuLayersActual=` is **> 0** (e.g. 41 for a 30B model)
+      - `vramAfter` > `vramBefore` (the VRAM delta is non-zero)
+      - `llamaMemoryUsage=` shows `gpuVram=` in the **GB range** for a multi-GB model
+      - `gpuOffloadProven=YES`
+      - If you see `gpuOffloadProven=NO`, the Vulkan binary is missing or the
+        model is too large for VRAM — do NOT claim GPU inference works.
+- [ ] Send a chat message. Look for **`[GPU_INFERENCE]`** — verify
+      `backend=vulkan` and `gpuLayersActual=>0` and `modelInstanceSame=YES`.
+- [ ] **External cross-check (the ground truth):** Open Task Manager →
+      Performance → GPU. Note VRAM "Dedicated GPU memory" **before** loading
+      the model (~768 MB with just the display). Load the model and send one
+      message. VRAM **MUST increase** by roughly the model size (e.g. a 4-bit
+      8B model → +4–5 GB; a 4-bit 30B model → +18 GB on an RTX 4060 8GB will
+      partial-offload: `gpuLayersActual` will be < total layers and RAM will
+      still grow, but VRAM MUST move off the 768 MB baseline).
+- [ ] If VRAM does NOT increase, GPU offload is NOT happening. Re-check 2a.
+
+**2c. CPU fallback path (still must work)**
+- [ ] On a machine without Vulkan, or after uninstalling the Vulkan binary,
+      NEX AI must still load the model and produce tokens (CPU path).
+      The `[GPU_RUNTIME]` block should show `backend=cpu` and
+      `[GPU_MODEL_LOAD]` should show `gpuOffloadProven=NO` — this is
+      expected and correct on CPU-only systems.
 
 ### 3. GLM 5.3 integration
 - [ ] Settings → Online AI → GLM 5.3 selected (default)

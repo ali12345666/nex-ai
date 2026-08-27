@@ -277,9 +277,16 @@ export class InteractionLoopManager {
 
   /**
    * Stop any in-progress inference + TTS.
+   *
+   * ABORT DIAGNOSTICS: logs [INTERACTION_STOP] with the caller stack trace
+   * so that unexpected stops can be traced to their exact call site.
    */
   stop(): void {
-    try { localAbort(); } catch { /* */ }
+    const callerStack = new Error().stack || '(no stack)';
+    console.log(`[INTERACTION_STOP]`);
+    console.log(`  timestamp=${Date.now()}`);
+    console.log(`  callerStack=${callerStack.split('\n').slice(0, 10).join('\n  ')}`);
+    try { localAbort('InteractionLoopManager.stop()'); } catch { /* */ }
     try { getLocalVoiceEngine().stopSpeaking(); } catch { /* */ }
   }
 

@@ -91,7 +91,7 @@ export class LlamaCppRuntime implements AIRuntime {
   }
 
   abort(): void {
-    _abortInference();
+    _abortInference('LlamaCppRuntime.abort()');
   }
 
   getStats(): RuntimeStats {

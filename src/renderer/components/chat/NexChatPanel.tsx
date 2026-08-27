@@ -575,6 +575,19 @@ export default function NexChatPanel() {
           return next;
         });
         setError(stream.error);
+      } else if (stream.error && /abort|cancelled|canceled/i.test(stream.error)) {
+        // ABORT FIX: do NOT fall back to non-streaming aiChat when the stream
+        // was aborted. Falling back starts a NEW inference (chatComplete)
+        // while the aborted stream's session/context is still being disposed,
+        // which can cause resource contention or a second immediate abort.
+        // Instead, show the abort as the final state and let the user retry.
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last) next[next.length - 1] = { ...last, status: 'error', metadata: { error: stream.error || "Request aborted" } };
+          return next;
+        });
+        setError(stream.error);
       } else {
         // Fallback to non-streaming
         const result = await window.nexAPI.aiChat(providerConfig, apiMessages);

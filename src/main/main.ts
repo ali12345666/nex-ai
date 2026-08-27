@@ -686,7 +686,7 @@ async function setupIPC(): Promise<void> {
   });
 
   ipcMain.handle('ai-abort', async () => {
-    localAbort();
+    localAbort('ipc:ai-abort');
     return { success: true };
   });
 
@@ -796,7 +796,16 @@ async function setupIPC(): Promise<void> {
       console.error(`[INFERENCE_ERROR]`);
       console.error(`  message=${err?.message}`);
       console.error(`  code=${err?.code || 'N/A'}`);
+      console.error(`  name=${err?.name || 'N/A'}`);
       console.error(`  stack=${err?.stack || '(no stack)'}`);
+      // ABORT DIAGNOSTICS: if the error is an abort, log whether the abort
+      // was triggered by NEX AI (via abortInference) or by node-llama-cpp
+      // internally (e.g. Vulkan/memory error wrapped as abort).
+      const isAbort = /abort/i.test(err?.message || '') || err?.name === 'AbortError' || err?.code === 20;
+      if (isAbort) {
+        console.error(`  abortType=${err?.name === 'AbortError' || err?.code === 'ABORT_ERR' ? 'AbortController(external)' : 'llama.cpp internal(code=' + err?.code + ')'}`);
+        console.error(`  note: check [INFERENCE_ABORT] log above for the exact caller that triggered abortInference()`);
+      }
       console.log(`[CHAT_RESPONSE] source=${config.provider}-stream error=${err?.message}`);
       return { success: false, replyId, error: err?.message || 'Inference failed' };
     }
@@ -804,8 +813,12 @@ async function setupIPC(): Promise<void> {
 
   ipcMain.handle('ai-chat-stream-cancel', async () => {
     try {
-      // abort BOTH paths: local llama instance + online runtime flag
-      localAbort();
+      // abort BOTH paths: local llama instance + online runtime flag.
+      // Pass a reason for [INFERENCE_ABORT] diagnostics. The second call
+      // (getRuntime().abort()) is redundant with localAbort() since both
+      // call the same abortInference() — keep it for safety but it will
+      // be a no-op if localAbort already cleared the controller.
+      localAbort('ipc:ai-chat-stream-cancel');
       const { getRuntime } = await import('./ai/runtime');
       try { getRuntime('llamacpp', 'default').abort(); } catch { /* not loaded */ }
       try { getRuntime('online', 'chat-shared').abort(); } catch { /* not created */ }
@@ -1700,7 +1713,6 @@ async function setupIPC(): Promise<void> {
       return { success: false, error: err.message };
     }
   });
-
   // Runtime: route a task to the best model via Brain Controller
   ipcMain.handle('local-runtime-route-task', async (_event, request: any) => {
     try {
