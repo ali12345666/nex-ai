@@ -1576,6 +1576,85 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // Phase 82: Activate model — set as default + load into runtime
+  // Persists activeModelId in settings, unloads old model, loads new one.
+  ipcMain.handle('local-runtime-activate-model', async (_event, modelId: string) => {
+    try {
+      console.log(`[MODEL_ACTIVATE] Activating model: ${modelId}`);
+
+      // 1. Persist activeModelId in settings
+      const state = loadState();
+      const settings = state.settings || {};
+      (settings as any).activeLocalModelId = modelId;
+      updateState({ settings });
+      console.log(`[MODEL_ACTIVATE] activeModelId persisted: ${modelId}`);
+
+      // 2. Unload the currently-loaded model
+      try {
+        await getMultiModelRuntimeManager().unloadModel();
+        console.log(`[MODEL_ACTIVATE] Old model unloaded`);
+      } catch {
+        // Non-fatal — may not have been loaded
+      }
+
+      // 3. Load the new model
+      const model = await getMultiModelRuntimeManager().loadModel(modelId);
+      console.log(`[MODEL_ACTIVATE] New model loaded: ${model?.name}`);
+
+      // 4. Return runtime status
+      const status = getMultiModelRuntimeManager().getStatus();
+      return { success: true, model, status };
+    } catch (err: any) {
+      console.error(`[MODEL_ACTIVATE] Error:`, err);
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Phase 82: Get active model ID from settings
+  ipcMain.handle('local-runtime-get-active-model', async () => {
+    try {
+      const state = loadState();
+      const settings = state.settings || {};
+      const activeModelId = (settings as any).activeLocalModelId || null;
+      return { success: true, activeModelId };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Phase 82: Get detailed runtime status (loaded, VRAM, context, GPU layers)
+  ipcMain.handle('local-runtime-detailed-status', async () => {
+    try {
+      const status = getMultiModelRuntimeManager().getStatus();
+      const state = loadState();
+      const settings = state.settings || {};
+      const activeModelId = (settings as any).activeLocalModelId || null;
+
+      // Get inference stats
+      const { getLastInference, getNotedModel } = await import('./ai/runtime-telemetry');
+      const stats = getLastInference();
+      const notedModel = getNotedModel();
+
+      return {
+        success: true,
+        activeModelId,
+        loadedModel: notedModel || status.loadedModelName || null,
+        loaded: !!(notedModel || status.loadedModelName),
+        active: status.active,
+        backend: 'node-llama-cpp',
+        contextSize: stats?.contextMaxTokens || 0,
+        contextUsed: 0,
+        gpuLayers: -1,
+        vramUsage: 0,
+        ramUsage: 0,
+        tokensPerSecond: stats?.tokensPerSecond || 0,
+        inferenceActive: stats?.active || false,
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Runtime: abort in-progress inference
   ipcMain.handle('local-runtime-abort', async () => {
     try {

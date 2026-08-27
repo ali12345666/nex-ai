@@ -170,6 +170,10 @@ export interface NexAPI {
   localRuntimeStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
   localRuntimeLoadModel: (modelId: string, opts?: any) => Promise<{ success: boolean; model?: any; error?: string }>;
   localRuntimeUnloadModel: () => Promise<{ success: boolean; error?: string }>;
+  // Phase 82: Model activation + detailed status
+  localRuntimeActivateModel: (modelId: string) => Promise<{ success: boolean; model?: any; status?: any; error?: string }>;
+  localRuntimeGetActiveModel: () => Promise<{ success: boolean; activeModelId?: string | null }>;
+  localRuntimeDetailedStatus: () => Promise<{ success: boolean; activeModelId?: string | null; loadedModel?: string | null; loaded?: boolean; active?: boolean; backend?: string; contextSize?: number; contextUsed?: number; gpuLayers?: number; vramUsage?: number; ramUsage?: number; tokensPerSecond?: number; inferenceActive?: boolean }>;
   localRuntimeAbort: () => Promise<{ success: boolean; error?: string }>;
   localRuntimeRouteTask: (request: any) => Promise<{ success: boolean; route?: any; error?: string }>;
   localRuntimeGenerate: (messages: any[], opts?: any) => Promise<{ success: boolean; result?: any; error?: string }>;

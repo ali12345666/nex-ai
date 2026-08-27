@@ -220,6 +220,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
   localRuntimeStatus: () => ipcRenderer.invoke('local-runtime-status'),
   localRuntimeLoadModel: (modelId: string, opts?: any) => ipcRenderer.invoke('local-runtime-load-model', modelId, opts),
   localRuntimeUnloadModel: () => ipcRenderer.invoke('local-runtime-unload-model'),
+  // Phase 82: Model activation + detailed status
+  localRuntimeActivateModel: (modelId: string) => ipcRenderer.invoke('local-runtime-activate-model', modelId),
+  localRuntimeGetActiveModel: () => ipcRenderer.invoke('local-runtime-get-active-model'),
+  localRuntimeDetailedStatus: () => ipcRenderer.invoke('local-runtime-detailed-status'),
   localRuntimeAbort: () => ipcRenderer.invoke('local-runtime-abort'),
   localRuntimeRouteTask: (request: any) => ipcRenderer.invoke('local-runtime-route-task', request),
   localRuntimeGenerate: (messages: any[], opts?: any) => ipcRenderer.invoke('local-runtime-generate', messages, opts),

@@ -73,6 +73,10 @@ export default function NexLibraryPanel() {
   const [pendingDownload, setPendingDownload] = useState<any | null>(null);
   // ── Phase 81: AI Storage assets ──
   const [storageAssets, setStorageAssets] = useState<any[]>([]);
+  // ── Phase 82: Model activation ──
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<any | null>(null);
+  const [activating, setActivating] = useState(false);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -106,6 +110,14 @@ export default function NexLibraryPanel() {
       if (voiceRes.success) setVoiceComponents(voiceRes.components || []);
       if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
       if (storageRes.success && (storageRes as any).assets) setStorageAssets((storageRes as any).assets || []);
+
+      // Phase 82: Fetch active model + runtime status
+      try {
+        const activeRes = await window.nexAPI.localRuntimeGetActiveModel();
+        if (activeRes.success) setActiveModelId(activeRes.activeModelId || null);
+        const statusRes2 = await window.nexAPI.localRuntimeDetailedStatus();
+        if (statusRes2.success) setRuntimeStatus(statusRes2);
+      } catch {}
     } catch (err: any) {
       setError(err?.message);
     } finally {
@@ -431,6 +443,28 @@ export default function NexLibraryPanel() {
     } catch (err: any) {
       console.log('[VOICE_INSTALL] Error:', err?.message);
       setError(err?.message);
+    }
+  };
+
+  // ── Phase 82: Activate model — set as default + load into runtime ──
+  const handleActivateModel = async (modelId: string, modelName: string) => {
+    setActivating(true);
+    try {
+      console.log('[MODEL_ACTIVATE] Activating:', modelId);
+      const res = await window.nexAPI.localRuntimeActivateModel(modelId);
+      if (res.success) {
+        setActiveModelId(modelId);
+        showToast('ok', `مدل فعال شد: ${modelName}`);
+        // Refresh runtime status
+        const statusRes = await window.nexAPI.localRuntimeDetailedStatus();
+        if (statusRes.success) setRuntimeStatus(statusRes);
+      } else {
+        setError(res.error || 'فعال‌سازی ناموفق بود');
+      }
+    } catch (err: any) {
+      setError(err?.message);
+    } finally {
+      setActivating(false);
     }
   };
 
@@ -827,19 +861,50 @@ export default function NexLibraryPanel() {
 
         {/* ═══ Installed ═══ */}
         <div style={{ display: tab === 'installed' ? 'block' : 'none' }} className="p-3 space-y-1.5">
+          {/* Phase 82: Runtime Status Card */}
+          {runtimeStatus && (
+            <div className="p-2.5 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${runtimeStatus.loaded ? 'rgba(34,197,94,0.2)' : 'var(--nex-panel-border)'}` }}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Zap size={11} style={{ color: runtimeStatus.loaded ? 'var(--nex-success)' : 'var(--nex-text-muted)' }} />
+                <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Status</span>
+                {runtimeStatus.loaded ? (
+                  <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Loaded ✓</span>
+                ) : (
+                  <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Not Loaded</span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
+                <div>Model: {runtimeStatus.loadedModel || 'N/A'}</div>
+                <div>Backend: {runtimeStatus.backend || 'N/A'}</div>
+                <div>Context: {runtimeStatus.contextSize || 0} tok</div>
+                <div>GPU Layers: {runtimeStatus.gpuLayers ?? -1}</div>
+                {runtimeStatus.vramUsage > 0 && <div>VRAM: {formatBytes(runtimeStatus.vramUsage)}</div>}
+                {runtimeStatus.tokensPerSecond > 0 && <div>Speed: {runtimeStatus.tokensPerSecond.toFixed(1)} tok/s</div>}
+              </div>
+            </div>
+          )}
+
           <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>منابع نصب‌شده ({installed.length})</div>
           {installed.length === 0 ? (
             <div className="text-center py-6 text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>هیچ منبعی نصب نشده</div>
           ) : (
-            installed.map((m: any, i: number) => (
-              <div key={i} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
-                <CheckCircle2 size={11} style={{ color: 'var(--nex-success)' }} />
-                <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.name}</span>
-                <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{formatBytes(m.sizeBytes)}</span>
-                {m.loaded && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>فعال</span>}
-                <button onClick={() => handleRemoveModel(m.id, m.name)} className="nex-click nex-focus p-0.5 rounded" style={{ color: '#fca5a5' }}><Trash2 size={9} /></button>
-              </div>
-            ))
+            installed.map((m: any, i: number) => {
+              const isActive = activeModelId === m.id;
+              return (
+                <div key={i} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${isActive ? 'rgba(6,182,212,0.3)' : 'var(--nex-panel-border)'}` }}>
+                  <CheckCircle2 size={11} style={{ color: 'var(--nex-success)' }} />
+                  <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.name}</span>
+                  <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{formatBytes(m.sizeBytes)}</span>
+                  {isActive && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>Active ✓</span>}
+                  {!isActive && (
+                    <button onClick={() => handleActivateModel(m.id, m.name)} disabled={activating} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
+                      {activating ? <Loader2 size={8} className="animate-spin" /> : <Zap size={8} />} Activate
+                    </button>
+                  )}
+                  <button onClick={() => handleRemoveModel(m.id, m.name)} className="nex-click nex-focus p-0.5 rounded" style={{ color: '#fca5a5' }}><Trash2 size={9} /></button>
+                </div>
+              );
+            })
           )}
 
           {/* Phase 81: AI Storage Assets */}

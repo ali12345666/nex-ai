@@ -54,9 +54,30 @@ export interface LocalChatResult {
  * Phase 81: Also checks AI Storage Manager registry for .gguf models.
  */
 export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
+  // Phase 82: Check activeModelId from config first
   if (config.localModelId) {
-    return getModel(config.localModelId);
+    const model = getModel(config.localModelId);
+    if (model) {
+      console.log(`[MODEL_RESOLVE] Using model from config.localModelId: ${model.name}`);
+      return model;
+    }
   }
+
+  // Phase 82: Check activeLocalModelId from persisted settings
+  try {
+    const { loadState } = require('../persistence');
+    const state = loadState();
+    const settings = state.settings || {};
+    const activeId = (settings as any).activeLocalModelId;
+    if (activeId) {
+      const model = getModel(activeId);
+      if (model) {
+        console.log(`[MODEL_RESOLVE] Using active model from settings: ${model.name}`);
+        return model;
+      }
+    }
+  } catch {}
+
   if (config.localModelPath) {
     const all = listModels();
     const found = all.find((m) => m.path === config.localModelPath);

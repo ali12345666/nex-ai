@@ -92,6 +92,7 @@ export function getProviderConfig(
   maxTokens: number;
   temperature: number;
   // Local-only fields (ignored by online providers)
+  localModelId?: string;      // Phase 82: pass model ID for resolveModel
   localModelPath?: string;
   localContextSize?: number;
   localThreads?: number;
@@ -101,6 +102,7 @@ export function getProviderConfig(
     return {
       provider: 'local',
       model: localModel?.name || 'local',
+      localModelId: settings.activeLocalModelId || localModel?.id,  // Phase 82
       localModelPath: localModel?.path,
       localContextSize: localModel?.contextSize || settings.localContextSize,
       localThreads: settings.localThreads,
