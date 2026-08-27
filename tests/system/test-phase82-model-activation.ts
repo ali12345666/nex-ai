@@ -84,9 +84,9 @@ async function main(): Promise<void> {
   assert('Runtime Status card exists', libSrc.includes('Runtime Status'));
   assert('Shows Loaded ✓ badge', libSrc.includes('Loaded ✓'));
   assert('Shows Not Loaded badge', libSrc.includes('Not Loaded'));
-  assert('Shows backend', libSrc.includes('runtimeStatus.backend'));
-  assert('Shows contextSize', libSrc.includes('runtimeStatus.contextSize'));
-  assert('Shows gpuLayers', libSrc.includes('runtimeStatus.gpuLayers'));
+  assert('Shows backend', libSrc.includes('runtimeStatus?.backend'));
+  assert('Shows contextSize', libSrc.includes('runtimeStatus?.contextSize'));
+  assert('Shows gpuLayers', libSrc.includes('runtimeStatus?.gpuLayers'));
   assert('Shows vramUsage', libSrc.includes('runtimeStatus.vramUsage'));
   assert('Shows tokensPerSecond', libSrc.includes('runtimeStatus.tokensPerSecond'));
   assert('Active model border highlight', libSrc.includes('rgba(6,182,212,0.3)'));

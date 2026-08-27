@@ -111,13 +111,27 @@ export default function NexLibraryPanel() {
       if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
       if (storageRes.success && (storageRes as any).assets) setStorageAssets((storageRes as any).assets || []);
 
-      // Phase 82: Fetch active model + runtime status
+      // Phase 82: Fetch active model + runtime status (with error logging)
       try {
         const activeRes = await window.nexAPI.localRuntimeGetActiveModel();
-        if (activeRes.success) setActiveModelId(activeRes.activeModelId || null);
+        if (activeRes.success) {
+          setActiveModelId(activeRes.activeModelId || null);
+        } else {
+          console.log('[PHASE82] getActiveModel failed:', (activeRes as any).error);
+        }
+      } catch (err: any) {
+        console.log('[PHASE82] getActiveModel error:', err?.message);
+      }
+      try {
         const statusRes2 = await window.nexAPI.localRuntimeDetailedStatus();
-        if (statusRes2.success) setRuntimeStatus(statusRes2);
-      } catch {}
+        if (statusRes2.success) {
+          setRuntimeStatus(statusRes2);
+        } else {
+          console.log('[PHASE82] detailedStatus failed:', (statusRes2 as any).error);
+        }
+      } catch (err: any) {
+        console.log('[PHASE82] detailedStatus error:', err?.message);
+      }
     } catch (err: any) {
       setError(err?.message);
     } finally {
@@ -458,6 +472,52 @@ export default function NexLibraryPanel() {
         // Refresh runtime status
         const statusRes = await window.nexAPI.localRuntimeDetailedStatus();
         if (statusRes.success) setRuntimeStatus(statusRes);
+      } else {
+        setError(res.error || 'فعال‌سازی ناموفق بود');
+      }
+    } catch (err: any) {
+      setError(err?.message);
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  // ── Phase 82b: Activate AI Storage asset (register + activate) ──
+  const handleActivateStorageAsset = async (asset: any) => {
+    setActivating(true);
+    try {
+      console.log('[MODEL_ACTIVATE] Activating storage asset:', asset.name, asset.path);
+
+      // Step 1: Register the model in the model registry (if not already)
+      let modelId = asset.id;
+      try {
+        const regRes = await window.nexAPI.modelDeployImport(asset.path, {
+          name: asset.name,
+          category: asset.type === 'coder' ? 'coding' : 'general',
+          quantization: asset.quantization,
+          parameterCount: asset.parameterCount,
+          architecture: undefined,
+        });
+        if (regRes.success && (regRes as any).result?.model) {
+          modelId = (regRes as any).result.model.id;
+          console.log('[MODEL_ACTIVATE] Registered in model registry:', modelId);
+        } else if (regRes.success && (regRes as any).result?.modelId) {
+          modelId = (regRes as any).result.modelId;
+          console.log('[MODEL_ACTIVATE] Registered in model registry:', modelId);
+        }
+      } catch (regErr: any) {
+        // May already be registered — try to find it by path
+        console.log('[MODEL_ACTIVATE] Registration skipped:', regErr?.message);
+      }
+
+      // Step 2: Activate via the model ID
+      const res = await window.nexAPI.localRuntimeActivateModel(modelId);
+      if (res.success) {
+        setActiveModelId(modelId);
+        showToast('ok', `مدل فعال شد: ${asset.name}`);
+        const statusRes = await window.nexAPI.localRuntimeDetailedStatus();
+        if (statusRes.success) setRuntimeStatus(statusRes);
+        await refresh();
       } else {
         setError(res.error || 'فعال‌سازی ناموفق بود');
       }
@@ -861,28 +921,29 @@ export default function NexLibraryPanel() {
 
         {/* ═══ Installed ═══ */}
         <div style={{ display: tab === 'installed' ? 'block' : 'none' }} className="p-3 space-y-1.5">
-          {/* Phase 82: Runtime Status Card */}
-          {runtimeStatus && (
-            <div className="p-2.5 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${runtimeStatus.loaded ? 'rgba(34,197,94,0.2)' : 'var(--nex-panel-border)'}` }}>
-              <div className="flex items-center gap-1.5 mb-1">
-                <Zap size={11} style={{ color: runtimeStatus.loaded ? 'var(--nex-success)' : 'var(--nex-text-muted)' }} />
-                <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Status</span>
-                {runtimeStatus.loaded ? (
-                  <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Loaded ✓</span>
-                ) : (
-                  <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Not Loaded</span>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
-                <div>Model: {runtimeStatus.loadedModel || 'N/A'}</div>
-                <div>Backend: {runtimeStatus.backend || 'N/A'}</div>
-                <div>Context: {runtimeStatus.contextSize || 0} tok</div>
-                <div>GPU Layers: {runtimeStatus.gpuLayers ?? -1}</div>
-                {runtimeStatus.vramUsage > 0 && <div>VRAM: {formatBytes(runtimeStatus.vramUsage)}</div>}
-                {runtimeStatus.tokensPerSecond > 0 && <div>Speed: {runtimeStatus.tokensPerSecond.toFixed(1)} tok/s</div>}
-              </div>
+          {/* Phase 82b: Runtime Status Card — ALWAYS visible */}
+          <div className="p-2.5 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${runtimeStatus?.loaded ? 'rgba(34,197,94,0.2)' : 'var(--nex-panel-border)'}` }}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <Zap size={11} style={{ color: runtimeStatus?.loaded ? 'var(--nex-success)' : 'var(--nex-text-muted)' }} />
+              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Status</span>
+              {runtimeStatus?.loaded ? (
+                <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Loaded ✓</span>
+              ) : (
+                <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Not Loaded</span>
+              )}
             </div>
-          )}
+            <div className="grid grid-cols-2 gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
+              <div>Model: {runtimeStatus?.loadedModel || 'N/A'}</div>
+              <div>Backend: {runtimeStatus?.backend || 'node-llama-cpp'}</div>
+              <div>Context: {runtimeStatus?.contextSize || 0} tok</div>
+              <div>GPU Layers: {runtimeStatus?.gpuLayers ?? -1}</div>
+              {runtimeStatus?.vramUsage ? <div>VRAM: {formatBytes(runtimeStatus.vramUsage)}</div> : null}
+              {runtimeStatus?.tokensPerSecond ? <div>Speed: {runtimeStatus.tokensPerSecond.toFixed(1)} tok/s</div> : null}
+            </div>
+            {!runtimeStatus?.loaded && (
+              <div className="text-[8px] mt-1" style={{ color: 'var(--nex-text-muted)' }}>Click "Activate" on a model below to load it.</div>
+            )}
+          </div>
 
           <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>منابع نصب‌شده ({installed.length})</div>
           {installed.length === 0 ? (
@@ -907,38 +968,52 @@ export default function NexLibraryPanel() {
             })
           )}
 
-          {/* Phase 81: AI Storage Assets */}
+          {/* Phase 81/82b: AI Storage Assets — with Activate buttons for LLM types */}
           {storageAssets.length > 0 && (
             <>
               <div className="text-[10px] font-medium mt-3" style={{ color: 'var(--nex-text-muted)' }}>AI Storage ({storageAssets.length})</div>
-              {storageAssets.map((asset: any, i: number) => (
-                <div key={asset.id || i} className="p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
-                  <div className="flex items-center gap-2">
-                    {asset.type === 'llm' || asset.type === 'coder' ? (
-                      <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
-                    ) : asset.type === 'voice-stt' || asset.type === 'voice-tts' ? (
-                      <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
-                    ) : asset.type === 'document' ? (
-                      <BookOpen size={11} style={{ color: 'var(--nex-accent)' }} />
-                    ) : (
-                      <Package size={11} style={{ color: 'var(--nex-accent)' }} />
-                    )}
-                    <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{asset.name}</span>
-                    <span className="text-[8px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{asset.type}</span>
+              {storageAssets.map((asset: any, i: number) => {
+                const isLlmAsset = asset.format === 'gguf' && ['llm', 'coder', 'vision-llm'].includes(asset.type);
+                const isAssetActive = activeModelId === asset.id;
+                return (
+                  <div key={asset.id || i} className="p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${isAssetActive ? 'rgba(6,182,212,0.3)' : 'var(--nex-panel-border)'}` }}>
+                    <div className="flex items-center gap-2">
+                      {asset.type === 'llm' || asset.type === 'coder' ? (
+                        <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
+                      ) : asset.type === 'voice-stt' || asset.type === 'voice-tts' ? (
+                        <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
+                      ) : asset.type === 'document' ? (
+                        <BookOpen size={11} style={{ color: 'var(--nex-accent)' }} />
+                      ) : (
+                        <Package size={11} style={{ color: 'var(--nex-accent)' }} />
+                      )}
+                      <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{asset.name}</span>
+                      <span className="text-[8px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{asset.type}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5 ml-4 flex-wrap">
+                      {asset.provider && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.provider}</span>}
+                      {asset.parameterCount && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.parameterCount}</span></>}
+                      {asset.quantization && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.quantization}</span></>}
+                      <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>• {formatBytes(asset.size)}</span>
+                      {asset.fileExists ? (
+                        <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Ready</span>
+                      ) : (
+                        <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Missing</span>
+                      )}
+                      {/* Phase 82b: Activate button for LLM assets */}
+                      {isLlmAsset && asset.fileExists && (
+                        isAssetActive ? (
+                          <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>Active ✓</span>
+                        ) : (
+                          <button onClick={() => handleActivateStorageAsset(asset)} disabled={activating} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
+                            {activating ? <Loader2 size={8} className="animate-spin" /> : <Zap size={8} />} Activate
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 mt-0.5 ml-4 flex-wrap">
-                    {asset.provider && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.provider}</span>}
-                    {asset.parameterCount && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.parameterCount}</span></>}
-                    {asset.quantization && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.quantization}</span></>}
-                    <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>• {formatBytes(asset.size)}</span>
-                    {asset.fileExists ? (
-                      <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Ready</span>
-                    ) : (
-                      <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Missing</span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </>
           )}
         </div>
