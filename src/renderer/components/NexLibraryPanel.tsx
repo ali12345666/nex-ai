@@ -19,14 +19,15 @@ import { useDownloadStore, isDownloading, type DownloadEntry } from '../store/do
 
 type Tab = 'recommended' | 'models' | 'voice' | 'tools' | 'knowledge' | 'installed' | 'downloads';
 
+// Phase 77: Compact tab labels (shorter Persian text to fit width without scrolling)
 const TABS: Array<[Tab, string, React.ReactNode]> = [
   ['recommended', 'پیشنهادی', <Star size={11} />],
   ['models', 'مدل‌ها', <Brain size={11} />],
+  ['installed', 'نصب‌شده', <CheckCircle2 size={11} />],
+  ['downloads', 'دانلودها', <Download size={11} />],
   ['voice', 'صوت', <Mic size={11} />],
   ['tools', 'ابزارها', <Cpu size={11} />],
   ['knowledge', 'دانش', <BookOpen size={11} />],
-  ['installed', 'نصب‌شده', <CheckCircle2 size={11} />],
-  ['downloads', 'دانلودها', <Download size={11} />],
 ];
 
 function formatBytes(n: number): string {
@@ -64,6 +65,12 @@ export default function NexLibraryPanel() {
   const [voiceComponents, setVoiceComponents] = useState<any[]>([]);
   const [voiceInstallProgress, setVoiceInstallProgress] = useState<Map<string, any>>(new Map());
   const [voiceRuntimeStatus, setVoiceRuntimeStatus] = useState<any | null>(null);
+  // ── Phase 77: Model Details modal + improved permission + copy confirmation ──
+  const [selectedModel, setSelectedModel] = useState<any | null>(null);
+  const [selectedComponent, setSelectedComponent] = useState<any | null>(null);
+  const [selectedSource, setSelectedSource] = useState<string>('automatic');
+  const [copyConfirm, setCopyConfirm] = useState<string | null>(null);
+  const [pendingDownload, setPendingDownload] = useState<any | null>(null);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -458,6 +465,84 @@ export default function NexLibraryPanel() {
     }
   };
 
+  // ── Phase 77: Model Details modal handlers ──
+  const handleOpenModelDetails = (model: any) => {
+    console.log('[MODEL_DETAILS] Opening:', model.name || model.id);
+    setSelectedModel(model);
+    setSelectedSource('automatic');
+  };
+
+  const handleCloseModelDetails = () => {
+    setSelectedModel(null);
+    setSelectedComponent(null);
+    setPendingDownload(null);
+  };
+
+  // ── Phase 77: Copy download URL to clipboard ──
+  const handleCopyUrl = async (url: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyConfirm(`${label} کپی شد`);
+      setTimeout(() => setCopyConfirm(null), 2000);
+      console.log('[COPY_URL] Copied:', label, url.slice(0, 60) + '...');
+    } catch (err: any) {
+      // Fallback for older Electron
+      const textArea = document.createElement('textarea');
+      textArea.value = url;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try { document.execCommand('copy'); setCopyConfirm(`${label} کپی شد`); setTimeout(() => setCopyConfirm(null), 2000); } catch {}
+      document.body.removeChild(textArea);
+    }
+  };
+
+  // ── Phase 77: Open download page in browser ──
+  const handleOpenDownloadPage = async (url: string) => {
+    try {
+      if (window.nexAPI.openExternal) {
+        await window.nexAPI.openExternal(url);
+      } else {
+        window.open(url, '_blank');
+      }
+    } catch {
+      window.open(url, '_blank');
+    }
+  };
+
+  // ── Phase 77: Improved permission flow — no mandatory typing ──
+  const handleStartDownloadWithConfirm = (model: any, source?: string) => {
+    setPendingDownload({ model, source: source || 'automatic' });
+  };
+
+  const handleConfirmDownload = async () => {
+    if (!pendingDownload) return;
+    const { model, source } = pendingDownload;
+    setPendingDownload(null);
+
+    // Use the unified download pipeline
+    if (model.sources) {
+      // Downloadable model from unified catalog
+      if (source === 'modelscope' && model.sources.length > 1) {
+        // Use alternative source
+        handleInstallAlternative();
+      } else {
+        // Default: use unified model download
+        handleInstallModel(model.sources[0]?.url || model.downloadUrl, model.name);
+      }
+    } else if (model.id) {
+      // Voice component
+      handleInstallVoiceComponent(model.id, model.name);
+    }
+  };
+
+  const handleCancelDownload = () => {
+    setPendingDownload(null);
+    console.log('[PERMISSION] Download cancelled by user');
+  };
+
+  // ── Phase 77: Old respondPermission now auto-confirms for button-based flow ──
+  // The old typed-confirmation flow is preserved for HIGH_RISK actions,
+  // but for model downloads we use the button-based confirmation above.
   const handleRemoveModel = async (modelId: string, name: string) => {
     try {
       const res = await window.nexAPI.modelDeployRemove(modelId, true);
@@ -503,19 +588,19 @@ export default function NexLibraryPanel() {
         </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 px-3 py-2 shrink-0 overflow-x-auto nex-scroll" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+      {/* Tabs — Phase 77: grid layout, no horizontal scroll */}
+      <div className="grid gap-1 px-3 py-2 shrink-0" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', borderBottom: '1px solid var(--nex-glass-border)' }}>
         {TABS.map(([id, label, icon]) => (
-          <button key={id} onClick={() => setTab(id)} className="nex-click nex-focus flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium whitespace-nowrap transition-all"
-            style={{ background: tab === id ? 'var(--nex-accent-dim)' : 'transparent', color: tab === id ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: tab === id ? '1px solid var(--nex-accent-glow)' : '1px solid transparent' }}>
-            {icon} {label}
-            {id === 'downloads' && activeDownloads.length > 0 && <span className="text-[8px] px-1 rounded" style={{ background: '#06b6d4', color: '#fff' }}>{activeDownloads.length}</span>}
+          <button key={id} onClick={() => setTab(id)} className="nex-click nex-focus flex items-center justify-center gap-1 px-1.5 py-1 rounded-lg text-[10px] font-medium transition-all overflow-hidden"
+            style={{ background: tab === id ? 'var(--nex-accent-dim)' : 'transparent', color: tab === id ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: tab === id ? '1px solid var(--nex-accent-glow)' : '1px solid transparent', whiteSpace: 'nowrap' }}>
+            {icon} <span className="truncate">{label}</span>
+            {id === 'downloads' && activeDownloads.length > 0 && <span className="text-[8px] px-0.5 rounded shrink-0" style={{ background: '#06b6d4', color: '#fff' }}>{activeDownloads.length}</span>}
           </button>
         ))}
       </div>
 
       {/* Body — all tabs kept mounted with display:none for persistence */}
-      <div className="flex-1 overflow-y-auto nex-scroll" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+      <div className="flex-1 overflow-y-auto overflow-x-hidden nex-scroll" style={{ minHeight: 0 }}>
         {error && (
           <div className="flex items-start gap-2 p-2 rounded-lg text-[11px] mx-3 mt-3" style={{ background: 'rgba(239,68,68,0.1)', color: '#fca5a5' }}>
             <AlertCircle size={12} className="mt-0.5 shrink-0" /><span>{error}</span>
@@ -527,19 +612,17 @@ export default function NexLibraryPanel() {
         <div style={{ display: tab === 'recommended' ? 'block' : 'none' }} className="p-3 space-y-2">
           <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>پیشنهادی برای سخت‌افزار شما</div>
           {recommended.map((m: any) => (
-            <div key={m.id} className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid rgba(34,197,94,0.2)' }}>
+            <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: '1px solid rgba(34,197,94,0.2)' }}>
               <div className="flex items-center gap-2 mb-1">
                 <Star size={12} style={{ color: 'var(--nex-success)' }} />
-                <span className="text-[11px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
+                <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
                 {installedNames.has(m.name.toLowerCase()) ? (
-                  <CheckCircle2 size={12} style={{ color: 'var(--nex-success)' }} />
+                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
                 ) : (
-                  <button onClick={() => handleInstallModel(m.downloadUrl, m.name)} className="nex-click nex-focus flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
-                    <Download size={8} /> نصب
-                  </button>
+                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>موجود</span>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-[9px] ml-4" style={{ color: 'var(--nex-text-muted)' }}>
+              <div className="flex items-center gap-2 text-[9px] ml-4 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
                 <span>{m.sizeGB.toFixed(1)} GB</span><span>•</span>
                 <span>RAM {m.requiredRAM}GB</span>
                 {m.persianSupport && <><span>•</span><span style={{ color: '#86efac' }}>فارسی ✓</span></>}
@@ -558,18 +641,40 @@ export default function NexLibraryPanel() {
           {catalog.filter(m => m.type === 'llm').map((m: any) => {
             const isInstalled = installedNames.has(m.name.toLowerCase());
             return (
-              <div key={m.id} className="p-2 rounded-lg nex-glass" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
+              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
                 <div className="flex items-center gap-1.5 mb-0.5">
                   <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
                   <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa}</span>
-                  {isInstalled ? <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} /> : <span className="text-[8px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>آماده</span>}
+                  {isInstalled ? (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
+                  ) : (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>موجود</span>
+                  )}
                 </div>
-                <div className="flex items-center gap-2 text-[8px] ml-4 mb-1" style={{ color: 'var(--nex-text-muted)' }}>
+                <div className="flex items-center gap-1.5 text-[8px] ml-4 mb-1 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
                   <span>{m.provider}</span><span>•</span><span>{m.parameterCount}</span><span>•</span><span>{m.quantization}</span><span>•</span><span>{m.sizeGB.toFixed(1)}GB</span><span>•</span><span>RAM {m.requiredRAM}GB</span>
                 </div>
-                <div className="flex gap-1 ml-4">
-                  {!isInstalled && <button onClick={() => handleInstallModel(m.downloadUrl, m.name)} className="nex-click nex-focus flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}><Download size={7} /> نصب</button>}
-                  {isInstalled && <button onClick={() => handleRemoveModel(m.id, m.name)} className="nex-click nex-focus flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'transparent', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.2)' }}><Trash2 size={7} /> حذف</button>}
+              </div>
+            );
+          })}
+          {/* Phase 77: Also show unified downloadable models */}
+          {downloadableModels.map((m: any) => {
+            const isInstalled = installedNames.has(m.name.toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
+            return (
+              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
+                  <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
+                  {isInstalled ? (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>نصب‌شده ✓</span>
+                  ) : (
+                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>دانلود</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 text-[8px] ml-4 flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
+                  {m.quantization && <><span>{m.quantization}</span><span>•</span></>}
+                  {m.parameterCount && <><span>{m.parameterCount}</span><span>•</span></>}
+                  <span>{m.sources?.length || 1} منبع</span>
                 </div>
               </div>
             );
@@ -936,8 +1041,163 @@ export default function NexLibraryPanel() {
         </div>
       </div>
 
-      {/* Permission dialog */}
-      {pendingPermission && (
+      {/* Phase 77: Improved Permission Dialog — button-based, no mandatory typing */}
+      {pendingDownload && (
+        <div className="absolute inset-0 flex items-center justify-center p-4" style={{ zIndex: 30, background: 'rgba(0,0,0,0.5)' }} onClick={handleCancelDownload}>
+          <div className="nex-glass-strong w-full max-w-md p-4 rounded-xl" style={{ border: '1px solid var(--nex-accent-glow)' }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-1.5 mb-3">
+              <Download size={14} style={{ color: 'var(--nex-accent)' }} />
+              <span className="text-[12px] font-medium" style={{ color: 'var(--nex-accent-text)' }}>دانلود مدل</span>
+            </div>
+            <div className="space-y-2 mb-3">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--nex-text)' }}>{pendingDownload.model.name}</div>
+              {pendingDownload.model.nameFa && <div className="text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>{pendingDownload.model.nameFa}</div>}
+              {pendingDownload.model.expectedSize && (
+                <div className="flex justify-between text-[11px]">
+                  <span style={{ color: 'var(--nex-text-muted)' }}>حجم:</span>
+                  <span style={{ color: 'var(--nex-text)' }}>{formatBytes(pendingDownload.model.expectedSize)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-[11px]">
+                <span style={{ color: 'var(--nex-text-muted)' }}>منبع:</span>
+                <span style={{ color: 'var(--nex-text)' }}>
+                  {pendingDownload.source === 'modelscope' ? 'ModelScope' :
+                   pendingDownload.source === 'huggingface' ? 'HuggingFace' :
+                   pendingDownload.model.sources?.[0]?.label || 'Automatic'}
+                </span>
+              </div>
+              <div className="flex justify-between text-[11px]">
+                <span style={{ color: 'var(--nex-text-muted)' }}>مقصد:</span>
+                <span style={{ color: 'var(--nex-text)' }}>پوشه مدل‌های NEX AI</span>
+              </div>
+              <div className="text-[10px] p-1.5 rounded" style={{ background: 'rgba(6,182,212,0.08)', color: 'var(--nex-text-muted)' }}>
+                این دانلود از اینترنت استفاده می‌کند. فایل پس از دانلود بررسی و نصب می‌شود.
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={handleCancelDownload} className="nex-click nex-focus flex-1 px-3 py-2 rounded-lg text-[11px] font-medium" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>
+                لغو
+              </button>
+              <button onClick={handleConfirmDownload} className="nex-click nex-focus flex-1 px-3 py-2 rounded-lg text-[11px] font-bold" style={{ background: 'var(--nex-accent)', color: '#fff' }}>
+                تأیید و شروع دانلود
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 77: Model Details Modal */}
+      {selectedModel && (
+        <div className="absolute inset-0 flex items-center justify-center p-4" style={{ zIndex: 30, background: 'rgba(0,0,0,0.5)' }} onClick={handleCloseModelDetails}>
+          <div className="nex-glass-strong w-full max-w-lg max-h-[80vh] overflow-y-auto nex-scroll p-4 rounded-xl" style={{ border: '1px solid var(--nex-accent-glow)' }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-1.5">
+                <Brain size={14} style={{ color: 'var(--nex-accent)' }} />
+                <span className="text-[12px] font-medium" style={{ color: 'var(--nex-accent-text)' }}>جزئیات مدل</span>
+              </div>
+              <button onClick={handleCloseModelDetails} className="nex-click p-1 rounded"><X size={12} style={{ color: 'var(--nex-text-muted)' }} /></button>
+            </div>
+
+            {/* Model name */}
+            <div className="text-[14px] font-bold mb-1" style={{ color: 'var(--nex-text)' }}>{selectedModel.name}</div>
+            {selectedModel.nameFa && <div className="text-[11px] mb-2" style={{ color: 'var(--nex-text-muted)' }}>{selectedModel.nameFa}</div>}
+
+            {/* Description */}
+            {(selectedModel.description || selectedModel.purpose) && (
+              <div className="text-[11px] mb-3 p-2 rounded" style={{ background: 'var(--nex-bg)', color: 'var(--nex-text)' }}>
+                {selectedModel.description || selectedModel.purpose}
+              </div>
+            )}
+
+            {/* Metadata grid */}
+            <div className="grid grid-cols-2 gap-2 mb-3 text-[10px]">
+              {selectedModel.expectedSize && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>حجم: </span><span style={{ color: 'var(--nex-text)' }}>{formatBytes(selectedModel.expectedSize)}</span></div>
+              )}
+              {selectedModel.quantization && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>کوانتیزه: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.quantization}</span></div>
+              )}
+              {selectedModel.architecture && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>معماری: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.architecture}</span></div>
+              )}
+              {selectedModel.parameterCount && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>پارامتر: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.parameterCount}</span></div>
+              )}
+              {selectedModel.filename && (
+                <div className="col-span-2 truncate"><span style={{ color: 'var(--nex-text-muted)' }}>فایل: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.filename}</span></div>
+              )}
+              {selectedModel.format && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>فرمت: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.format}</span></div>
+              )}
+              {selectedModel.contextSize && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>کانتکست: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.contextSize}</span></div>
+              )}
+              {selectedModel.requiredRAM && (
+                <div><span style={{ color: 'var(--nex-text-muted)' }}>RAM لازم: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.requiredRAM}GB</span></div>
+              )}
+            </div>
+
+            {/* Sources */}
+            {selectedModel.sources && selectedModel.sources.length > 0 && (
+              <div className="mb-3">
+                <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--nex-text-muted)' }}>منابع دانلود:</div>
+                {selectedModel.sources.map((s: any, i: number) => (
+                  <div key={i} className="flex items-center gap-1 p-1.5 rounded mb-1" style={{ background: 'var(--nex-bg)' }}>
+                    <span className="text-[9px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{s.label}</span>
+                    <span className="text-[9px] truncate flex-1" style={{ color: 'var(--nex-text-muted)' }}>{s.url.slice(0, 50)}...</span>
+                    <button onClick={() => handleOpenDownloadPage(s.url)} className="nex-click p-0.5 rounded shrink-0" style={{ color: 'var(--nex-accent-text)' }} title="باز کردن در مرورگر"><Globe size={10} /></button>
+                    <button onClick={() => handleCopyUrl(s.url, s.label)} className="nex-click p-0.5 rounded shrink-0" style={{ color: 'var(--nex-accent-text)' }} title="کپی لینک"><Package size={10} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Installation status */}
+            {selectedModel.sources && (
+              <div className="mb-3 p-2 rounded text-[10px]" style={{ background: installedNames.has(selectedModel.name?.toLowerCase()) ? 'rgba(34,197,94,0.08)' : 'var(--nex-bg)' }}>
+                <div className="flex items-center gap-1">
+                  {installedNames.has(selectedModel.name?.toLowerCase()) ? (
+                    <><CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} /><span style={{ color: '#86efac' }}>نصب‌شده ✓</span></>
+                  ) : (
+                    <><Download size={10} style={{ color: 'var(--nex-accent)' }} /><span style={{ color: 'var(--nex-text-muted)' }}>نصب نشده</span></>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex flex-col gap-2">
+              {!installedNames.has(selectedModel.name?.toLowerCase()) && (
+                <button onClick={() => { handleStartDownloadWithConfirm(selectedModel, selectedSource); handleCloseModelDetails(); }} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold" style={{ background: 'var(--nex-accent)', color: '#fff' }}>
+                  <Download size={12} /> دانلود و نصب
+                </button>
+              )}
+              {selectedModel.sources?.length > 1 && (
+                <div className="flex gap-1">
+                  <button onClick={() => setSelectedSource('automatic')} className="nex-click flex-1 px-2 py-1 rounded text-[9px]" style={{ background: selectedSource === 'automatic' ? 'var(--nex-accent-dim)' : 'var(--nex-bg)', color: selectedSource === 'automatic' ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>Automatic</button>
+                  {selectedModel.sources.map((s: any) => (
+                    <button key={s.type} onClick={() => setSelectedSource(s.type)} className="nex-click flex-1 px-2 py-1 rounded text-[9px] truncate" style={{ background: selectedSource === s.type ? 'var(--nex-accent-dim)' : 'var(--nex-bg)', color: selectedSource === s.type ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>{s.label}</button>
+                  ))}
+                </div>
+              )}
+              {selectedModel.sources?.[0] && (
+                <div className="flex gap-1">
+                  <button onClick={() => handleOpenDownloadPage(selectedModel.sources[0].url)} className="nex-click flex-1 px-2 py-1.5 rounded-lg text-[10px]" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>باز کردن صفحه دانلود</button>
+                  <button onClick={() => handleCopyUrl(selectedModel.sources[0].url, 'لینک دانلود')} className="nex-click flex-1 px-2 py-1.5 rounded-lg text-[10px]" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>کپی لینک</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Copy confirmation toast */}
+      {copyConfirm && (
+        <div className="absolute bottom-3 left-3 right-3 p-2 rounded-lg text-[11px] pointer-events-none" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)', zIndex: 35 }}>{copyConfirm}</div>
+      )}
+
+      {/* Old permission dialog (for HIGH_RISK actions only — Phase 77 keeps button-based for model downloads) */}
+      {pendingPermission && !pendingDownload && (
         <div className="absolute inset-0 flex items-end p-3 pointer-events-none" style={{ zIndex: 20 }}>
           <div className="nex-glass-strong w-full p-3 rounded-xl pointer-events-auto" style={{ border: '1px solid var(--nex-accent-glow)' }}>
             <div className="flex items-center gap-1.5 mb-2">
