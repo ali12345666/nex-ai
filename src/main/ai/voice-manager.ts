@@ -334,15 +334,48 @@ export class VoiceManager {
       piperVoicePath: status.piperVoice || undefined,
     });
 
-    console.log(`[VOICE_MANAGER] Voice system activated (STT: ${engine.hasLocalSTT}, TTS: ${engine.hasLocalTTS})`);
+    // Log the final activation state with [VOICE_ENGINE] diagnostics
+    this.logVoiceEngineStatus();
+
+    const sttReady = engine.hasLocalSTT;
+    const ttsReady = engine.hasLocalTTS;
+    console.log(`[VOICE_MANAGER] Voice system activated (STT: ${sttReady}, TTS: ${ttsReady})`);
+
+    // If activation didn't make hasLocalSTT/TTS true, log a warning
+    if (!sttReady) {
+      console.warn(`[VOICE_MANAGER] WARNING: STT provider set but hasLocalSTT=false. Provider isAvailable() returned false.`);
+    }
+    if (!ttsReady) {
+      console.warn(`[VOICE_MANAGER] WARNING: TTS provider set but hasLocalTTS=false. Provider isAvailable() returned false.`);
+    }
 
     return {
       success: true,
-      activated: true,
-      sttReady: engine.hasLocalSTT,
-      ttsReady: engine.hasLocalTTS,
+      activated: sttReady || ttsReady,
+      sttReady,
+      ttsReady,
       missingComponents: [],
     };
+  }
+
+  /**
+   * Log the [VOICE_ENGINE] diagnostic block showing the runtime state of
+   * all voice subsystems: STT provider, TTS provider, microphone, conversation.
+   */
+  logVoiceEngineStatus(): void {
+    const engine = getLocalVoiceEngine();
+    const conv = this.isConversationActive();
+    const sttProvider = engine.getSTTProvider();
+    const ttsProvider = engine.getTTSProvider();
+
+    console.log(`[VOICE_ENGINE]`);
+    console.log(`  STT provider=${sttProvider ? (engine.hasLocalSTT ? 'ready' : 'registered_not_ready') : 'none'}`);
+    console.log(`  TTS provider=${ttsProvider ? (engine.hasLocalTTS ? 'ready' : 'registered_not_ready') : 'none'}`);
+    console.log(`  microphone=${engine.isListening ? 'capturing' : 'idle'}`);
+    console.log(`  conversation=${conv ? 'running' : 'stopped'}`);
+    console.log(`  engineState=${engine.currentState}`);
+    console.log(`  isListening=${engine.isListening}`);
+    console.log(`  isSpeaking=${engine.isSpeaking}`);
   }
 
   /**
@@ -389,11 +422,35 @@ export class VoiceManager {
       }
     }
     try {
+      const engine = getLocalVoiceEngine();
       const conv = getNexVoiceConversation();
+
+      // Start the conversation FSM
       await conv.start();
+
       // Apply current mode
-      if (this._mode === 'wake-word') conv.enableWakeWord();
+      if (this._mode === 'wake-word') {
+        conv.enableWakeWord();
+      }
+
+      // CRITICAL: Actually start the microphone capture via the voice engine.
+      // conv.start() only sets active=true — it does NOT start listening.
+      // We must call engine.startListening() to trigger STT + mic capture.
+      // For wake-word and continuous modes, listening starts immediately.
+      // For push-to-talk mode, listening is manually triggered per-message.
+      if (this._mode === 'wake-word' || this._mode === 'continuous') {
+        if (!engine.isListening) {
+          try {
+            await engine.startListening();
+            console.log(`[VOICE_MANAGER] Microphone capture started (mode: ${this._mode})`);
+          } catch (err: any) {
+            console.warn(`[VOICE_MANAGER] Failed to start microphone: ${err?.message}`);
+          }
+        }
+      }
+
       console.log('[VOICE_MANAGER] Conversation started');
+      this.logVoiceEngineStatus();
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Failed to start conversation' };
@@ -401,13 +458,22 @@ export class VoiceManager {
   }
 
   /**
-   * Stop the voice conversation FSM.
+   * Stop the voice conversation FSM + stop microphone capture.
    */
   async stopConversation(): Promise<void> {
     try {
+      const engine = getLocalVoiceEngine();
       const conv = getNexVoiceConversation();
+
+      // Stop microphone capture first
+      if (engine.isListening) {
+        await engine.stopListening();
+        console.log('[VOICE_MANAGER] Microphone capture stopped');
+      }
+      // Stop the conversation FSM
       await conv.stop();
       console.log('[VOICE_MANAGER] Conversation stopped');
+      this.logVoiceEngineStatus();
     } catch { /* */ }
   }
 

@@ -244,17 +244,36 @@ export class LocalWhisperProvider implements STTProvider {
 
   constructor(opts: WhisperProviderOptions = {}) {
     this.opts = opts;
+    // If binaryPath is provided in opts, set it immediately so isAvailable()
+    // returns true WITHOUT requiring init() first. This fixes the bug where
+    // VoiceManager.activate() sets a provider but hasLocalSTT returns false
+    // because the private binaryPath field was null until init() was called.
+    if (opts.binaryPath && fs.existsSync(opts.binaryPath)) {
+      this.binaryPath = opts.binaryPath;
+    }
+    if (opts.ffmpegPath && fs.existsSync(opts.ffmpegPath)) {
+      this.ffmpegPath = opts.ffmpegPath;
+    }
   }
 
   isAvailable(): boolean {
-    return this.binaryPath !== null && (!!this.opts.modelPath) && fs.existsSync(this.opts.modelPath || '');
+    // Check the resolved binaryPath (set in constructor or init) AND that
+    // the model path exists. This must work BEFORE init() is called so that
+    // LocalVoiceEngine.hasLocalSTT returns true immediately after activation.
+    const hasBinary = this.binaryPath !== null || (!!this.opts.binaryPath && fs.existsSync(this.opts.binaryPath));
+    const hasModel = !!this.opts.modelPath && fs.existsSync(this.opts.modelPath);
+    return hasBinary && hasModel;
   }
 
   async init(): Promise<void> {
     if (this.initialized) return;
-    // Resolve binary
-    this.binaryPath = this.opts.binaryPath || findWhisperBinary();
-    this.ffmpegPath = this.opts.ffmpegPath || findFfmpegBinary();
+    // Resolve binary (may already be set from constructor)
+    if (!this.binaryPath) {
+      this.binaryPath = this.opts.binaryPath || findWhisperBinary();
+    }
+    if (!this.ffmpegPath) {
+      this.ffmpegPath = this.opts.ffmpegPath || findFfmpegBinary();
+    }
     if (!this.binaryPath) {
       throw new Error('whisper.cpp binary not found. Set NEX_WHISPER_BIN or install whisper.cpp.');
     }
