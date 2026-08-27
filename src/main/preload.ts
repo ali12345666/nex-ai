@@ -337,6 +337,16 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('component-install:progress', listener);
     return () => ipcRenderer.removeListener('component-install:progress', listener);
   },
+
+  // ── Phase 80: AI Storage Manager ──
+  aiStorageInfo: () => ipcRenderer.invoke('ai-storage-info'),
+  aiStorageGetPath: () => ipcRenderer.invoke('ai-storage-get-path'),
+  aiStorageSetPath: (newPath: string) => ipcRenderer.invoke('ai-storage-set-path', newPath),
+  aiStorageScan: () => ipcRenderer.invoke('ai-storage-scan'),
+  aiStorageList: () => ipcRenderer.invoke('ai-storage-list'),
+  aiStorageRepair: () => ipcRenderer.invoke('ai-storage-repair'),
+  aiStorageOpenFolder: () => ipcRenderer.invoke('ai-storage-open-folder'),
+  aiStorageChooseFolder: () => ipcRenderer.invoke('ai-storage-choose-folder'),
   onModelDownloadProgress: (callback: (progress: any) => void) => {
     const listener = (_e: any, progress: any) => callback(progress);
     ipcRenderer.on('model-download:progress', listener);

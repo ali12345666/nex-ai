@@ -2934,6 +2934,100 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 80: AI Storage Manager — external storage + auto-discovery
+  // ═══════════════════════════════════════════════════════════════════════════
+  const {
+    getAIStoragePath, setAIStoragePath, getStorageInfo,
+    scanStorage, readRegistry, repairRegistry, openStorageFolder,
+    ensureStorageStructure,
+  } = await import('./ai/ai-storage-manager');
+
+  // Ensure default storage structure exists on startup
+  try {
+    ensureStorageStructure(getAIStoragePath());
+  } catch {}
+
+  // IPC: Get storage info
+  ipcMain.handle('ai-storage-info', async () => {
+    try {
+      const info = getStorageInfo();
+      return { success: true, ...info };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // IPC: Get current storage path
+  ipcMain.handle('ai-storage-get-path', async () => {
+    return { success: true, path: getAIStoragePath() };
+  });
+
+  // IPC: Set storage path
+  ipcMain.handle('ai-storage-set-path', async (_event, newPath: string) => {
+    const result = setAIStoragePath(newPath);
+    return result;
+  });
+
+  // IPC: Scan storage for AI files
+  ipcMain.handle('ai-storage-scan', async () => {
+    try {
+      const result = scanStorage();
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // IPC: List all registered assets
+  ipcMain.handle('ai-storage-list', async () => {
+    try {
+      const assets = readRegistry();
+      return { success: true, assets };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // IPC: Repair registry (remove missing files)
+  ipcMain.handle('ai-storage-repair', async () => {
+    try {
+      const result = repairRegistry();
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // IPC: Open storage folder in OS explorer
+  ipcMain.handle('ai-storage-open-folder', async () => {
+    try {
+      openStorageFolder();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // IPC: Choose storage folder (native dialog)
+  ipcMain.handle('ai-storage-choose-folder', async () => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose AI Storage Location',
+        defaultPath: getAIStoragePath(),
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, cancelled: true };
+      }
+      const chosen = result.filePaths[0];
+      const setResult = setAIStoragePath(chosen);
+      return setResult;
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

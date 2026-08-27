@@ -274,6 +274,15 @@ export interface NexAPI {
   componentUnifiedInstalledList: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
   componentUnifiedImportLocal: (filePath: string, componentId: string) => Promise<{ success: boolean; installedPath?: string; hash?: string; error?: string }>;
   onComponentInstallProgress: (callback: (progress: any) => void) => () => void;
+  // Phase 80: AI Storage Manager
+  aiStorageInfo: () => Promise<{ success: boolean; path?: string; exists?: boolean; totalSize?: number; modelCount?: number; voiceCount?: number; documentCount?: number; registryPath?: string; error?: string }>;
+  aiStorageGetPath: () => Promise<{ success: boolean; path?: string }>;
+  aiStorageSetPath: (newPath: string) => Promise<{ success: boolean; error?: string }>;
+  aiStorageScan: () => Promise<{ success: boolean; scanned?: number; registered?: number; alreadyRegistered?: number; skipped?: number; newAssets?: any[]; errors?: string[]; byType?: any; error?: string }>;
+  aiStorageList: () => Promise<{ success: boolean; assets?: any[]; error?: string }>;
+  aiStorageRepair: () => Promise<{ success: boolean; removed?: number; total?: number; errors?: string[] }>;
+  aiStorageOpenFolder: () => Promise<{ success: boolean; error?: string }>;
+  aiStorageChooseFolder: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>;
   onModelDownloadProgress: (callback: (progress: any) => void) => () => void;
 
   // Phase 68: Download State Architecture
