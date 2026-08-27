@@ -65,7 +65,34 @@ function getNexPiperRuntimeDir(): string {
 }
 
 /**
- * Get piper search paths. Includes the NEX managed runtime directory.
+ * Get custom voice discovery directories for piper.
+ * Scans:
+ *   1. NEX_VOICE_DIR env var (if set)
+ *   2. D:\NEX-AI-Data\voice\ (Windows custom data drive)
+ *   3. <userData>/voice/ (= %APPDATA%/nex-ai/voice/ on Windows)
+ *   4. <userData>/runtime/piper/ (NEX managed — Phase 76)
+ */
+function getCustomVoiceDirs(): string[] {
+  const dirs: string[] = [];
+  const envDir = process.env.NEX_VOICE_DIR;
+  if (envDir) dirs.push(envDir);
+  if (process.platform === 'win32') {
+    dirs.push('D:\\NEX-AI-Data\\voice');
+    dirs.push('D:\\NEX-AI-Data\\voice\\piper');
+  }
+  try {
+    const { app } = require('electron');
+    dirs.push(path.join(app.getPath('userData'), 'voice'));
+    dirs.push(path.join(app.getPath('userData'), 'voice', 'piper'));
+  } catch { /* */ }
+  const nexDir = getNexPiperRuntimeDir();
+  if (nexDir) dirs.push(nexDir);
+  return dirs;
+}
+
+/**
+ * Get piper search paths. Includes the NEX managed runtime directory
+ * AND custom user-specified voice directories.
  */
 function getPiperSearchPaths(): string[] {
   const paths = [
@@ -76,8 +103,9 @@ function getPiperSearchPaths(): string[] {
     'C:\\Program Files\\piper',
     path.join(process.cwd(), 'bin'),
   ];
-  const nexDir = getNexPiperRuntimeDir();
-  if (nexDir) paths.push(nexDir);
+  for (const dir of getCustomVoiceDirs()) {
+    paths.push(dir);
+  }
   return paths;
 }
 
@@ -94,7 +122,7 @@ export function findPiperBinary(): string | null {
   const envBin = process.env.NEX_PIPER_BIN;
   if (envBin && fs.existsSync(envBin)) return envBin;
 
-  // 2. Search common names in common paths
+  // 2. Search common names in common paths (includes custom voice dirs)
   const searchPaths = getPiperSearchPaths();
   for (const searchPath of searchPaths) {
     for (const binName of PIPER_BIN_NAMES) {
@@ -103,37 +131,56 @@ export function findPiperBinary(): string | null {
     }
   }
 
-  // 3. Scan NEX runtime dir for any executable containing "piper"
-  const nexDir = getNexPiperRuntimeDir();
-  if (nexDir && fs.existsSync(nexDir)) {
-    try {
-      const entries = fs.readdirSync(nexDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile()) {
-          const name = entry.name.toLowerCase();
-          const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
-          if (isExe && name.includes('piper')) {
-            return path.join(nexDir, entry.name);
+  // 3. Scan ALL custom voice dirs + NEX runtime dir for any executable
+  // containing "piper"
+  for (const scanDir of getCustomVoiceDirs()) {
+    if (scanDir && fs.existsSync(scanDir)) {
+      try {
+        const entries = fs.readdirSync(scanDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile()) {
+            const name = entry.name.toLowerCase();
+            const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
+            if (isExe && name.includes('piper')) {
+              return path.join(scanDir, entry.name);
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   return null;
 }
 
 /**
- * Phase 76: Find piper voice models (.onnx) in the NEX managed directory.
- * Scans <userData>/models/piper/ for *.onnx files.
+ * Find piper voice models (.onnx) in all discovery directories.
+ * Scans:
+ *   - <userData>/models/piper/ (NEX managed)
+ *   - D:\NEX-AI-Data\voice\piper\voices\ (custom)
+ *   - <userData>/voice/piper/ (custom)
+ *   - All custom voice dirs from getCustomVoiceDirs()
  * Returns array of {name, path, sizeBytes}.
  */
 export function findPiperVoices(): Array<{ name: string; path: string; sizeBytes: number }> {
   const results: Array<{ name: string; path: string; sizeBytes: number }> = [];
+  const scannedDirs = new Set<string>();
+
+  const modelDirs: string[] = [];
   try {
     const { app } = require('electron');
-    const modelsDir = path.join(app.getPath('userData'), 'models', 'piper');
-    if (fs.existsSync(modelsDir)) {
+    modelDirs.push(path.join(app.getPath('userData'), 'models', 'piper'));
+  } catch { /* */ }
+  for (const dir of getCustomVoiceDirs()) {
+    modelDirs.push(dir);
+    modelDirs.push(path.join(dir, 'voices'));
+  }
+
+  for (const modelsDir of modelDirs) {
+    if (scannedDirs.has(modelsDir)) continue;
+    scannedDirs.add(modelsDir);
+    if (!fs.existsSync(modelsDir)) continue;
+    try {
       const entries = fs.readdirSync(modelsDir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isFile() && entry.name.toLowerCase().endsWith('.onnx')) {
@@ -142,8 +189,8 @@ export function findPiperVoices(): Array<{ name: string; path: string; sizeBytes
           results.push({ name: entry.name, path: fullPath, sizeBytes: stat.size });
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   return results;
 }
 

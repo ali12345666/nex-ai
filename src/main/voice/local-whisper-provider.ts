@@ -64,8 +64,42 @@ function getNexWhisperRuntimeDir(): string {
 }
 
 /**
+ * Get custom voice discovery directories. These are user-specified locations
+ * where voice components (whisper binary, whisper models, piper binary, piper
+ * voices) may be installed outside the NEX managed directories.
+ *
+ * Scans:
+ *   1. NEX_VOICE_DIR env var (if set)
+ *   2. D:\NEX-AI-Data\voice\ (Windows custom data drive)
+ *   3. <userData>/voice/ (= %APPDATA%/nex-ai/voice/ on Windows)
+ *   4. <userData>/runtime/whisper/ (NEX managed — Phase 76)
+ */
+function getCustomVoiceDirs(): string[] {
+  const dirs: string[] = [];
+  // 1. Env var override
+  const envDir = process.env.NEX_VOICE_DIR;
+  if (envDir) dirs.push(envDir);
+  // 2. Windows custom data drive
+  if (process.platform === 'win32') {
+    dirs.push('D:\\NEX-AI-Data\\voice');
+    dirs.push('D:\\NEX-AI-Data\\voice\\whisper');
+  }
+  // 3. <userData>/voice/ (next to the NEX managed runtime dir)
+  try {
+    const { app } = require('electron');
+    dirs.push(path.join(app.getPath('userData'), 'voice'));
+    dirs.push(path.join(app.getPath('userData'), 'voice', 'whisper'));
+  } catch { /* */ }
+  // 4. NEX managed runtime dir
+  const nexDir = getNexWhisperRuntimeDir();
+  if (nexDir) dirs.push(nexDir);
+  return dirs;
+}
+
+/**
  * Get whisper search paths. Includes the NEX managed runtime directory
- * (where the unified installer extracts whisper-bin-x64.zip).
+ * (where the unified installer extracts whisper-bin-x64.zip) AND custom
+ * user-specified voice directories.
  */
 function getWhisperSearchPaths(): string[] {
   const paths = [
@@ -77,8 +111,10 @@ function getWhisperSearchPaths(): string[] {
     path.join(os.homedir(), 'whisper.cpp'),
     path.join(process.cwd(), 'bin'),
   ];
-  const nexDir = getNexWhisperRuntimeDir();
-  if (nexDir) paths.push(nexDir);
+  // Add custom voice discovery directories
+  for (const dir of getCustomVoiceDirs()) {
+    paths.push(dir);
+  }
   return paths;
 }
 
@@ -95,7 +131,7 @@ export function findWhisperBinary(): string | null {
   const envBin = process.env.NEX_WHISPER_BIN;
   if (envBin && fs.existsSync(envBin)) return envBin;
 
-  // 2. Search common names in common paths
+  // 2. Search common names in common paths (includes custom voice dirs)
   const searchPaths = getWhisperSearchPaths();
   for (const searchPath of searchPaths) {
     for (const binName of WHISPER_BIN_NAMES) {
@@ -104,22 +140,23 @@ export function findWhisperBinary(): string | null {
     }
   }
 
-  // 3. Scan NEX runtime dir for any executable containing "whisper" or "main"
-  // (the extracted ZIP may have a different name than expected)
-  const nexDir = getNexWhisperRuntimeDir();
-  if (nexDir && fs.existsSync(nexDir)) {
-    try {
-      const entries = fs.readdirSync(nexDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile()) {
-          const name = entry.name.toLowerCase();
-          const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
-          if (isExe && (name.includes('whisper') || name === 'main' || name === 'main.exe')) {
-            return path.join(nexDir, entry.name);
+  // 3. Scan ALL custom voice dirs + NEX runtime dir for any executable
+  // containing "whisper" or "main" (the extracted ZIP may have a different name)
+  for (const scanDir of getCustomVoiceDirs()) {
+    if (scanDir && fs.existsSync(scanDir)) {
+      try {
+        const entries = fs.readdirSync(scanDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile()) {
+            const name = entry.name.toLowerCase();
+            const isExe = process.platform === 'win32' ? name.endsWith('.exe') : !name.endsWith('.txt') && !name.endsWith('.md');
+            if (isExe && (name.includes('whisper') || name === 'main' || name === 'main.exe')) {
+              return path.join(scanDir, entry.name);
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   return null;
@@ -139,16 +176,35 @@ export function findFfmpegBinary(): string | null {
 }
 
 /**
- * Phase 76: Find whisper model files (.bin) in the NEX managed directory.
- * Scans <userData>/models/whisper/ for ggml-*.bin files.
+ * Find whisper model files (.bin) in all discovery directories.
+ * Scans:
+ *   - <userData>/models/whisper/ (NEX managed)
+ *   - D:\NEX-AI-Data\voice\whisper\models\ (custom)
+ *   - <userData>/voice/whisper/ (custom)
+ *   - All custom voice dirs from getCustomVoiceDirs()
  * Returns array of {name, path, sizeBytes}.
  */
 export function findWhisperModels(): Array<{ name: string; path: string; sizeBytes: number }> {
   const results: Array<{ name: string; path: string; sizeBytes: number }> = [];
+  const scannedDirs = new Set<string>();
+
+  // Build the list of directories to scan for models
+  const modelDirs: string[] = [];
   try {
     const { app } = require('electron');
-    const modelsDir = path.join(app.getPath('userData'), 'models', 'whisper');
-    if (fs.existsSync(modelsDir)) {
+    modelDirs.push(path.join(app.getPath('userData'), 'models', 'whisper'));
+  } catch { /* */ }
+  // Add custom voice dirs + their 'models' subdirs
+  for (const dir of getCustomVoiceDirs()) {
+    modelDirs.push(dir);
+    modelDirs.push(path.join(dir, 'models'));
+  }
+
+  for (const modelsDir of modelDirs) {
+    if (scannedDirs.has(modelsDir)) continue;
+    scannedDirs.add(modelsDir);
+    if (!fs.existsSync(modelsDir)) continue;
+    try {
       const entries = fs.readdirSync(modelsDir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isFile() && entry.name.toLowerCase().endsWith('.bin')) {
@@ -157,8 +213,8 @@ export function findWhisperModels(): Array<{ name: string; path: string; sizeByt
           results.push({ name: entry.name, path: fullPath, sizeBytes: stat.size });
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   return results;
 }
 

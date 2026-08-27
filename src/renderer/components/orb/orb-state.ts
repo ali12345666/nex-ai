@@ -47,8 +47,8 @@ export interface NexOrbVisual {
 export const STATE_COLOR_PALETTE: Record<NexOrbState, string> = {
   idle: '#00e5ff',        // Cyan — calm, ready
   listening: '#3b82f6',   // Blue — receiving input
-  thinking: '#8b5cf6',    // Violet — internal processing
-  speaking: '#ec4899',     // Magenta/Pink — output
+  thinking: '#8b5cf6',    // Violet/Purple — internal processing
+  speaking: '#22c55e',    // Green — output (speaking)
   active: '#ff2d55',       // Red/Crimson — working hard
   error: '#ef4444',        // Red — error (muted)
   offline: '#64748b',      // Slate — dormant

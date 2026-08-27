@@ -1091,40 +1091,14 @@ async function setupIPC(): Promise<void> {
   // On startup, it loads persisted voice settings and auto-activates if the
   // user previously had voice enabled. This eliminates the "passive" state
   // where binaries are registered but model paths are never attached.
+  // The startupSequence() method handles: detect → [VOICE_STATUS] log →
+  // auto-install if missing → activate → log final status.
   setTimeout(async () => {
     try {
       const { getVoiceManager } = await import('./ai/voice-manager');
-      const vm = getVoiceManager();
-
-      // Load persisted settings
-      const persisted = vm.loadPersistedSettings();
-      console.log(`[VOICE_MANAGER] Persisted settings: mode=${persisted.mode} activated=${persisted.activated}`);
-
-      // Apply persisted mode
-      vm.setMode(persisted.mode);
-
-      // Detect + log [VOICE_RUNTIME]
-      await vm.detect();
-
-      // Auto-activate if previously activated OR if components are ready
-      if (persisted.activated) {
-        const result = await vm.activate();
-        console.log(`[VOICE_MANAGER] Auto-activate result: activated=${result.activated} stt=${result.sttReady} tts=${result.ttsReady}`);
-        if (result.activated && persisted.activated) {
-          // Re-start conversation if it was active
-          await vm.startConversation();
-        }
-      } else {
-        // Try to activate anyway if components are present (first run with
-        // installed components but no persisted activation)
-        const status = await vm.getStatus();
-        if (status.sttReady && status.ttsReady) {
-          const result = await vm.activate();
-          console.log(`[VOICE_MANAGER] Auto-activate (components ready): ${result.activated}`);
-        }
-      }
+      await getVoiceManager().startupSequence();
     } catch (err: any) {
-      console.warn(`[VOICE_MANAGER] Startup activation failed (non-blocking): ${err?.message || err}`);
+      console.warn(`[VOICE_MANAGER] Startup sequence failed (non-blocking): ${err?.message || err}`);
     }
   }, 3000);
 

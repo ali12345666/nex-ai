@@ -66,16 +66,16 @@ export type ConversationState = 'idle' | 'listening' | 'thinking' | 'speaking' |
  *   idle → blue
  *   listening → green
  *   thinking → purple
- *   speaking → cyan
+ *   speaking → green
  *   error → red
  */
 export const CONVERSATION_ORB_COLOR: Record<ConversationState | 'error', string> = {
-  idle: '#3b82f6',        // blue
-  listening: '#22c55e',  // green
-  thinking: '#8b5cf6',   // purple
-  speaking: '#06b6d4',   // cyan
+  idle: '#00e5ff',        // cyan — calm, ready
+  listening: '#3b82f6',   // blue — receiving input
+  thinking: '#8b5cf6',    // purple — internal processing
+  speaking: '#22c55e',    // green — output (speaking)
   interrupted: '#f59e0b', // amber (transition)
-  error: '#ef4444',      // red
+  error: '#ef4444',       // red
 };
 
 export interface ConversationContext {

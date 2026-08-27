@@ -164,6 +164,116 @@ export class VoiceManager {
   }
 
   /**
+   * Log the [VOICE_STATUS] block (simplified readiness summary).
+   * Called at startup and after activation.
+   */
+  logVoiceStatus(status?: VoiceRuntimeStatus): void {
+    const s = status || this._lastDetection;
+    if (!s) {
+      console.log(`[VOICE_STATUS]`);
+      console.log(`  STT=not_checked`);
+      console.log(`  TTS=not_checked`);
+      console.log(`  Language=unknown`);
+      return;
+    }
+    const persisted = this.loadPersistedSettings();
+    console.log(`[VOICE_STATUS]`);
+    console.log(`  STT=${s.sttReady ? 'ready' : 'not_ready'}`);
+    console.log(`  TTS=${s.ttsReady ? 'ready' : 'not_ready'}`);
+    console.log(`  Language=${persisted.language || 'auto'}`);
+    console.log(`  Activated=${s.activated ? 'yes' : 'no'}`);
+    console.log(`  Mode=${s.mode}`);
+    if (s.missingComponents.length > 0) {
+      console.log(`  Missing=${s.missingComponents.join(', ')}`);
+    }
+  }
+
+  /**
+   * Auto-install missing voice components using the UnifiedComponentInstaller.
+   * Downloads whisper binary, whisper model, piper binary, and piper voice
+   * from the unified component catalog (HuggingFace + GitHub releases).
+   *
+   * This is non-blocking — returns immediately and installs in the background.
+   * The caller can poll getStatus() to check progress.
+   */
+  async autoInstallComponents(missingComponentIds: string[]): Promise<{ started: boolean; error?: string }> {
+    if (missingComponentIds.length === 0) return { started: false };
+
+    try {
+      const { getUnifiedComponentInstaller } = await import('../runtime/unified-component-installer');
+      const installer = getUnifiedComponentInstaller();
+
+      console.log(`[VOICE_MANAGER] Auto-installing voice components: ${missingComponentIds.join(', ')}`);
+
+      // Install each missing component sequentially (to avoid bandwidth contention)
+      for (const componentId of missingComponentIds) {
+        try {
+          console.log(`[VOICE_MANAGER] Installing ${componentId}...`);
+          await installer.installComponent(componentId);
+          console.log(`[VOICE_MANAGER] Installed ${componentId}`);
+        } catch (err: any) {
+          console.warn(`[VOICE_MANAGER] Failed to install ${componentId}: ${err?.message}`);
+          // Continue with next component — partial installation is OK
+        }
+      }
+
+      // Re-detect after installation
+      await this.detect();
+      console.log(`[VOICE_MANAGER] Auto-install complete — re-detecting components`);
+      return { started: true };
+    } catch (err: any) {
+      console.warn(`[VOICE_MANAGER] Auto-install failed: ${err?.message}`);
+      return { started: false, error: err?.message };
+    }
+  }
+
+  /**
+   * Full startup sequence: detect → log status → auto-install if missing →
+   * activate → log final status. Called once on app boot.
+   */
+  async startupSequence(): Promise<void> {
+    try {
+      // 1. Detect components
+      const status = await this.detect();
+
+      // 2. Log [VOICE_STATUS]
+      this.logVoiceStatus(status);
+
+      // 3. Load persisted settings
+      const persisted = this.loadPersistedSettings();
+      this.setMode(persisted.mode);
+
+      // 4. If components are missing, try auto-install (non-blocking)
+      if (status.missingComponents.length > 0) {
+        console.log(`[VOICE_MANAGER] Missing components detected — attempting auto-install`);
+        // Don't await — let it install in the background
+        this.autoInstallComponents(status.missingComponents).then(() => {
+          // After install completes, try to activate
+          this.activate().then((result) => {
+            if (result.activated) {
+              console.log(`[VOICE_MANAGER] Auto-activated after install`);
+              this.logVoiceStatus();
+              if (persisted.activated) {
+                this.startConversation().catch(() => {});
+              }
+            }
+          }).catch(() => {});
+        }).catch(() => {});
+      } else {
+        // 5. Components ready — activate immediately
+        const result = await this.activate();
+        if (result.activated && persisted.activated) {
+          await this.startConversation();
+        }
+        this.logVoiceStatus();
+      }
+    } catch (err: any) {
+      console.warn(`[VOICE_MANAGER] Startup sequence failed: ${err?.message}`);
+      this.logVoiceStatus();
+    }
+  }
+
+  /**
    * Activate the voice system: register STT + TTS providers with model paths.
    * If components are missing, returns missingComponents[] without activating.
    *
