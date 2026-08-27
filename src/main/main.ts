@@ -717,11 +717,12 @@ async function setupIPC(): Promise<void> {
       const { createTokenStreamer } = await import('./agent/stream-emit');
       let runtime: import('./ai/runtime').AIRuntime | null = null;
       if (config.provider === 'local') {
-        // ── Model Router: select the smallest capable model ───────────────
+        // ── Model Router: select the best model with session stickiness ────
         // The router classifies the task (simple/medium/complex), respects
-        // the user-pinned model, and checks if the model is already loaded
-        // (cache hit = no reload). This eliminates unnecessary model
-        // switching between Qwen3-30B and Qwen2.5-0.5B.
+        // the user-pinned model, and uses session stickiness to keep the
+        // current model loaded across messages in the same session.
+        // This eliminates unnecessary reload churn.
+        // [MODEL_ROUTER] diagnostic block is emitted by the router itself.
         const { getModelRouter } = await import('./ai/model-router');
         const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
         const routerVerdict = getModelRouter().routeForChat({
@@ -730,17 +731,6 @@ async function setupIPC(): Promise<void> {
           modelIdOverride: config.localModelId,
         });
         const model = routerVerdict.model;
-
-        console.log(`[MODEL_ROUTER]`);
-        console.log(`  source=${routerVerdict.source}`);
-        console.log(`  taskTier=${routerVerdict.taskTier}`);
-        console.log(`  category=${routerVerdict.category}`);
-        console.log(`  selected=${model?.name || 'none'} (id=${model?.id || 'null'})`);
-        console.log(`  alreadyLoaded=${routerVerdict.alreadyLoaded}`);
-        console.log(`  needsSwitch=${routerVerdict.needsSwitch}`);
-        console.log(`  suggestedContext=${routerVerdict.suggestedContextSize}`);
-        console.log(`  suggestedGpuLayers=${routerVerdict.suggestedGpuLayers}`);
-        console.log(`  reason=${routerVerdict.reason}`);
 
         if (!model) {
           console.log(`[CHAT_RESPONSE] source=local-stream error=No local model configured`);
@@ -751,20 +741,27 @@ async function setupIPC(): Promise<void> {
           return { success: false, replyId, error: `Model file not found: ${model.path}` };
         }
 
-        // Phase 86 P0-3: No more split-brain. LlamaCppRuntime now reads from
-        // inference.ts (single source of truth). The direct-path workaround
-        // from Phase 84 is no longer needed — just load and use the runtime.
-        console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path}`);
-        const { getDefaultRuntime } = await import('./ai/runtime');
-        runtime = getDefaultRuntime();
-        await runtime.loadModel(model, {
-          contextSize: routerVerdict.suggestedContextSize,
-          threads: config.localThreads ?? 4,
-          gpuLayers: routerVerdict.suggestedGpuLayers,
-          temperature: config.localTemperature ?? config.temperature ?? 0.7,
-          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
-        });
-        console.log(`[INFERENCE_START] Model loaded successfully`);
+        // If cache hit (model already loaded), skip the loadModel call entirely.
+        // inference.ts loadModel() is idempotent, but calling it still has
+        // overhead (idempotency check + logging). For cache hits, go straight
+        // to chatStream.
+        if (routerVerdict.cacheHit) {
+          console.log(`[INFERENCE_START] Cache hit — reusing loaded model: ${model.name}`);
+          const { getDefaultRuntime } = await import('./ai/runtime');
+          runtime = getDefaultRuntime();
+        } else {
+          console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path} (est. ${routerVerdict.loadTime}ms)`);
+          const { getDefaultRuntime } = await import('./ai/runtime');
+          runtime = getDefaultRuntime();
+          await runtime.loadModel(model, {
+            contextSize: routerVerdict.suggestedContextSize,
+            threads: config.localThreads ?? 4,
+            gpuLayers: routerVerdict.suggestedGpuLayers,
+            temperature: config.localTemperature ?? config.temperature ?? 0.7,
+            maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+          });
+          console.log(`[INFERENCE_START] Model loaded successfully`);
+        }
       } else {
         const { getRuntime } = await import('./ai/runtime');
         runtime = getRuntime('online', 'chat-shared');
