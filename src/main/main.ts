@@ -2948,6 +2948,19 @@ async function setupIPC(): Promise<void> {
     ensureStorageStructure(getAIStoragePath());
   } catch {}
 
+  // Phase 81: Auto-scan storage on startup (non-blocking, non-fatal)
+  setTimeout(() => {
+    try {
+      const { scanStorage } = require('./ai/ai-storage-manager');
+      const result = scanStorage();
+      if (result.registered > 0) {
+        console.log(`[AI_STORAGE] Auto-scan on startup: ${result.registered} new models found`);
+      }
+    } catch (err: any) {
+      console.log('[AI_STORAGE] Auto-scan error (non-fatal):', err?.message);
+    }
+  }, 3000); // 3 second delay to not block startup
+
   // IPC: Get storage info
   ipcMain.handle('ai-storage-info', async () => {
     try {

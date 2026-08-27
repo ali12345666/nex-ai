@@ -48,8 +48,10 @@ export interface LocalChatResult {
  *  1. If config has localModelId, use that
  *  2. Else if config has localModelPath, find registry entry by path
  *  3. Else fall back to default (most recently used)
+ *  4. Phase 81: If no model in old registry, check AI Storage registry
  *
  * Phase 74: Exported so main.ts streaming handler can use it.
+ * Phase 81: Also checks AI Storage Manager registry for .gguf models.
  */
 export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
   if (config.localModelId) {
@@ -60,7 +62,48 @@ export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
     const found = all.find((m) => m.path === config.localModelPath);
     if (found) return found;
   }
-  return getDefaultModel();
+
+  // Phase 81: Check AI Storage registry if no model in old registry
+  const defaultModel = getDefaultModel();
+  if (defaultModel) return defaultModel;
+
+  // Fall back to AI Storage: find the first valid .gguf LLM model
+  try {
+    const { readRegistry } = require('./ai-storage-manager');
+    const assets = readRegistry() as any[];
+    const llmAsset = assets.find(a =>
+      a.fileExists &&
+      a.format === 'gguf' &&
+      (a.type === 'llm' || a.type === 'coder' || a.type === 'vision-llm')
+    );
+    if (llmAsset) {
+      console.log(`[MODEL_RESOLVE] Found model in AI Storage: ${llmAsset.name} — ${llmAsset.path}`);
+      // Convert AIAsset to LocalModelInfo format
+      return {
+        id: llmAsset.id,
+        name: llmAsset.name,
+        path: llmAsset.path,
+        sizeBytes: llmAsset.size,
+        contextSize: 2048,
+        gpuLayers: -1,
+        category: 'general',
+        addedAt: llmAsset.detectedAt || Date.now(),
+        fileExists: true,
+        quantization: llmAsset.quantization,
+        architecture: undefined,
+        parameterCount: llmAsset.parameterCount,
+        capabilities: llmAsset.capabilities || ['chat', 'completion'],
+        source: 'local',
+        schemaVersion: 2,
+        hashAlgorithm: 'sha256',
+        integrityStatus: 'unknown',
+      } as any;
+    }
+  } catch {
+    // AI Storage Manager not available — fall through
+  }
+
+  return null;
 }
 
 /**

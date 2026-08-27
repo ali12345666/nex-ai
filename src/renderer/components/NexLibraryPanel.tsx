@@ -71,6 +71,8 @@ export default function NexLibraryPanel() {
   const [selectedSource, setSelectedSource] = useState<string>('automatic');
   const [copyConfirm, setCopyConfirm] = useState<string | null>(null);
   const [pendingDownload, setPendingDownload] = useState<any | null>(null);
+  // ── Phase 81: AI Storage assets ──
+  const [storageAssets, setStorageAssets] = useState<any[]>([]);
 
   // ── Download state (ZUSTAND STORE — survives component unmount) ──
   const downloads = useDownloadStore((s) => s.downloads);
@@ -88,13 +90,14 @@ export default function NexLibraryPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes] = await Promise.all([
+      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes, storageRes] = await Promise.all([
         window.nexAPI.ecosystemCatalog(),
         window.nexAPI.localRuntimeListModels(),
         window.nexAPI.interactionStatus(),
         window.nexAPI.modelDownloadList(),
         window.nexAPI.componentUnifiedVoiceList(),
         window.nexAPI.voiceFindBinaries().catch(() => ({ success: false })),
+        window.nexAPI.aiStorageList().catch(() => ({ success: false })),
       ]);
       if (catRes.success) setCatalog(catRes.catalog || []);
       if (installedRes.success) setInstalled(installedRes.models || []);
@@ -102,6 +105,7 @@ export default function NexLibraryPanel() {
       if (dlModelsRes.success) setDownloadableModels(dlModelsRes.models || []);
       if (voiceRes.success) setVoiceComponents(voiceRes.components || []);
       if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
+      if (storageRes.success && (storageRes as any).assets) setStorageAssets((storageRes as any).assets || []);
     } catch (err: any) {
       setError(err?.message);
     } finally {
@@ -836,6 +840,41 @@ export default function NexLibraryPanel() {
                 <button onClick={() => handleRemoveModel(m.id, m.name)} className="nex-click nex-focus p-0.5 rounded" style={{ color: '#fca5a5' }}><Trash2 size={9} /></button>
               </div>
             ))
+          )}
+
+          {/* Phase 81: AI Storage Assets */}
+          {storageAssets.length > 0 && (
+            <>
+              <div className="text-[10px] font-medium mt-3" style={{ color: 'var(--nex-text-muted)' }}>AI Storage ({storageAssets.length})</div>
+              {storageAssets.map((asset: any, i: number) => (
+                <div key={asset.id || i} className="p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
+                  <div className="flex items-center gap-2">
+                    {asset.type === 'llm' || asset.type === 'coder' ? (
+                      <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
+                    ) : asset.type === 'voice-stt' || asset.type === 'voice-tts' ? (
+                      <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
+                    ) : asset.type === 'document' ? (
+                      <BookOpen size={11} style={{ color: 'var(--nex-accent)' }} />
+                    ) : (
+                      <Package size={11} style={{ color: 'var(--nex-accent)' }} />
+                    )}
+                    <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{asset.name}</span>
+                    <span className="text-[8px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{asset.type}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 ml-4 flex-wrap">
+                    {asset.provider && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.provider}</span>}
+                    {asset.parameterCount && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.parameterCount}</span></>}
+                    {asset.quantization && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.quantization}</span></>}
+                    <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>• {formatBytes(asset.size)}</span>
+                    {asset.fileExists ? (
+                      <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Ready</span>
+                    ) : (
+                      <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Missing</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </>
           )}
         </div>
 

@@ -168,6 +168,143 @@ function ActionButton({ onClick, children, variant = 'default' }: { onClick: () 
   );
 }
 
+// ─── Phase 81: AI Storage Section ─────────────────────────────────────────────
+function formatBytes(n: number): string {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function AIStorageSection() {
+  const [storageInfo, setStorageInfo] = useState<any>(null);
+  const [scanning, setScanning] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await window.nexAPI.aiStorageInfo();
+      if (res.success) setStorageInfo(res);
+    } catch {}
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  const handleChooseFolder = async () => {
+    const res = await window.nexAPI.aiStorageChooseFolder();
+    if (res.success) {
+      showToast('Storage location updated');
+      refresh();
+    } else if (!res.cancelled) {
+      showToast('Error: ' + (res.error || 'failed'));
+    }
+  };
+
+  const handleScan = async () => {
+    setScanning(true);
+    try {
+      const res = await window.nexAPI.aiStorageScan();
+      if (res.success) {
+        showToast(`Scan complete: ${res.registered} new, ${res.alreadyRegistered} existing`);
+        refresh();
+      } else {
+        showToast('Scan failed: ' + (res.error || 'unknown'));
+      }
+    } catch (err: any) {
+      showToast('Error: ' + err?.message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleRepair = async () => {
+    setRepairing(true);
+    try {
+      const res = await window.nexAPI.aiStorageRepair();
+      if (res.success) {
+        showToast(`Registry repaired: ${res.removed} removed, ${res.total} valid`);
+        refresh();
+      }
+    } catch {} finally {
+      setRepairing(false);
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    await window.nexAPI.aiStorageOpenFolder();
+  };
+
+  if (!storageInfo) {
+    return <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Loading...</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Current path */}
+      <Row label="Path" value={storageInfo.path} mono />
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-2 py-1">
+        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Total Size</div>
+          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{formatBytes(storageInfo.totalSize || 0)}</div>
+        </div>
+        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Models</div>
+          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.modelCount || 0}</div>
+        </div>
+        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Voice Components</div>
+          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.voiceCount || 0}</div>
+        </div>
+        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Documents</div>
+          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.documentCount || 0}</div>
+        </div>
+      </div>
+
+      {/* Buttons */}
+      <div className="flex flex-wrap gap-2">
+        <ActionButton onClick={handleChooseFolder}>
+          <span className="flex items-center gap-1"><HardDrive size={11} /> Change Location</span>
+        </ActionButton>
+        <ActionButton onClick={handleScan}>
+          <span className="flex items-center gap-1">
+            {scanning ? <RefreshCw size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            Scan Storage
+          </span>
+        </ActionButton>
+        <ActionButton onClick={handleRepair}>
+          <span className="flex items-center gap-1">
+            {repairing ? <RefreshCw size={11} className="animate-spin" /> : <Shield size={11} />}
+            Repair Registry
+          </span>
+        </ActionButton>
+        <ActionButton onClick={handleOpenFolder}>
+          <span className="flex items-center gap-1"><Globe size={11} /> Open Folder</span>
+        </ActionButton>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="p-2 rounded-md text-xs" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9', border: '1px solid rgba(6,182,212,0.2)' }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Help text */}
+      <div className="text-[10px] p-2 rounded" style={{ color: 'var(--nex-text-muted)', background: 'var(--nex-glass-bg)' }}>
+        Download models manually, place them in the correct folder (e.g. models/llm/qwen/),
+        then click Scan Storage. NEX AI will automatically detect, classify, and register them.
+      </div>
+    </div>
+  );
+}
+
 function StatusBadge({ status, label }: { status: boolean | null; label: string }) {
   if (status === null) {
     return <span className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Checking…</span>;
@@ -444,6 +581,11 @@ export default function SettingsPanel() {
                 <Row label="Tokens/sec" value={rt?.lastTokensPerSecond ? Math.round(rt.lastTokensPerSecond) : 'N/A'} />
                 <Row label="Inference Active" value={rt?.inferenceActive ? 'Yes' : 'No'} />
                 <Row label="Context Usage" value={rt?.contextMaxTokens ? `${rt.contextUsedTokens || 0}/${rt.contextMaxTokens}` : 'N/A'} />
+              </Card>
+
+              {/* Phase 81: AI Storage Manager */}
+              <Card title="AI Storage" description="External data directory for models, voice, documents">
+                <AIStorageSection />
               </Card>
             </>
           )}
