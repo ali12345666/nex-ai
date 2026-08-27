@@ -18,7 +18,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   Send, Paperclip, X, File as FileIcon, Square, Loader2,
-  Circle, Wifi, WifiOff,
+  Circle, Wifi, WifiOff, Plus, MessageSquare, Trash2, ChevronDown,
 } from 'lucide-react';
 import { useStore, getProviderConfig } from '../../store/useStore';
 import {
@@ -622,6 +622,34 @@ export default function NexChatPanel() {
     window.nexAPI.aiChatStreamCancel().catch(() => {});
   }, []);
 
+  // Phase 88: New Chat — clear messages, reset conversation state
+  const handleNewChat = useCallback(() => {
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle('');
+    conversationIdRef.current = null;
+    conversationTitleRef.current = '';
+    conversationCreatedAtRef.current = null;
+    setLastSavedAt(null);
+    setError(null);
+    setInput('');
+    setAttachments([]);
+    // Dispatch event for AppShell to update activeConversationId
+    window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+  }, []);
+
+  // Phase 88: Delete current conversation
+  const handleDeleteChat = useCallback(async () => {
+    const id = conversationIdRef.current;
+    if (!id) return;
+    try {
+      await window.nexAPI.conversationDelete(id);
+      handleNewChat();
+    } catch (err: any) {
+      setError('Failed to delete conversation: ' + err.message);
+    }
+  }, [handleNewChat]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -637,6 +665,40 @@ export default function NexChatPanel() {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      {/* Phase 88: Conversation Header — New Chat + Title + Delete */}
+      <div
+        className="flex items-center justify-between px-3 py-2 shrink-0"
+        style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <button
+            onClick={handleNewChat}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium nex-click shrink-0"
+            style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}
+            title="New conversation (Ctrl+N)"
+            aria-label="New conversation"
+          >
+            <Plus size={11} /> New
+          </button>
+          <span className="text-[10px] truncate" style={{ color: 'var(--nex-text-muted)' }} title={conversationTitle || 'New conversation'}>
+            {conversationTitle || 'New conversation'}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {conversationId && messages.length > 0 && (
+            <button
+              onClick={handleDeleteChat}
+              className="p-1 rounded transition-colors hover:bg-red-500/10"
+              style={{ color: 'var(--nex-text-muted)' }}
+              title="Delete conversation"
+              aria-label="Delete conversation"
+            >
+              <Trash2 size={11} />
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto nex-scrollbar px-4 py-4" role="list" aria-label="Chat messages">
         {messages.length === 0 && (

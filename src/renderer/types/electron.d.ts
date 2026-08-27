@@ -483,6 +483,9 @@ export interface NexAPI {
   conversationDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
   conversationRename: (id: string, title: string) => Promise<{ success: boolean; error?: string }>;
   conversationSearch: (query: string) => Promise<{ success: boolean; results?: Array<{ id: string; title: string; createdAt: number; updatedAt: number; messageCount: number }>; error?: string }>;
+  // Phase 88: Create + Update
+  conversationCreate: (title?: string) => Promise<{ success: boolean; id?: string; error?: string }>;
+  conversationUpdate: (id: string, updates: any) => Promise<{ success: boolean; error?: string }>;
 
   // ── Phase 28: Terminal Sessions (PTY-backed) ──
   terminalSessionSpawn: (cwd: string, cols?: number, rows?: number) => Promise<{

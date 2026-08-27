@@ -572,6 +572,9 @@ contextBridge.exposeInMainWorld('nexAPI', {
   conversationDelete: (id: string) => ipcRenderer.invoke('conversation-delete', id),
   conversationRename: (id: string, title: string) => ipcRenderer.invoke('conversation-rename', id, title),
   conversationSearch: (query: string) => ipcRenderer.invoke('conversation-search', query),
+  // Phase 88: Create + Update
+  conversationCreate: (title?: string) => ipcRenderer.invoke('conversation-create', title),
+  conversationUpdate: (id: string, updates: any) => ipcRenderer.invoke('conversation-update', id, updates),
 
   // ── Phase 28: Terminal Sessions (PTY-backed) ──
   terminalSessionSpawn: (cwd: string, cols?: number, rows?: number) =>

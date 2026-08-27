@@ -350,3 +350,31 @@ export function searchConversations(query: string): ConversationMetadata[] {
     );
   });
 }
+
+/**
+ * Phase 88: Create a new empty conversation.
+ * Returns the conversation ID.
+ */
+export function createConversation(title?: string): string {
+  const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const data: ConversationData = {
+    id,
+    title: title || 'New Conversation',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messageCount: 0,
+    messages: [],
+  };
+  saveConversation(data);
+  return id;
+}
+
+/**
+ * Phase 88: Update conversation (messages, title, etc).
+ */
+export function updateConversation(id: string, updates: Partial<ConversationData>): boolean {
+  const conv = loadConversation(id);
+  if (!conv) return false;
+  const updated = { ...conv, ...updates, updatedAt: Date.now() };
+  return saveConversation(updated);
+}

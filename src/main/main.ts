@@ -49,6 +49,7 @@ import { filesystemService } from './services/filesystem-service';
 import {
   saveConversation, loadConversation, listConversations,
   deleteConversation, renameConversation, searchConversations,
+  createConversation, updateConversation,
   type ConversationData,
 } from './persistence';
 
@@ -5199,6 +5200,20 @@ async function setupIPC(): Promise<void> {
 
   ipcMain.handle('conversation-search', async (_event, query: string) => {
     try { return { success: true, results: searchConversations(query) }; }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  // Phase 88: Create new conversation
+  ipcMain.handle('conversation-create', async (_event, title?: string) => {
+    try {
+      const id = createConversation(title);
+      return { success: true, id };
+    } catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  // Phase 88: Update conversation
+  ipcMain.handle('conversation-update', async (_event, id: string, updates: any) => {
+    try { return { success: updateConversation(id, updates) }; }
     catch (err: any) { return { success: false, error: err.message }; }
   });
 
