@@ -20,12 +20,40 @@ import AppShell from './components/layout/AppShell';
 // Phase 35: ErrorBoundary — catches render errors, prevents white-screen
 import NexErrorBoundary from './components/layout/NexErrorBoundary';
 
+// Voice Controller — needed at App root level for early IPC listener registration
+import { voiceController } from './services/voice-controller';
+
 function App() {
   const {
     openFiles, activeFile, terminalVisible,
     commandPaletteOpen, toggleCommandPalette, toggleTerminal, projectPath,
     updateSettings, setAIMode, setActiveLocalModel, setLocalModels,
   } = useStore();
+
+  // ── Voice mic capture listener (registered FIRST, before AppShell mounts) ──
+  // This must be at the App root level so the listener is registered BEFORE
+  // the main process sends 'voice-start-mic-capture'. If this were in
+  // AppShell's useEffect, the listener might not be ready when the main
+  // process fires the event (timing race during startup).
+  useEffect(() => {
+    console.log('[VOICE_IPC] App root: registering voice-start-mic-capture listener');
+    const offStart = window.nexAPI?.onVoiceStartMicCapture?.(() => {
+      console.log('[VOICE_IPC] App root received voice-start-mic-capture');
+      voiceController.start().then(() => {
+        console.log('[VOICE_IPC] voiceController.start() completed — mic capture active');
+      }).catch((err: any) => {
+        console.error('[VOICE_IPC] voiceController.start() failed:', err?.message);
+      });
+    });
+    const offStop = window.nexAPI?.onVoiceStopMicCapture?.(() => {
+      console.log('[VOICE_IPC] App root received voice-stop-mic-capture');
+      voiceController.stop();
+    });
+    return () => {
+      if (offStart) offStart();
+      if (offStop) offStop();
+    };
+  }, []);
 
   // ── Permission Prompt state ──
   const [pendingPermission, setPendingPermission] = useState<any>(null);

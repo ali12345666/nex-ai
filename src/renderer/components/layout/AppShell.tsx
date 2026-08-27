@@ -192,12 +192,15 @@ export default function AppShell() {
   // the renderer-side browser STT state. This listener forwards main-side
   // conversation states (listening/thinking/speaking) to the Orb so it
   // animates correctly during local voice conversations.
+  //
+  // NOTE: The voice-start-mic-capture / voice-stop-mic-capture listeners are
+  // registered in App.tsx (root level) to ensure they're ready before the
+  // main process sends events during startup.
   useEffect(() => {
     const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
       const state = ev?.state as string;
       if (!state) return;
       // Map conversation state to Orb state
-      // 'idle' | 'listening' | 'thinking' | 'speaking' | 'interrupted' → Orb state
       const orbStateMap: Record<string, string> = {
         idle: 'idle',
         listening: 'listening',
@@ -212,32 +215,6 @@ export default function AppShell() {
       else voiceController.setThinking(false);
     });
     return () => { if (off) off(); };
-  }, []);
-
-  // ── Bridge: main-side voice-start-mic-capture → renderer mic capture ──────
-  // When VoiceManager.startConversation() runs on the main side, it sends
-  // 'voice-start-mic-capture' to tell the renderer to:
-  //   1. Call getUserMedia() (if not already active)
-  //   2. Enable IPC feeding (send PCM chunks to main → whisper)
-  // Without this bridge, the main engine listens but no audio arrives.
-  useEffect(() => {
-    const offStart = window.nexAPI?.onVoiceStartMicCapture?.(() => {
-      console.log('[VOICE_AUDIO_DEBUG] Received voice-start-mic-capture from main');
-      // Start the VoiceService: getUserMedia + ScriptProcessor + IPC feeding
-      voiceController.start().then(() => {
-        console.log('[VOICE_AUDIO_DEBUG] voiceController.start() completed — mic capture active');
-      }).catch((err: any) => {
-        console.error('[VOICE_AUDIO_DEBUG] voiceController.start() failed:', err?.message);
-      });
-    });
-    const offStop = window.nexAPI?.onVoiceStopMicCapture?.(() => {
-      console.log('[VOICE_AUDIO_DEBUG] Received voice-stop-mic-capture from main');
-      voiceController.stop();
-    });
-    return () => {
-      if (offStart) offStart();
-      if (offStop) offStop();
-    };
   }, []);
 
   // Left workspace content based on active view

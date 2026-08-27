@@ -128,12 +128,22 @@ contextBridge.exposeInMainWorld('nexAPI', {
 
   // Voice mic capture events: main → renderer (trigger mic capture start/stop)
   onVoiceStartMicCapture: (callback: () => void) => {
-    const listener = () => callback();
+    const listener = () => {
+      console.log('[VOICE_IPC] preload received voice-start-mic-capture');
+      callback();
+    };
     ipcRenderer.on('voice-start-mic-capture', listener);
-    return () => ipcRenderer.removeListener('voice-start-mic-capture', listener);
+    console.log('[VOICE_IPC] preload registered voice-start-mic-capture listener');
+    return () => {
+      console.log('[VOICE_IPC] preload removed voice-start-mic-capture listener');
+      ipcRenderer.removeListener('voice-start-mic-capture', listener);
+    };
   },
   onVoiceStopMicCapture: (callback: () => void) => {
-    const listener = () => callback();
+    const listener = () => {
+      console.log('[VOICE_IPC] preload received voice-stop-mic-capture');
+      callback();
+    };
     ipcRenderer.on('voice-stop-mic-capture', listener);
     return () => ipcRenderer.removeListener('voice-stop-mic-capture', listener);
   },

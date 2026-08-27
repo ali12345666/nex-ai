@@ -1304,8 +1304,18 @@ async function setupIPC(): Promise<void> {
       const result = await getVoiceManager().startConversation();
       if (result.success) {
         // Tell the renderer to start mic capture + IPC feeding
-        mainWindow?.webContents.send('voice-start-mic-capture', {});
-        console.log(`[VOICE_MANAGER] Sent voice-start-mic-capture to renderer`);
+        // CRITICAL: check mainWindow exists + webContents is not destroyed
+        if (!mainWindow) {
+          console.error('[VOICE_IPC] Cannot send voice-start-mic-capture: mainWindow is null!');
+        } else if (mainWindow.isDestroyed()) {
+          console.error('[VOICE_IPC] Cannot send voice-start-mic-capture: mainWindow is destroyed!');
+        } else if (!mainWindow.webContents) {
+          console.error('[VOICE_IPC] Cannot send voice-start-mic-capture: webContents is null!');
+        } else {
+          console.log('[VOICE_IPC] sending voice-start-mic-capture to renderer');
+          mainWindow.webContents.send('voice-start-mic-capture', {});
+          console.log('[VOICE_IPC] voice-start-mic-capture sent successfully');
+        }
       }
       return result;
     } catch (err: any) {
@@ -1318,8 +1328,12 @@ async function setupIPC(): Promise<void> {
       const { getVoiceManager } = await import('./ai/voice-manager');
       await getVoiceManager().stopConversation();
       // Tell the renderer to stop mic capture + IPC feeding
-      mainWindow?.webContents.send('voice-stop-mic-capture', {});
-      console.log(`[VOICE_MANAGER] Sent voice-stop-mic-capture to renderer`);
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        console.log('[VOICE_IPC] sending voice-stop-mic-capture to renderer');
+        mainWindow.webContents.send('voice-stop-mic-capture', {});
+      } else {
+        console.warn('[VOICE_IPC] Cannot send voice-stop-mic-capture: window unavailable');
+      }
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1330,14 +1344,19 @@ async function setupIPC(): Promise<void> {
     try {
       const { getVoiceManager } = await import('./ai/voice-manager');
       const result = await getVoiceManager().toggleConversation();
-      // Tell the renderer to start/stop mic capture based on the new state
       if (result.success) {
         if (result.active) {
-          mainWindow?.webContents.send('voice-start-mic-capture', {});
-          console.log(`[VOICE_MANAGER] Sent voice-start-mic-capture to renderer`);
+          if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+            console.log('[VOICE_IPC] sending voice-start-mic-capture to renderer (toggle)');
+            mainWindow.webContents.send('voice-start-mic-capture', {});
+          } else {
+            console.error('[VOICE_IPC] Cannot send voice-start-mic-capture: window unavailable (toggle)');
+          }
         } else {
-          mainWindow?.webContents.send('voice-stop-mic-capture', {});
-          console.log(`[VOICE_MANAGER] Sent voice-stop-mic-capture to renderer`);
+          if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+            console.log('[VOICE_IPC] sending voice-stop-mic-capture to renderer (toggle)');
+            mainWindow.webContents.send('voice-stop-mic-capture', {});
+          }
         }
       }
       return result;
