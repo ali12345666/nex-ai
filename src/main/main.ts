@@ -1089,6 +1089,48 @@ async function setupIPC(): Promise<void> {
     console.warn(`[NEX AI] Phase 41: Voice engine init failed (non-blocking): ${err.message}`);
   }
 
+  // ── Voice Manager: auto-detect + activate on startup ──────────────────────
+  // The VoiceManager handles the full lifecycle: detect → activate → listen.
+  // On startup, it loads persisted voice settings and auto-activates if the
+  // user previously had voice enabled. This eliminates the "passive" state
+  // where binaries are registered but model paths are never attached.
+  setTimeout(async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      const vm = getVoiceManager();
+
+      // Load persisted settings
+      const persisted = vm.loadPersistedSettings();
+      console.log(`[VOICE_MANAGER] Persisted settings: mode=${persisted.mode} activated=${persisted.activated}`);
+
+      // Apply persisted mode
+      vm.setMode(persisted.mode);
+
+      // Detect + log [VOICE_RUNTIME]
+      await vm.detect();
+
+      // Auto-activate if previously activated OR if components are ready
+      if (persisted.activated) {
+        const result = await vm.activate();
+        console.log(`[VOICE_MANAGER] Auto-activate result: activated=${result.activated} stt=${result.sttReady} tts=${result.ttsReady}`);
+        if (result.activated && persisted.activated) {
+          // Re-start conversation if it was active
+          await vm.startConversation();
+        }
+      } else {
+        // Try to activate anyway if components are present (first run with
+        // installed components but no persisted activation)
+        const status = await vm.getStatus();
+        if (status.sttReady && status.ttsReady) {
+          const result = await vm.activate();
+          console.log(`[VOICE_MANAGER] Auto-activate (components ready): ${result.activated}`);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[VOICE_MANAGER] Startup activation failed (non-blocking): ${err?.message || err}`);
+    }
+  }, 3000);
+
   // Voice: get engine status (which providers are available)
   ipcMain.handle('voice-status', async () => {
     const engine = getLocalVoiceEngine();
@@ -1207,6 +1249,112 @@ async function setupIPC(): Promise<void> {
       whisperReady: !!whisperBin && whisperModels.length > 0,
       piperReady: !!piperBin && piperVoices.length > 0,
     };
+  });
+
+  // ── Voice Manager IPC handlers ────────────────────────────────────────────
+  // The VoiceManager provides a unified activation lifecycle:
+  // detect → activate → setMode → startConversation → listen → speak
+  ipcMain.handle('voice-manager-detect', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return { success: true, status: await getVoiceManager().detect() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-activate', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      const result = await getVoiceManager().activate();
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message, activated: false };
+    }
+  });
+
+  ipcMain.handle('voice-manager-deactivate', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      await getVoiceManager().deactivate();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-set-mode', async (_event, mode: string) => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      getVoiceManager().setMode(mode as any);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-start-conversation', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return await getVoiceManager().startConversation();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-stop-conversation', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      await getVoiceManager().stopConversation();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-toggle-conversation', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return await getVoiceManager().toggleConversation();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-status', async () => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return { success: true, status: await getVoiceManager().getStatus() };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-set-stt-model', async (_event, modelPath: string) => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return await getVoiceManager().setSTTModel(modelPath);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-set-tts-voice', async (_event, voicePath: string) => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return await getVoiceManager().setTTSVoice(voicePath);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('voice-manager-set-language', async (_event, language: string) => {
+    try {
+      const { getVoiceManager } = await import('./ai/voice-manager');
+      return await getVoiceManager().setLanguage(language);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   });
 
   // ── Phase 56: Advanced Voice Conversation System ──

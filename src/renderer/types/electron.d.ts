@@ -116,6 +116,19 @@ export interface NexAPI {
   voiceListVoices: () => Promise<{ success: boolean; voices?: Array<{ name: string; language: string; gender?: string }>; error?: string }>;
   voiceFindBinaries: () => Promise<{ success: boolean; whisper: string | null; piper: string | null }>;
 
+  // Voice Manager: unified activation lifecycle
+  voiceManagerDetect: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  voiceManagerActivate: () => Promise<{ success: boolean; activated: boolean; sttReady: boolean; ttsReady: boolean; missingComponents?: string[]; error?: string }>;
+  voiceManagerDeactivate: () => Promise<{ success: boolean; error?: string }>;
+  voiceManagerSetMode: (mode: string) => Promise<{ success: boolean; error?: string }>;
+  voiceManagerStartConversation: () => Promise<{ success: boolean; error?: string }>;
+  voiceManagerStopConversation: () => Promise<{ success: boolean; error?: string }>;
+  voiceManagerToggleConversation: () => Promise<{ success: boolean; active: boolean; error?: string }>;
+  voiceManagerStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
+  voiceManagerSetSTTModel: (modelPath: string) => Promise<{ success: boolean; error?: string }>;
+  voiceManagerSetTTSVoice: (voicePath: string) => Promise<{ success: boolean; error?: string }>;
+  voiceManagerSetLanguage: (language: string) => Promise<{ success: boolean; error?: string }>;
+
   // Phase 56: Advanced Voice Conversation System
   voiceConversationStart: () => Promise<{ success: boolean; error?: string }>;
   voiceConversationStop: () => Promise<{ success: boolean; error?: string }>;

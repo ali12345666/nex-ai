@@ -110,6 +110,19 @@ contextBridge.exposeInMainWorld('nexAPI', {
   voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
   voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
 
+  // ── Voice Manager: unified activation lifecycle ──
+  voiceManagerDetect: () => ipcRenderer.invoke('voice-manager-detect'),
+  voiceManagerActivate: () => ipcRenderer.invoke('voice-manager-activate'),
+  voiceManagerDeactivate: () => ipcRenderer.invoke('voice-manager-deactivate'),
+  voiceManagerSetMode: (mode: string) => ipcRenderer.invoke('voice-manager-set-mode', mode),
+  voiceManagerStartConversation: () => ipcRenderer.invoke('voice-manager-start-conversation'),
+  voiceManagerStopConversation: () => ipcRenderer.invoke('voice-manager-stop-conversation'),
+  voiceManagerToggleConversation: () => ipcRenderer.invoke('voice-manager-toggle-conversation'),
+  voiceManagerStatus: () => ipcRenderer.invoke('voice-manager-status'),
+  voiceManagerSetSTTModel: (modelPath: string) => ipcRenderer.invoke('voice-manager-set-stt-model', modelPath),
+  voiceManagerSetTTSVoice: (voicePath: string) => ipcRenderer.invoke('voice-manager-set-tts-voice', voicePath),
+  voiceManagerSetLanguage: (language: string) => ipcRenderer.invoke('voice-manager-set-language', language),
+
   // ── Phase 56: Advanced Voice Conversation System ──
   voiceConversationStart: () => ipcRenderer.invoke('voice-conversation-start'),
   voiceConversationStop: () => ipcRenderer.invoke('voice-conversation-stop'),

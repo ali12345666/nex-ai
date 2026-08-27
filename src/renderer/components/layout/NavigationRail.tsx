@@ -29,10 +29,10 @@
  */
 import React from 'react';
 import {
-  MessageSquare, LayoutGrid, Brain, Library, Settings, Network, Activity, Gauge,
+  MessageSquare, LayoutGrid, Brain, Library, Settings, Network, Activity, Gauge, Mic,
 } from 'lucide-react';
 
-export type NexView = 'chat' | 'workspace' | 'memory' | 'library' | 'planner' | 'interact' | 'validation' | 'settings';
+export type NexView = 'chat' | 'workspace' | 'memory' | 'library' | 'planner' | 'interact' | 'validation' | 'settings' | 'voice';
 
 /** Workspace sub-tabs — accessible when view === 'workspace'. */
 export type WorkspaceTab = 'editor' | 'terminal' | 'preview' | 'files' | 'logs';
@@ -47,6 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'chat',       icon: <MessageSquare size={20} strokeWidth={1.5} />, label: 'Chat' },
   { id: 'workspace',  icon: <LayoutGrid size={20} strokeWidth={1.5} />,   label: 'Workspace' },
   { id: 'library',    icon: <Library size={20} strokeWidth={1.5} />,      label: 'Library' },
+  { id: 'voice',      icon: <Mic size={20} strokeWidth={1.5} />,          label: 'Voice' },
   { id: 'planner',    icon: <Network size={20} strokeWidth={1.5} />,      label: 'Planner' },
   { id: 'interact',   icon: <Activity size={20} strokeWidth={1.5} />,     label: 'Interact' },
   { id: 'validation', icon: <Gauge size={20} strokeWidth={1.5} />,        label: 'Validation' },

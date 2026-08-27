@@ -45,6 +45,8 @@ const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));
 const HardwareValidationPanel = lazy(() => import('../HardwareValidationPanel'));
 // Phase 66: Unified Library Center (consolidates all resource management)
 const NexLibraryPanel = lazy(() => import('../NexLibraryPanel'));
+// Voice Manager: full voice system lifecycle (detect → activate → listen → speak)
+const VoiceManagerPanel = lazy(() => import('../VoiceManagerPanel'));
 
 import { useStore } from '../../store/useStore';
 
@@ -184,6 +186,34 @@ export default function AppShell() {
     return () => { voiceController.dispose(); };
   }, []);
 
+  // ── Bridge: main-side voice conversation state → Orb animation ────────────
+  // The LocalVoiceEngine (whisper + piper) emits 'voice-conversation-state'
+  // events from the main process. Without this bridge, the Orb only reflects
+  // the renderer-side browser STT state. This listener forwards main-side
+  // conversation states (listening/thinking/speaking) to the Orb so it
+  // animates correctly during local voice conversations.
+  useEffect(() => {
+    const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
+      const state = ev?.state as string;
+      if (!state) return;
+      // Map conversation state to Orb state
+      // 'idle' | 'listening' | 'thinking' | 'speaking' | 'interrupted' → Orb state
+      const orbStateMap: Record<string, string> = {
+        idle: 'idle',
+        listening: 'listening',
+        thinking: 'thinking',
+        speaking: 'speaking',
+        interrupted: 'active',
+        error: 'error',
+      };
+      const orbState = orbStateMap[state] || 'idle';
+      // Use voiceController's internal state machine to drive the Orb
+      if (orbState === 'thinking') voiceController.setThinking(true);
+      else voiceController.setThinking(false);
+    });
+    return () => { if (off) off(); };
+  }, []);
+
   // Left workspace content based on active view
   // UI-15: Consolidated to 5 views — Chat, Workspace, Memory, Knowledge, Settings.
   // All other panels (Git/Diagnostics/Plugins/Hardware/Agents/Tools) accessible
@@ -193,6 +223,7 @@ export default function AppShell() {
       case 'chat': return null; // Chat is rendered as the right panel
       case 'workspace': return <Suspense fallback={<PanelLoading />}><WorkspacePanel /></Suspense>;
       case 'library': return <Suspense fallback={<PanelLoading />}><NexLibraryPanel /></Suspense>;
+      case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceManagerPanel /></Suspense>;
       case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
       case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
       case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
