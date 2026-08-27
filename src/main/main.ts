@@ -740,69 +740,23 @@ async function setupIPC(): Promise<void> {
           return { success: false, replyId, error: `Model file not found: ${model.path}` };
         }
 
-        // Phase 83/84: Check if the model is already loaded (by activation).
-        // If so, call inference.ts chatStream DIRECTLY — bypassing LlamaCppRuntime
-        // which has its own _loadedModel field that wasn't set by activation.
-        const { getLoadedModelInfo } = await import('./ai/inference');
-        const loadedInfo = getLoadedModelInfo();
-        if (loadedInfo && loadedInfo.id === model.id) {
-          console.log(`[INFERENCE_START] Model already loaded: ${model.name} — calling inference.ts directly`);
-
-          // Call inference.ts chatStream directly (not through LlamaCppRuntime)
-          const { chatStream: directChatStream } = await import('./ai/inference');
-          const streamer = createTokenStreamer(replyId, undefined, 'final', (payload) => {
-            mainWindow?.webContents.send('chat-token', { replyId, ...payload });
-          });
-
-          console.log(`[INFERENCE_START] Starting chatStream with ${messages.length} messages`);
-          const result = await directChatStream(
-            model,
-            messages.map((m) => ({ role: m.role, content: m.content })),
-            (chunk) => { if (chunk.content) streamer.push(chunk.content); },
-            {
-              temperature: config.localTemperature ?? config.temperature ?? 0.7,
-              maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
-              systemPrompt: getSystemPromptFor(config),
-            }
-          );
-          streamer.end();
-          console.log(`[CHAT_RESPONSE]`);
-          console.log(`  source=local-stream-direct`);
-          console.log(`  tokens=${result.tokensGenerated || 0}`);
-          console.log(`  error=none`);
-          console.log(`  contentLength=${result.content?.length || 0}`);
-          return {
-            success: true,
-            replyId,
-            content: result.content,
-            tokens: result.tokensGenerated,
-            durationMs: result.durationMs,
-            modelId: result.modelId,
-            modelName: result.modelName,
-          };
-        } else {
-          console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path}`);
-          const { getDefaultRuntime } = await import('./ai/runtime');
-          runtime = getDefaultRuntime();
-          await runtime.loadModel(model, {
-            contextSize: model.contextSize || 2048,
-            threads: config.localThreads ?? 4,
-            gpuLayers: model.gpuLayers ?? -1,
-            temperature: config.localTemperature ?? config.temperature ?? 0.7,
-            maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
-          });
-          console.log(`[INFERENCE_START] Model loaded successfully`);
-        }
+        // Phase 86 P0-3: No more split-brain. LlamaCppRuntime now reads from
+        // inference.ts (single source of truth). The direct-path workaround
+        // from Phase 84 is no longer needed — just load and use the runtime.
+        console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path}`);
+        const { getDefaultRuntime } = await import('./ai/runtime');
+        runtime = getDefaultRuntime();
+        await runtime.loadModel(model, {
+          contextSize: model.contextSize || 2048,
+          threads: config.localThreads ?? 4,
+          gpuLayers: model.gpuLayers ?? -1,
+          temperature: config.localTemperature ?? config.temperature ?? 0.7,
+          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+        });
+        console.log(`[INFERENCE_START] Model loaded successfully`);
       } else {
         const { getRuntime } = await import('./ai/runtime');
         runtime = getRuntime('online', 'chat-shared');
-      }
-
-      // Phase 83: If runtime is null (model was already loaded by activation),
-      // get the default runtime to use for streaming
-      if (!runtime) {
-        const { getDefaultRuntime } = await import('./ai/runtime');
-        runtime = getDefaultRuntime();
       }
 
       const streamer = createTokenStreamer(replyId, undefined, 'final', (payload) => {

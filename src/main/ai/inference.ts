@@ -69,13 +69,9 @@ let _loadedModelId: string | null = null;
 let _loadedModel: any = null;
 let _loadedContext: any = null;
 let _LlamaChatSession: any = null;
-let _currentSession: any = null;
-// Phase 21 / P21-E FIX: single claimed context sequence per loaded model.
-// v3 sessions do NOT release their sequence claim on dispose, so a fresh
-// getSequence() per completion exhausted the pool after one call.
+// Phase 86 P2-8: _currentSession removed (was dead code — never held a real session)
 let _ctxSequence: any = null;
 let _abortFlag: boolean = false;
-// UI-03: actual GPU backend detected from llama.cpp (was hardcoded 'cpu').
 let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
 
 async function getLlamaInstance() {
@@ -123,18 +119,12 @@ export function getGpuBackend(): 'cpu' | 'cuda' | 'metal' | 'vulkan' {
  * unload it first. Subsequent inferences use this loaded model.
  */
 export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = {}): Promise<void> {
-  // Phase 21 / P21-E FIX: reuse an already-loaded identical model — the
-  // previous behavior unloaded + reloaded the GGUF from disk on EVERY
-  // completion (major perf bug for interactive chat).
-  if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
-    return;
-  }
+  // Phase 86 P1-6: Fix idempotency — check fileExists BEFORE the fast path
   if (!model.fileExists) {
     throw new Error(`Model file does not exist: ${model.path}`);
   }
-  if (_loadedModelId === model.id && _loadedModel && _loadedContext) {
-    // Same model already loaded — just reset session
-    _currentSession = null;
+  // Phase 86 P1-6: Single idempotency check (was duplicated at lines 129+135)
+  if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
     return;
   }
 
@@ -153,7 +143,6 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
     contextSize: opts.contextSize ?? model.contextSize ?? 2048,
     threads: opts.threads ?? 4,
   });
-  _currentSession = null;
   _ctxSequence = null; // new context → new sequence pool
   _loadedModelId = model.id;
 
@@ -184,17 +173,17 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
  * Use `shutdownLlama()` for full teardown (e.g. before app.exit()).
  */
 export async function unloadModel(): Promise<void> {
-  if (_currentSession) {
-    try { (_currentSession as any).dispose?.(); } catch {}
-    _currentSession = null;
+  // Phase 86 P2-8: _currentSession is dead code, removed
+  if (_ctxSequence) {
+    try { (_ctxSequence as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Sequence dispose warning:', e?.message); }
+    _ctxSequence = null;
   }
   if (_loadedContext) {
-    try { (_loadedContext as any).dispose?.(); } catch {}
+    try { (_loadedContext as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Context dispose warning:', e?.message); }
     _loadedContext = null;
   }
-  _ctxSequence = null;
   if (_loadedModel) {
-    try { (_loadedModel as any).dispose?.(); } catch {}
+    try { (_loadedModel as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Model dispose warning:', e?.message); }
     _loadedModel = null;
   }
   _loadedModelId = null;
@@ -236,6 +225,22 @@ export function getLoadedModelInfo(): { id: string } | null {
 }
 
 /**
+ * Phase 86 P0-3: Get the full LocalModelInfo of the loaded model.
+ * Returns null if no model is loaded.
+ */
+export function getLoadedModel(): LocalModelInfo | null {
+  if (!_loadedModelId || !_loadedModel) return null;
+  return _loadedModel;
+}
+
+/**
+ * Phase 86 P0-3: Get the loaded context (if any).
+ */
+export function getLoadedContext(): any | null {
+  return _loadedContext;
+}
+
+/**
  * Generate a chat completion (full response, not streamed).
  * The caller is responsible for loading the model first.
  *
@@ -256,35 +261,34 @@ export async function chatComplete(
   }
 
   await getLlamaInstance();
-  const session = new _LlamaChatSession({
-    contextSequence: getSharedSequence(),
-    systemPrompt: opts.systemPrompt,
-  });
 
-  // Phase 74: Use native multi-turn API.
-  // LlamaChatSession handles ChatML formatting automatically.
-  // We replay prior turns (user + assistant) to build context, then
-  // prompt with the final user message.
+  // Phase 86 P0-1/P0-2: Use chatHistory constructor option instead of
+  // broken maxTokens:0 replay loop. This properly includes assistant turns
+  // and avoids phantom generation / hangs.
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUserMsg) {
     throw new Error('No user message in conversation');
   }
 
+  // Build chatHistory: all messages except the final user message (which
+  // will be sent via session.prompt()). System messages are handled by
+  // the systemPrompt option, not chatHistory.
+  const chatHistory = messages
+    .filter(m => m.role !== 'system')
+    .slice(0, -1) // exclude the final user message
+    .map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+
+  const session = new _LlamaChatSession({
+    contextSequence: getSharedSequence(),
+    systemPrompt: opts.systemPrompt,
+    chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+  });
+
   _abortFlag = false;
   const start = Date.now();
-
-  // Replay prior conversation (all messages except the final user message)
-  const priorMessages = messages.slice(0, -1);
-  for (const m of priorMessages) {
-    if (m.role === 'system') continue;  // system prompt already in session
-    if (m.role === 'user') {
-      await session.prompt(m.content, { maxTokens: 0, temperature: 0 });
-    } else if (m.role === 'assistant') {
-      // node-llama-cpp v3: we can't inject assistant responses directly,
-      // so we skip replaying them (the session history will just have user turns).
-      // This is acceptable for short conversations.
-    }
-  }
 
   // Generate response for the final user message
   let response = '';
@@ -301,10 +305,7 @@ export async function chatComplete(
       active: false,
     });
   } finally {
-    // Phase 21 / P21-E FIX: release the context sequence — sessions were
-    // never disposed, exhausting sequences ('No sequences left') for every
-    // subsequent streaming call.
-    try { (session as any).dispose?.(); } catch { /* best-effort */ }
+    try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
   }
 
   return {
@@ -337,30 +338,32 @@ export async function chatStream(
   }
 
   await getLlamaInstance();
-  const session = new _LlamaChatSession({
-    contextSequence: getSharedSequence(),
-    systemPrompt: opts.systemPrompt,
-  });
 
+  // Phase 86 P0-1/P0-2: Use chatHistory constructor option instead of
+  // broken maxTokens:0 replay loop.
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUserMsg) {
     throw new Error('No user message in conversation');
   }
 
+  const chatHistory = messages
+    .filter(m => m.role !== 'system')
+    .slice(0, -1)
+    .map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+
+  const session = new _LlamaChatSession({
+    contextSequence: getSharedSequence(),
+    systemPrompt: opts.systemPrompt,
+    chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+  });
+
   _abortFlag = false;
   const start = Date.now();
   let fullResponse = '';
   noteInferenceStats({ active: true });
-
-  // Phase 74: Replay prior conversation using native multi-turn API
-  const priorMessages = messages.slice(0, -1);
-  for (const m of priorMessages) {
-    if (m.role === 'system') continue;
-    if (m.role === 'user') {
-      await session.prompt(m.content, { maxTokens: 0, temperature: 0 });
-    }
-    // assistant responses skipped (can't inject directly in v3)
-  }
 
   try {
     const response = await session.prompt(lastUserMsg.content, {
@@ -372,8 +375,7 @@ export async function chatStream(
         onChunk({ content: chunk, done: false });
       },
     });
-    void response; // response == accumulated chunks; we use fullResponse
-    // In case onTextChunk missed some final text
+    void response;
     if (response && !fullResponse.endsWith(response.slice(-50))) {
       fullResponse = response;
     }
@@ -393,11 +395,11 @@ export async function chatStream(
       durationMs: Date.now() - start,
     };
   } catch (err: any) {
+    noteInferenceStats({ active: false });
     onChunk({ content: '', done: true, error: err.message });
     throw err;
   } finally {
-    // Phase 21 / P21-E FIX: release the sequence for the next call
-    try { (session as any).dispose?.(); } catch { /* best-effort */ }
+    try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
   }
 }
 

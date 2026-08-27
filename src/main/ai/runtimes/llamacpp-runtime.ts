@@ -1,11 +1,10 @@
 /**
  * LlamaCppRuntime — AIRuntime implementation backed by node-llama-cpp.
  *
- * This is a thin wrapper around the existing inference.ts module. The
- * wrapper exists so that Agent Core and Tools can depend on the AIRuntime
- * interface instead of importing inference.ts directly.
- *
- * Future runtimes (ONNX, MLC, etc.) will implement the same interface.
+ * Phase 86 P0-3: _loadedModel field REMOVED. All model state is read from
+ * inference.ts (single source of truth). This fixes the split-brain bug
+ * where activation (via LocalModelProvider) set inference.ts singletons
+ * but not LlamaCppRuntime._loadedModel.
  */
 
 import type {
@@ -20,6 +19,7 @@ import {
   chatStream as _chatStream,
   abortInference as _abortInference,
   getLoadedModelInfo as _getLoadedModelInfo,
+  getLoadedModel as _getLoadedModel,
   shutdownLlama as _shutdownLlama,
   getGpuBackend as _getGpuBackend,
 } from '../inference';
@@ -31,31 +31,29 @@ export class LlamaCppRuntime implements AIRuntime {
     'chat', 'completion', 'coding', 'reasoning',
   ]);
   private _initialized = false;
-  private _loadedModel: LocalModelInfo | null = null;
+  // Phase 86: _loadedModel REMOVED — reads from inference.ts getLoadedModel()
 
   async init(): Promise<void> {
     if (this._initialized) return;
-    // Lazy: actual llama.cpp init happens on first loadModel
     this._initialized = true;
   }
 
   async loadModel(model: LocalModelInfo, opts?: ChatOptions): Promise<void> {
     await this.init();
     await _loadModel(model, opts || {});
-    this._loadedModel = model;
+    // No longer storing locally — inference.ts is the single source of truth
   }
 
   async unloadModel(): Promise<void> {
     await _unloadModel();
-    this._loadedModel = null;
   }
 
   async chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult> {
-    if (!this._loadedModel) {
+    const loadedModel = _getLoadedModel();
+    if (!loadedModel) {
       throw new Error('No model loaded. Call loadModel() first.');
     }
-    const result = await _chatComplete(this._loadedModel, messages, opts || {});
-    // Phase 19 / P19-A: feed the System Monitor telemetry hook (P12)
+    const result = await _chatComplete(loadedModel, messages, opts || {});
     noteInferenceStats({
       tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
       promptTokens: (result as any).promptTokens,
@@ -71,12 +69,13 @@ export class LlamaCppRuntime implements AIRuntime {
     onChunk: (chunk: StreamChunk) => void,
     opts?: ChatOptions
   ): Promise<ChatResult> {
-    if (!this._loadedModel) {
+    const loadedModel = _getLoadedModel();
+    if (!loadedModel) {
       throw new Error('No model loaded. Call loadModel() first.');
     }
-    noteInferenceStats({ active: true }); // Phase 19: live inference flag
+    noteInferenceStats({ active: true });
     try {
-      const result = await _chatStream(this._loadedModel, messages, onChunk, opts || {});
+      const result = await _chatStream(loadedModel, messages, onChunk, opts || {});
       noteInferenceStats({
         tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
         promptTokens: (result as any).promptTokens,
@@ -97,16 +96,14 @@ export class LlamaCppRuntime implements AIRuntime {
 
   getStats(): RuntimeStats {
     const info = _getLoadedModelInfo();
+    const loadedModel = _getLoadedModel();
     return {
       type: this.type,
       loaded: !!info,
       loadedModelId: info?.id || null,
-      loadedModelName: this._loadedModel?.name || null,
-      // RAM/VRAM stats not exposed by node-llama-cpp v3 by default
+      loadedModelName: loadedModel?.name || null,
       ramUsageBytes: undefined,
       vramUsageBytes: undefined,
-      // UI-03: use the ACTUAL GPU backend reported by llama.cpp (was
-      // hardcoded to 'cpu' — fake telemetry when GPU offload active).
       gpuBackend: _getGpuBackend(),
       threadsInUse: undefined,
     };
@@ -116,6 +113,5 @@ export class LlamaCppRuntime implements AIRuntime {
     await _unloadModel();
     await _shutdownLlama();
     this._initialized = false;
-    this._loadedModel = null;
   }
 }
