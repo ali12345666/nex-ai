@@ -390,27 +390,46 @@ export async function validateGgufIntegrity(
   expectedSize?: number,
 ): Promise<IntegrityResult> {
   try {
-    if (!fs.existsSync(filePath)) {
+    // Phase 79: Log the EXACT path being validated + file existence + size + hex header
+    const fileExists = fs.existsSync(filePath);
+    console.log(`[MODEL_VERIFY] validateGgufIntegrity called:`);
+    console.log(`  filePath=${filePath}`);
+    console.log(`  fileExists=${fileExists}`);
+
+    if (!fileExists) {
       return { passed: false, actualSize: 0, expectedSize, actualHash: '', ggufMagicValid: false, error: 'File does not exist' };
     }
 
     const stat = fs.statSync(filePath);
     const actualSize = stat.size;
+    console.log(`  actualSize=${actualSize}`);
 
     if (actualSize === 0) {
       return { passed: false, actualSize: 0, expectedSize, actualHash: '', ggufMagicValid: false, error: 'File is empty' };
     }
 
-    // Check GGUF magic bytes
+    // Check GGUF magic bytes — read first 16 bytes for diagnostics
     const fd = fs.openSync(filePath, 'r');
     const magicBuf = Buffer.alloc(4);
+    const headerBuf = Buffer.alloc(16);
     fs.readSync(fd, magicBuf, 0, 4, 0);
+    // Re-read from start for 16-byte header (for diagnostics)
+    fs.readSync(fd, headerBuf, 0, 16, 0);
     fs.closeSync(fd);
     const magicString = magicBuf.toString('ascii');
+    const headerHex = headerBuf.toString('hex').match(/.{1,2}/g)?.join(' ') || '';
+    console.log(`  magicAscii="${magicString}"`);
+    console.log(`  headerHex=${headerHex}`);
+    console.log(`  expected=GGUF`);
     const ggufMagicValid = magicString === 'GGUF';
+    console.log(`  magicValid=${ggufMagicValid}`);
 
     if (!ggufMagicValid) {
-      return { passed: false, actualSize, expectedSize, actualHash: '', ggufMagicValid: false, error: `Invalid GGUF magic: expected "GGUF", got "${magicString}"` };
+      // Phase 79: Log the raw bytes to help diagnose encoding issues
+      console.log(`[MODEL_VERIFY] FAIL — magic mismatch`);
+      console.log(`  magicBuf hex=${magicBuf.toString('hex')}`);
+      console.log(`  magicBuf bytes=[${magicBuf.toJSON().data.join(', ')}]`);
+      return { passed: false, actualSize, expectedSize, actualHash: '', ggufMagicValid: false, error: `Invalid GGUF magic: expected "GGUF", got "${magicString}" (hex: ${magicBuf.toString('hex')})` };
     }
 
     // Check expected size (with 5% tolerance)
@@ -830,11 +849,19 @@ class ModelDownloadManagerClass {
         });
 
         if (result.success) {
+          // Phase 79: Use result.sandboxPath (actual path SecureDownloader wrote to)
+          // instead of partPath (independently computed path that may differ).
+          // This fixes the "Invalid GGUF magic: got empty string" bug where
+          // validation reads from the wrong path.
+          const actualPartPath = result.sandboxPath || partPath;
+
           // Download succeeded — verify integrity
           console.log(`[MODEL_DOWNLOAD]`);
           console.log(`  status=success`);
           console.log(`  bytesDownloaded=${result.bytesDownloaded}`);
           console.log(`  partPath=${partPath}`);
+          console.log(`  actualPartPath=${actualPartPath}`);
+          console.log(`  resultSandboxPath=${result.sandboxPath || '(not provided)'}`);
           console.log(`  source=${source.type}`);
           console.log(`  hash=${result.hash ? result.hash.slice(0, 16) + '...' : '(none)'}`);
 
@@ -842,11 +869,34 @@ class ModelDownloadManagerClass {
           download.receivedBytes = result.bytesDownloaded;
           this.emitProgress(download);
 
+          // Phase 79: Pre-validation diagnostics — log exact path, size, and hex header
+          let preValidationInfo = '';
+          try {
+            const preStat = fs.statSync(actualPartPath);
+            const preFd = fs.openSync(actualPartPath, 'r');
+            const preBuf = Buffer.alloc(16);
+            const bytesRead = fs.readSync(preFd, preBuf, 0, 16, 0);
+            fs.closeSync(preFd);
+            const headerHex = preBuf.toString('hex').slice(0, bytesRead * 2).match(/.{1,2}/g)?.join(' ') || '';
+            const magicAscii = preBuf.toString('ascii', 0, 4);
+            preValidationInfo = `size=${preStat.size} bytesRead=${bytesRead} headerHex=${headerHex} magicAscii="${magicAscii}"`;
+            console.log(`[MODEL_VERIFY] pre-validation:`);
+            console.log(`  path=${actualPartPath}`);
+            console.log(`  size=${preStat.size}`);
+            console.log(`  bytesRead=${bytesRead}`);
+            console.log(`  headerHex=${headerHex}`);
+            console.log(`  magicAscii=${JSON.stringify(magicAscii)}`);
+            console.log(`  expected=GGUF`);
+            console.log(`  magicValid=${magicAscii === 'GGUF'}`);
+          } catch (preErr: any) {
+            console.log(`[MODEL_VERIFY] pre-validation error: ${preErr?.message}`);
+          }
+
           console.log(`[MODEL_VERIFY]`);
-          console.log(`  partPath=${partPath}`);
+          console.log(`  path=${actualPartPath}`);
           console.log(`  expectedSize=${source.expectedSize || 'unknown'}`);
           console.log(`  expectedHash=${source.expectedHash ? source.expectedHash.slice(0, 16) + '...' : 'none'}`);
-          const integrity = await validateGgufIntegrity(partPath, source.expectedHash, source.expectedSize);
+          const integrity = await validateGgufIntegrity(actualPartPath, source.expectedHash, source.expectedSize);
           console.log(`[MODEL_VERIFY] result:`);
           console.log(`  passed=${integrity.passed}`);
           console.log(`  actualSize=${integrity.actualSize}`);
@@ -873,10 +923,11 @@ class ModelDownloadManagerClass {
             const finalPath = path.join(installDir, model.filename);
             try {
               // Atomic rename (on same filesystem)
+              // Phase 79: Use actualPartPath (the path SecureDownloader actually wrote to)
               if (fs.existsSync(finalPath)) {
                 fs.unlinkSync(finalPath);
               }
-              fs.renameSync(partPath, finalPath);
+              fs.renameSync(actualPartPath, finalPath);
 
               // Phase 73/78: [MODEL_INSTALL] logging
               const finalStat = fs.statSync(finalPath);
@@ -965,7 +1016,7 @@ class ModelDownloadManagerClass {
             };
             // Phase 73: Do NOT delete the .part file on validation failure.
             // The user may want to inspect it. Just try next source.
-            console.log(`[MODEL_DL:${download.id}] Integrity failed — .part file preserved at: ${partPath}`);
+            console.log(`[MODEL_DL:${download.id}] Integrity failed — .part file preserved at: ${actualPartPath}`);
             break;  // Don't retry integrity — try next source
           }
         }
