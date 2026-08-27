@@ -109,7 +109,7 @@ export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
         name: llmAsset.name,
         path: llmAsset.path,
         sizeBytes: llmAsset.size,
-        contextSize: 2048,
+        contextSize: 1024,
         gpuLayers: -1,
         category: 'general',
         addedAt: llmAsset.detectedAt || Date.now(),
@@ -168,7 +168,7 @@ export async function localChatComplete(
 
   try {
     const result = await chatComplete(model, messages, {
-      contextSize: config.localContextSize || model.contextSize || 2048,
+      contextSize: config.localContextSize || model.contextSize || 1024,
       threads: config.localThreads,
       gpuLayers: config.localGpuLayers,
       temperature: config.localTemperature ?? config.temperature,
@@ -179,7 +179,7 @@ export async function localChatComplete(
     console.log(`[LOCAL_RUNTIME]`);
     console.log(`  loaded=${result.modelId ? 'true' : 'false'}`);
     console.log(`  backend=node-llama-cpp`);
-    console.log(`  contextSize=${config.localContextSize ?? 2048}`);
+    console.log(`  contextSize=${config.localContextSize ?? 1024}`);
     console.log(`  tokensGenerated=${result.tokensGenerated || 0}`);
 
     console.log(`[CHAT_RESPONSE]`);
@@ -242,7 +242,7 @@ export async function localChatStream(
 
   try {
     const result = await chatStream(model, messages, onChunk, {
-      contextSize: config.localContextSize || model.contextSize || 2048,
+      contextSize: config.localContextSize || model.contextSize || 1024,
       threads: config.localThreads,
       gpuLayers: config.localGpuLayers,
       temperature: config.localTemperature ?? config.temperature,

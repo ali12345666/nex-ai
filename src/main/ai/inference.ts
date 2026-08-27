@@ -526,10 +526,51 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
     _gpuBackend,
   );
 
-  _loadedContext = await _loadedModel.createContext({
-    contextSize: opts.contextSize ?? model.contextSize ?? 2048,
-    threads: opts.threads ?? 4,
-  });
+  // ── VRAM-aware context creation with automatic fallback ────────────────
+  // GPU runtime default context: 1024 (was 2048). Large contexts consume
+  // significant VRAM during prefill; on an 8GB RTX 4060 with a 20GB model
+  // partially offloaded, context 2048 can exceed available VRAM and throw
+  // "A context size of 2048 is too large for available VRAM".
+  //
+  // Fallback chain: requested → 1024 → 512. Each retry halves the context.
+  // The model is already loaded at this point (with gpuLayers="auto"), so
+  // we only need to recreate the CONTEXT, not reload the model.
+  const requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024;
+  const contextFallbackChain = generateContextFallbackChain(requestedContextSize);
+
+  let lastContextError: any = null;
+  let usedContextSize = requestedContextSize;
+
+  for (let i = 0; i < contextFallbackChain.length; i++) {
+    const trySize = contextFallbackChain[i];
+    try {
+      _loadedContext = await _loadedModel.createContext({
+        contextSize: trySize,
+        threads: opts.threads ?? 4,
+      });
+      usedContextSize = trySize;
+      if (i > 0) {
+        console.log(`[VRAM_FALLBACK] contextSize ${contextFallbackChain[i - 1]} → ${trySize} (retry ${i}/${contextFallbackChain.length - 1} succeeded)`);
+      }
+      lastContextError = null;
+      break;
+    } catch (ctxErr: any) {
+      lastContextError = ctxErr;
+      const msg = (ctxErr?.message || '').toLowerCase();
+      const isVramError = /vram|context size.*too large|insufficient.*memory|out of memory|oom/.test(msg);
+      console.warn(`[VRAM_FALLBACK] contextSize=${trySize} failed: ${ctxErr?.message} (isVramError=${isVramError})`);
+      if (!isVramError || i === contextFallbackChain.length - 1) {
+        // Non-VRAM error or last retry failed — rethrow
+        throw ctxErr;
+      }
+      // Continue to next smaller context size
+    }
+  }
+
+  if (lastContextError) {
+    throw lastContextError;
+  }
+
   _ctxSequence = null; // new context → new sequence pool
   _loadedModelId = model.id;
   _loadedModelInfo = model;  // Phase 87: Store the LocalModelInfo for getLoadedModel()
@@ -538,7 +579,7 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   console.log(`[MODEL_LOAD]`);
   console.log(`  path=${model.path}`);
   console.log(`  size=${model.sizeBytes}`);
-  console.log(`  contextSize=${opts.contextSize ?? model.contextSize ?? 2048}`);
+  console.log(`  contextSize=${usedContextSize}${usedContextSize !== requestedContextSize ? ` (fallback from ${requestedContextSize})` : ''}`);
   console.log(`  gpuLayers=${rawGpuLayers} (translated→${translatedGpuLayers})`);
   console.log(`  gpuLayersActual=${actualGpuLayers}`);
   console.log(`  backend=${_gpuBackend}`);
@@ -552,9 +593,33 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // (BottomStatusBar / HardwareMonitor) can show context usage even for
   // direct chat (was previously only populated for agent tasks).
   noteInferenceStats({
-    contextMaxTokens: opts.contextSize ?? model.contextSize ?? 2048,
+    contextMaxTokens: usedContextSize,
   });
   console.log(`[NEX AI Local] Model loaded: ${model.name}`);
+}
+
+/**
+ * Generate a context-size fallback chain for VRAM-aware retry.
+ * Returns a descending list of context sizes to try, ending at a minimum
+ * of 512. Examples:
+ *   2048 → [2048, 1024, 512]
+ *   1024 → [1024, 512]
+ *   8192 → [8192, 4096, 2048, 1024, 512]
+ *   256  → [256]  (below minimum, no fallback)
+ */
+function generateContextFallbackChain(requested: number): number[] {
+  const MIN_CONTEXT = 512;
+  if (requested <= MIN_CONTEXT) return [requested];
+  const chain: number[] = [requested];
+  let cur = requested;
+  while (cur > MIN_CONTEXT) {
+    cur = Math.floor(cur / 2);
+    if (cur < MIN_CONTEXT) cur = MIN_CONTEXT;
+    chain.push(cur);
+    if (cur === MIN_CONTEXT) break;
+  }
+  // Deduplicate (e.g. 1024 → [1024, 512] not [1024, 512, 512])
+  return [...new Set(chain)];
 }
 
 /**
@@ -704,7 +769,7 @@ export async function chatComplete(
       });
       const genMs = Date.now() - _t0;
       const genTokens = estimateTokens(response);
-      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 2048} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${Date.now() - start}`);
+      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 1024} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${Date.now() - start}`);
       noteInferenceStats({
         tokensPerSecond: genTokens / Math.max(0.001, genMs / 1000),
         generatedTokens: genTokens,
@@ -815,7 +880,7 @@ export async function chatStream(
       onChunk({ content: '', done: true });
       const genMs = Date.now() - start;
       const genTokens = estimateTokens(fullResponse);
-      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 2048} firstTokenMs=${firstTokenMs} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${genMs}`);
+      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 1024} firstTokenMs=${firstTokenMs} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${genMs}`);
       noteInferenceStats({
         tokensPerSecond: genTokens / Math.max(0.001, genMs / 1000),
         generatedTokens: genTokens,

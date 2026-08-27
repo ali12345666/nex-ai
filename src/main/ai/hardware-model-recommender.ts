@@ -193,7 +193,7 @@ export function canModelRunOnHardware(
         reason: `Partial GPU offload: model needs ${(minVram / 1e9).toFixed(1)}GB VRAM but only ${(availableVram / 1e9).toFixed(1)}GB available — some layers will run on CPU`,
         suggestedGpuLayers: Math.floor(availableVram / (modelSize / 32)), // rough
         suggestedThreads: Math.min(hw.cpuCores, 8),
-        suggestedContextSize: 2048,
+        suggestedContextSize: 1024,
         estimatedLoadSeconds: Math.ceil(modelSize / (200 * 1024 * 1024)),
       };
     }
@@ -213,15 +213,24 @@ export function canModelRunOnHardware(
       suggestedGpuLayers = Math.max(1, layersThatFit);
     }
   } else if (hw.gpu && (hw.gpu.supportsMetal || hw.gpu.supportsVulkan)) {
-    // Metal/Vulkan — similar logic but less reliable
-    suggestedGpuLayers = modelSize <= (hw.gpu.vramTotalBytes * 0.85) ? -1 : 0;
+    // Metal/Vulkan — use "auto" (-1) so node-llama-cpp fits as many layers
+    // as VRAM allows (partial offload). Previously this returned 0 (CPU only)
+    // when the model exceeded 85% of VRAM, which DISABLED GPU offload entirely
+    // even though partial offload was possible. The "auto" mode in
+    // inference.ts translateGpuLayers() maps -1 → "auto", which lets
+    // llama.cpp compute the optimal layer count for the available VRAM.
+    suggestedGpuLayers = -1;
   } else {
     // No GPU — CPU only
     suggestedGpuLayers = 0;
   }
 
   const suggestedThreads = Math.min(hw.cpuCores, 8);
-  const suggestedContextSize = model.contextSize || 2048;
+  // GPU runtime default context: 1024 (was 2048). Large contexts consume
+  // significant VRAM during prefill; 1024 is a safe default that fits most
+  // GPUs. The VRAM-aware fallback in inference.ts will retry with smaller
+  // sizes if even 1024 is too large.
+  const suggestedContextSize = model.contextSize || 1024;
 
   return {
     canRun: true,

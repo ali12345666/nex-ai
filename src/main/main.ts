@@ -748,7 +748,7 @@ async function setupIPC(): Promise<void> {
         const { getDefaultRuntime } = await import('./ai/runtime');
         runtime = getDefaultRuntime();
         await runtime.loadModel(model, {
-          contextSize: model.contextSize || 2048,
+          contextSize: model.contextSize || 1024,
           threads: config.localThreads ?? 4,
           gpuLayers: model.gpuLayers ?? -1,
           temperature: config.localTemperature ?? config.temperature ?? 0.7,
