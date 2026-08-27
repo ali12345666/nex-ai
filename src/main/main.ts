@@ -1129,10 +1129,19 @@ async function setupIPC(): Promise<void> {
   // Voice: feed audio chunk (Buffer) from renderer to STT provider
   // The renderer sends raw PCM audio chunks; the engine forwards them to
   // the whisper provider's streaming buffer for transcription.
+  let _mainChunkCount = 0;
   ipcMain.on('voice-feed-audio-chunk', (_event, chunk: Buffer) => {
     try {
-      getLocalVoiceEngine().feedAudioChunk(Buffer.from(chunk));
-    } catch { /* best-effort */ }
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      _mainChunkCount++;
+      // [VOICE_AUDIO] diagnostic — log chunk receive (throttled to every 50th)
+      if (_mainChunkCount % 50 === 1) {
+        console.log(`[VOICE_AUDIO] received chunk size=${buf.length} (#${_mainChunkCount})`);
+      }
+      getLocalVoiceEngine().feedAudioChunk(buf);
+    } catch (err: any) {
+      console.warn(`[VOICE_AUDIO] feedAudioChunk error: ${err?.message}`);
+    }
   });
 
   // Voice: get pipeline diagnostics

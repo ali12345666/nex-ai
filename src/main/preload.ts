@@ -111,9 +111,17 @@ contextBridge.exposeInMainWorld('nexAPI', {
   voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
 
   // Voice pipeline: feed mic audio from renderer → main process
-  voiceFeedAudioLevel: (level: number) => ipcRenderer.send('voice-feed-audio-level', level),
+  voiceFeedAudioLevel: (level: number) => {
+    ipcRenderer.send('voice-feed-audio-level', level);
+  },
   voiceFeedAudioChunk: (chunk: ArrayBuffer | Uint8Array) => {
     const buf = chunk instanceof ArrayBuffer ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    // [VOICE_AUDIO] diagnostic — log chunk send (throttled to avoid flooding)
+    if (!(globalThis as any).__nexVoiceChunkCount) (globalThis as any).__nexVoiceChunkCount = 0;
+    (globalThis as any).__nexVoiceChunkCount++;
+    if ((globalThis as any).__nexVoiceChunkCount % 50 === 1) {
+      console.log(`[VOICE_AUDIO] sending chunk size=${buf.length} (#${(globalThis as any).__nexVoiceChunkCount})`);
+    }
     ipcRenderer.send('voice-feed-audio-chunk', buf);
   },
   voicePipelineStatus: () => ipcRenderer.invoke('voice-pipeline-status'),

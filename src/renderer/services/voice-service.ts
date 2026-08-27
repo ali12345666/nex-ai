@@ -62,6 +62,12 @@ export class VoiceService {
   private _shouldRestartSTT = false;
   private _ttsActive = false;
 
+  // PCM audio capture for LocalVoiceEngine (whisper STT)
+  private _scriptProcessor: ScriptProcessorNode | null = null;
+  private _chunksSent = 0;
+  private _lastChunkSize = 0;
+  private _ipcFeedingEnabled = false;
+
   constructor(config?: Partial<VoiceConfig>) {
     this.config = { ...DEFAULT_VOICE_CONFIG, ...config };
   }
@@ -91,7 +97,64 @@ export class VoiceService {
       this._analyser.smoothingTimeConstant = 0.8;
       source.connect(this._analyser);
       this._dataArray = new Uint8Array(new ArrayBuffer(this._analyser.frequencyBinCount));
+
+      // ── PCM audio capture for LocalVoiceEngine ──────────────────────────
+      // ScriptProcessorNode captures raw PCM audio (16-bit, mono, 16kHz-ish).
+      // We downsample from 48kHz to 16kHz and send via IPC to the main process
+      // where the whisper provider transcribes it.
+      // ScriptProcessor is deprecated but widely supported; AudioWorklet would
+      // require a separate worklet file which is harder to bundle in Electron.
+      this._scriptProcessor = this._audioContext.createScriptProcessor(4096, 1, 1);
+      this._scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
+        if (!this._ipcFeedingEnabled) return;
+        const inputBuffer = event.inputBuffer;
+        const channelData = inputBuffer.getChannelData(0); // Float32Array, mono
+
+        // Downsample from 48kHz (AudioContext default) to 16kHz (whisper format).
+        // We take every 3rd sample (48000/16000 = 3).
+        const downsampled = this.downsampleTo16k(channelData);
+
+        // Convert Float32 (-1.0..1.0) to Int16 PCM (whisper format)
+        const pcm16 = new Int16Array(downsampled.length);
+        for (let i = 0; i < downsampled.length; i++) {
+          const s = Math.max(-1, Math.min(1, downsampled[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // Send the PCM chunk to the main process via IPC
+        const chunkBuffer = pcm16.buffer; // ArrayBuffer
+        this._chunksSent++;
+        this._lastChunkSize = chunkBuffer.byteLength;
+        try {
+          window.nexAPI?.voiceFeedAudioChunk?.(chunkBuffer);
+        } catch (err: any) {
+          // Non-fatal — IPC may not be ready
+        }
+
+        // Also send the audio level (RMS) for VAD + Orb animation
+        // (computed from the same chunk to avoid double-work)
+        let sum = 0;
+        for (let i = 0; i < downsampled.length; i++) {
+          sum += downsampled[i] * downsampled[i];
+        }
+        const rms = Math.sqrt(sum / downsampled.length);
+        const gated = rms < this.config.noiseFloor ? 0 : rms;
+        const normalized = Math.min(1, gated * 4);
+        const speed = normalized > this._smoothedLevel
+          ? this.config.attackSpeed : this.config.releaseSpeed;
+        this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
+        this.callbacks.onAudioLevel?.(this._smoothedLevel);
+        // Send audio level to main process for VAD
+        try {
+          window.nexAPI?.voiceFeedAudioLevel?.(this._smoothedLevel);
+        } catch { /* best-effort */ }
+      };
+      // Connect: source → scriptProcessor → destination (destination needed for processing)
+      source.connect(this._scriptProcessor);
+      this._scriptProcessor.connect(this._audioContext.destination);
+
       this.startAudioLoop();
+      this.logVoiceAudio();
       return true;
     } catch (err: any) {
       this._micPermission = false;
@@ -100,8 +163,49 @@ export class VoiceService {
         : err.name === 'NotFoundError' ? 'No microphone found'
         : `Microphone error: ${err.message}`;
       this.callbacks.onError?.(msg);
+      this.logVoiceAudio();
       return false;
     }
+  }
+
+  /**
+   * Downsample Float32 audio from 48kHz to 16kHz by taking every 3rd sample.
+   * This is a simple decimation (no low-pass filter, but acceptable for STT).
+   */
+  private downsampleTo16k(input: Float32Array): Float32Array {
+    const ratio = 3; // 48000 / 16000
+    const outputLength = Math.floor(input.length / ratio);
+    const output = new Float32Array(outputLength);
+    for (let i = 0; i < outputLength; i++) {
+      output[i] = input[i * ratio];
+    }
+    return output;
+  }
+
+  /**
+   * Enable/disable IPC feeding of PCM audio to the main process.
+   * When the conversation is active, this is enabled; when stopped, disabled.
+   */
+  setIPCFeedingEnabled(enabled: boolean): void {
+    this._ipcFeedingEnabled = enabled;
+    if (enabled) {
+      this._chunksSent = 0;
+    }
+    console.log(`[VOICE_AUDIO] IPC feeding ${enabled ? 'enabled' : 'disabled'}`);
+    this.logVoiceAudio();
+  }
+
+  /**
+   * Log the [VOICE_AUDIO] diagnostic block.
+   */
+  logVoiceAudio(): void {
+    console.log(`[VOICE_AUDIO]`);
+    console.log(`  microphonePermission=${this._micPermission === null ? 'unknown' : this._micPermission ? 'granted' : 'denied'}`);
+    console.log(`  streamActive=${!!this._stream}`);
+    console.log(`  audioContextState=${this._audioContext?.state || 'none'}`);
+    console.log(`  chunksSent=${this._chunksSent}`);
+    console.log(`  lastChunkSize=${this._lastChunkSize}`);
+    console.log(`  ipcFeedingEnabled=${this._ipcFeedingEnabled}`);
   }
 
   async startListening(): Promise<void> {
@@ -110,6 +214,8 @@ export class VoiceService {
       if (!ok) { this.setCondition('mic', 'error'); return; }
     }
     if (this._ttsActive) this.stopSpeaking();
+    // Enable IPC feeding so PCM audio reaches the LocalVoiceEngine
+    this.setIPCFeedingEnabled(true);
     this.startSTT();
     this.setCondition('mic', 'listening');
     this._shouldRestartSTT = true;
@@ -117,6 +223,8 @@ export class VoiceService {
 
   stopListening(): void {
     this.stopSTT();
+    // Disable IPC feeding when not listening
+    this.setIPCFeedingEnabled(false);
     this.clearCondition('mic');
     this._shouldRestartSTT = false;
   }
@@ -178,6 +286,10 @@ export class VoiceService {
     this.stopListening();
     this.stopSpeaking();
     this.stopAudioLoop();
+    if (this._scriptProcessor) {
+      try { this._scriptProcessor.disconnect(); } catch { /* */ }
+      this._scriptProcessor = null;
+    }
     if (this._stream) {
       this._stream.getTracks().forEach((track) => track.stop());
       this._stream = null;
