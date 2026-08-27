@@ -264,6 +264,16 @@ export interface NexAPI {
   modelDownloadImportLocal: (filePath: string, opts?: any) => Promise<{ success: boolean; modelId?: string; filePath?: string; hash?: string; error?: string }>;
   // Phase 73: Scan filesystem for unregistered .gguf files
   scanModels: () => Promise<{ success: boolean; scanned?: number; registered?: number; alreadyRegistered?: number; skipped?: number; newModels?: any[]; errors?: string[]; error?: string }>;
+  // Phase 75: Unified Component Installer
+  componentUnifiedList: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
+  componentUnifiedVoiceList: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
+  componentUnifiedGet: (componentId: string) => Promise<{ success: boolean; component?: any; error?: string }>;
+  componentUnifiedInstall: (componentId: string) => Promise<{ success: boolean; installedPath?: string; hash?: string; error?: string; state?: string }>;
+  componentUnifiedCancel: (componentId: string) => Promise<{ success: boolean; error?: string }>;
+  componentUnifiedIsInstalled: (componentId: string) => Promise<{ success: boolean; installed: boolean }>;
+  componentUnifiedInstalledList: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
+  componentUnifiedImportLocal: (filePath: string, componentId: string) => Promise<{ success: boolean; installedPath?: string; hash?: string; error?: string }>;
+  onComponentInstallProgress: (callback: (progress: any) => void) => () => void;
   onModelDownloadProgress: (callback: (progress: any) => void) => () => void;
 
   // Phase 68: Download State Architecture

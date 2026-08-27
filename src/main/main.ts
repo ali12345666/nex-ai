@@ -2784,6 +2784,126 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 75: Unified Component Installer
+  //
+  // ONE installer for ALL downloadable AI components (LLMs, voice models,
+  // voice binaries, vision). Uses ModelDownloadManager — no separate
+  // download logic.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const { getUnifiedComponentInstaller } = await import('./runtime/unified-component-installer');
+  const { UNIFIED_COMPONENT_CATALOG, getUnifiedComponent, getVoiceComponents } = await import('./runtime/unified-component-catalog');
+  const unifiedInstaller = getUnifiedComponentInstaller();
+
+  // Wire progress callback to forward to renderer
+  unifiedInstaller.setProgressCallback((progress) => {
+    mainWindow?.webContents.send('component-install:progress', progress);
+  });
+
+  // IPC: List all unified components
+  ipcMain.handle('component-unified-list', async () => {
+    return { success: true, components: UNIFIED_COMPONENT_CATALOG };
+  });
+
+  // IPC: List voice components only
+  ipcMain.handle('component-unified-voice-list', async () => {
+    return { success: true, components: getVoiceComponents() };
+  });
+
+  // IPC: Get a specific component
+  ipcMain.handle('component-unified-get', async (_event, componentId: string) => {
+    const component = getUnifiedComponent(componentId);
+    if (!component) return { success: false, error: 'Component not found' };
+    return { success: true, component };
+  });
+
+  // IPC: Install a component (with permission gate)
+  ipcMain.handle('component-unified-install', async (_event, componentId: string) => {
+    const component = getUnifiedComponent(componentId);
+    if (!component) return { success: false, error: 'Component not found: ' + componentId };
+
+    console.log(`[COMPONENT_INSTALL] Starting: ${component.name}`);
+
+    // Request permission
+    const firstSource = component.sources[0];
+    let approved: boolean;
+    try {
+      approved = await requestDownloadPermission(firstSource.url, component.name, component.expectedSize);
+    } catch (err: any) {
+      return { success: false, status: 'permission-error', error: err?.message };
+    }
+
+    if (!approved) {
+      return { success: false, status: 'permission-denied', error: 'Permission denied by user' };
+    }
+
+    const result = await unifiedInstaller.installComponent(componentId);
+    return result;
+  });
+
+  // IPC: Cancel an installation
+  ipcMain.handle('component-unified-cancel', async (_event, componentId: string) => {
+    unifiedInstaller.cancelInstall(componentId);
+    return { success: true };
+  });
+
+  // IPC: Check if a component is installed
+  ipcMain.handle('component-unified-is-installed', async (_event, componentId: string) => {
+    return { success: true, installed: unifiedInstaller.isInstalled(componentId) };
+  });
+
+  // IPC: List all installed components
+  ipcMain.handle('component-unified-installed-list', async () => {
+    return { success: true, components: unifiedInstaller.listInstalledComponents() };
+  });
+
+  // IPC: Manual component import (for .bin, .onnx, .gguf files)
+  ipcMain.handle('component-unified-import-local', async (_event, filePath: string, componentId: string) => {
+    try {
+      const component = getUnifiedComponent(componentId);
+      if (!component) return { success: false, error: 'Component not found' };
+
+      console.log(`[COMPONENT_IMPORT] Importing ${filePath} as ${component.name}`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File does not exist' };
+      }
+
+      // Validate file
+      const isGguf = component.filename.toLowerCase().endsWith('.gguf') || filePath.toLowerCase().endsWith('.gguf');
+      let integrity;
+      if (isGguf) {
+        const { validateGgufIntegrity } = await import('./ai/model-download-manager');
+        integrity = await validateGgufIntegrity(filePath, component.sha256, component.expectedSize);
+      } else {
+        const { validateFileIntegrity } = await import('./ai/model-download-manager');
+        const fileResult = await validateFileIntegrity(filePath, component.sha256, component.expectedSize);
+        integrity = { ...fileResult, ggufMagicValid: true };
+      }
+
+      if (!integrity.passed) {
+        return { success: false, error: 'Integrity check failed: ' + integrity.error };
+      }
+
+      // Copy to install directory
+      const destPath = path.join(
+        path.join(app.getPath('userData'), component.installationPath),
+        component.filename
+      );
+      const destDir = path.dirname(destPath);
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+      fs.copyFileSync(filePath, destPath);
+
+      console.log(`[COMPONENT_IMPORT] Installed: ${destPath}`);
+      return { success: true, installedPath: destPath, hash: integrity.actualHash };
+    } catch (err: any) {
+      console.error('[COMPONENT_IMPORT] Error:', err);
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
   // ── Phase 42: Local Vision Engine (LLaVA + image analysis + OCR) ──
   const { getVisionEngine } = await import('./vision/vision-engine');
   const { LocalLlavaProvider, findLlamaBinary } = await import('./vision/local-llava-provider');

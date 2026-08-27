@@ -322,6 +322,21 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelDownloadImportLocal: (filePath: string, opts?: any) => ipcRenderer.invoke('model-download-import-local', filePath, opts),
   // Phase 73: Scan filesystem for unregistered .gguf files
   scanModels: () => ipcRenderer.invoke('scan-models'),
+
+  // ── Phase 75: Unified Component Installer ──
+  componentUnifiedList: () => ipcRenderer.invoke('component-unified-list'),
+  componentUnifiedVoiceList: () => ipcRenderer.invoke('component-unified-voice-list'),
+  componentUnifiedGet: (componentId: string) => ipcRenderer.invoke('component-unified-get', componentId),
+  componentUnifiedInstall: (componentId: string) => ipcRenderer.invoke('component-unified-install', componentId),
+  componentUnifiedCancel: (componentId: string) => ipcRenderer.invoke('component-unified-cancel', componentId),
+  componentUnifiedIsInstalled: (componentId: string) => ipcRenderer.invoke('component-unified-is-installed', componentId),
+  componentUnifiedInstalledList: () => ipcRenderer.invoke('component-unified-installed-list'),
+  componentUnifiedImportLocal: (filePath: string, componentId: string) => ipcRenderer.invoke('component-unified-import-local', filePath, componentId),
+  onComponentInstallProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any) => callback(progress);
+    ipcRenderer.on('component-install:progress', listener);
+    return () => ipcRenderer.removeListener('component-install:progress', listener);
+  },
   onModelDownloadProgress: (callback: (progress: any) => void) => {
     const listener = (_e: any, progress: any) => callback(progress);
     ipcRenderer.on('model-download:progress', listener);

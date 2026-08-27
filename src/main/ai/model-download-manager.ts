@@ -440,6 +440,73 @@ export async function validateGgufIntegrity(
   }
 }
 
+/**
+ * Phase 75: General file integrity validation for non-GGUF files
+ * (whisper .bin, piper .onnx, .zip binaries).
+ *
+ * Validates:
+ *   1. File exists
+ *   2. File size > 0
+ *   3. Expected size matches (with 5% tolerance, if provided)
+ *   4. SHA-256 hash matches (if expectedHash provided and not 'pending')
+ *
+ * Does NOT require GGUF magic bytes.
+ */
+export interface FileIntegrityResult {
+  passed: boolean;
+  actualSize: number;
+  expectedSize?: number;
+  actualHash: string;
+  expectedHash?: string;
+  error?: string;
+}
+
+export async function validateFileIntegrity(
+  filePath: string,
+  expectedHash?: string,
+  expectedSize?: number,
+): Promise<FileIntegrityResult> {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { passed: false, actualSize: 0, expectedSize, actualHash: '', error: 'File does not exist' };
+    }
+
+    const stat = fs.statSync(filePath);
+    const actualSize = stat.size;
+
+    if (actualSize === 0) {
+      return { passed: false, actualSize: 0, expectedSize, actualHash: '', error: 'File is empty' };
+    }
+
+    // Check expected size (with 5% tolerance)
+    if (expectedSize && expectedSize > 0) {
+      const tolerance = expectedSize * 0.05;
+      if (Math.abs(actualSize - expectedSize) > tolerance) {
+        return { passed: false, actualSize, expectedSize, actualHash: '', error: `Size mismatch: expected ${expectedSize}, got ${actualSize}` };
+      }
+    }
+
+    // Compute SHA-256
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+    for await (const chunk of stream) {
+      hash.update(chunk);
+    }
+    const actualHash = hash.digest('hex');
+
+    // Verify hash if expected
+    if (expectedHash && expectedHash !== 'pending' && expectedHash.length === 64) {
+      if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
+        return { passed: false, actualSize, expectedSize, actualHash, expectedHash, error: `Hash mismatch: expected ${expectedHash.slice(0, 16)}..., got ${actualHash.slice(0, 16)}...` };
+      }
+    }
+
+    return { passed: true, actualSize, expectedSize, actualHash, expectedHash };
+  } catch (err: any) {
+    return { passed: false, actualSize: 0, expectedSize, actualHash: '', error: `Validation error: ${err?.message || err}` };
+  }
+}
+
 // ─── Test Connection ─────────────────────────────────────────────────────────────────
 
 export interface ConnectionTestResult {
