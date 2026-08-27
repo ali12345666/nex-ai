@@ -165,8 +165,27 @@ export class LocalVoiceEngine {
   private ttsActive = false;
   private micEnabled = false;
 
+  // Pipeline diagnostics
+  private audioFramesCaptured = 0;
+  private lastTranscription = '';
+  private lastInference = '';
+  private lastTTS = '';
+  private isTranscribing = false;
+
   constructor(vadConfig?: Partial<VADConfig>) {
     this.vad = new VoiceActivityDetector(vadConfig);
+    // Wire VAD events: when speech ends (silence after speech), trigger
+    // transcription by stopping the stream → getting the transcript →
+    // calling onFinalTranscript → the conversation handler picks it up.
+    this.vad.onEvent((event) => {
+      this.callbacks.onVADStateChange?.(event);
+      if (event.state === 'silence' && this.sttActive && !this.isTranscribing) {
+        // Speech ended — transcribe what was captured
+        this.handleSpeechEnd().catch((err) => {
+          console.warn(`[VOICE_PIPELINE] handleSpeechEnd error: ${err?.message}`);
+        });
+      }
+    });
   }
 
   setSTTProvider(provider: STTProvider): void { this.sttProvider = provider; }
@@ -181,12 +200,36 @@ export class LocalVoiceEngine {
   get isSpeaking(): boolean { return this.ttsActive; }
 
   private setState(state: VoiceEngineState): void {
-    if (this.state !== state) { this.state = state; this.callbacks.onStateChange?.(state); }
+    if (this.state !== state) {
+      this.state = state;
+      this.callbacks.onStateChange?.(state);
+      this.logPipeline();
+    }
   }
 
+  /**
+   * Feed audio level from the renderer (mic capture). This drives VAD.
+   * When VAD detects speech→silence transition, handleSpeechEnd() is called.
+   */
   feedAudioLevel(level: number): void {
     this.callbacks.onAudioLevel?.(level);
     this.vad.feed(level);
+  }
+
+  /**
+   * Feed an audio chunk (Buffer) from the renderer to the STT provider.
+   * The renderer captures mic audio and sends it via IPC; this method
+   * forwards it to the whisper provider's streaming buffer.
+   */
+  feedAudioChunk(chunk: Buffer): void {
+    this.audioFramesCaptured++;
+    if (this.sttProvider && this.sttActive) {
+      try {
+        this.sttProvider.feedAudioChunk(chunk);
+      } catch (err: any) {
+        console.warn(`[VOICE_PIPELINE] feedAudioChunk error: ${err?.message}`);
+      }
+    }
   }
 
   async startListening(): Promise<void> {
@@ -196,8 +239,17 @@ export class LocalVoiceEngine {
       try { await this.sttProvider.init(); }
       catch (err: any) { this.callbacks.onError?.(`STT init failed: ${err.message}`); return; }
     }
+    // Start the STT provider's stream (begins collecting audio chunks)
+    try {
+      await this.sttProvider.startStream();
+      console.log(`[VOICE_PIPELINE] STT stream started`);
+    } catch (err: any) {
+      console.warn(`[VOICE_PIPELINE] STT startStream failed: ${err?.message} — continuing without stream`);
+    }
     this.sttActive = true;
+    this.audioFramesCaptured = 0;
     this.setState('listening');
+    this.logPipeline();
   }
 
   async stopListening(): Promise<void> {
@@ -206,19 +258,67 @@ export class LocalVoiceEngine {
     if (this.sttProvider) {
       try {
         const result = await this.sttProvider.stopStream();
-        if (result.text) this.callbacks.onFinalTranscript?.(result.text);
+        if (result.text) {
+          this.lastTranscription = result.text;
+          this.callbacks.onFinalTranscript?.(result.text);
+        }
       } catch { /* best-effort */ }
     }
     this.setState('idle');
   }
 
+  /**
+   * Handle speech end (VAD detected silence after speech).
+   * Stops the stream, gets the transcript, and emits it via onFinalTranscript.
+   * The conversation handler (NexVoiceConversation) picks up the transcript
+   * and routes it to the AI model + TTS.
+   */
+  private async handleSpeechEnd(): Promise<void> {
+    if (!this.sttProvider || !this.sttActive || this.isTranscribing) return;
+    this.isTranscribing = true;
+    this.setState('thinking'); // listening → thinking (transcribing)
+
+    try {
+      // Stop the current stream to flush the audio buffer
+      const result = await this.sttProvider.stopStream();
+      if (result.text && result.text.trim()) {
+        this.lastTranscription = result.text;
+        console.log(`[VOICE_PIPELINE] Transcription: "${result.text}"`);
+        // Emit the transcript to the conversation handler
+        this.callbacks.onFinalTranscript?.(result.text);
+      } else {
+        console.log(`[VOICE_PIPELINE] Transcription empty — no speech detected`);
+      }
+    } catch (err: any) {
+      console.warn(`[VOICE_PIPELINE] Transcription failed: ${err?.message}`);
+      this.callbacks.onError?.(`Transcription failed: ${err.message}`);
+    } finally {
+      this.isTranscribing = false;
+      // Restart listening for the next utterance (if still active)
+      if (this.sttActive) {
+        try {
+          await this.sttProvider.startStream();
+          this.setState('listening');
+        } catch (err: any) {
+          console.warn(`[VOICE_PIPELINE] Restart stream failed: ${err?.message}`);
+          this.setState('listening');
+        }
+      } else {
+        this.setState('idle');
+      }
+    }
+  }
+
   async transcribeFile(audioPath: string, opts?: STTOptions): Promise<STTResult> {
     if (!this.sttProvider) return { success: false, text: '', error: 'No STT provider registered' };
-    return this.sttProvider.transcribeFile(audioPath, opts);
+    const result = await this.sttProvider.transcribeFile(audioPath, opts);
+    if (result.text) this.lastTranscription = result.text;
+    return result;
   }
 
   async speak(text: string, opts?: TTSOptions): Promise<void> {
     if (!text.trim()) return;
+    this.lastTTS = text;
     if (!this.ttsProvider) { this.callbacks.onError?.('No TTS provider registered'); return; }
     if (!this.ttsProvider.isAvailable()) {
       try { await this.ttsProvider.init(); }
@@ -228,6 +328,7 @@ export class LocalVoiceEngine {
     if (wasListening) await this.stopListening();
     this.ttsActive = true;
     this.setState('speaking');
+    console.log(`[VOICE_PIPELINE] TTS speaking: "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
     try { await this.ttsProvider.synthesize(text, opts); }
     catch (err: any) { this.callbacks.onError?.(`TTS failed: ${err.message}`); }
     this.ttsActive = false;
@@ -242,13 +343,40 @@ export class LocalVoiceEngine {
   }
 
   setThinking(thinking: boolean): void {
-    if (thinking) this.setState('thinking');
-    else this.setState(this.sttActive ? 'listening' : 'idle');
+    if (thinking) {
+      this.lastInference = 'thinking...';
+      this.setState('thinking');
+    } else {
+      this.setState(this.sttActive ? 'listening' : 'idle');
+    }
+  }
+
+  /**
+   * Called by the conversation handler after the AI model produces a response.
+   * Stores the response text and triggers TTS.
+   */
+  onInferenceResult(text: string): void {
+    this.lastInference = text;
+    console.log(`[VOICE_PIPELINE] Inference result: "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
   }
 
   setMicPermission(granted: boolean | null): void {
     this.micEnabled = granted === true;
     this.callbacks.onPermissionChange?.(granted);
+  }
+
+  /**
+   * Log the [VOICE_PIPELINE] diagnostic block showing the current state of
+   * the voice pipeline: state, audio frames captured, last transcription,
+   * last inference, last TTS output.
+   */
+  logPipeline(): void {
+    console.log(`[VOICE_PIPELINE]`);
+    console.log(`  state=${this.state}`);
+    console.log(`  audioFramesCaptured=${this.audioFramesCaptured}`);
+    console.log(`  lastTranscription=${this.lastTranscription ? `"${this.lastTranscription.substring(0, 60)}"` : '(none)'}`);
+    console.log(`  lastInference=${this.lastInference ? `"${this.lastInference.substring(0, 60)}"` : '(none)'}`);
+    console.log(`  lastTTS=${this.lastTTS ? `"${this.lastTTS.substring(0, 60)}"` : '(none)'}`);
   }
 
   async dispose(): Promise<void> {

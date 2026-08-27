@@ -110,6 +110,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
   voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
   voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
 
+  // Voice pipeline: feed mic audio from renderer → main process
+  voiceFeedAudioLevel: (level: number) => ipcRenderer.send('voice-feed-audio-level', level),
+  voiceFeedAudioChunk: (chunk: ArrayBuffer | Uint8Array) => {
+    const buf = chunk instanceof ArrayBuffer ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    ipcRenderer.send('voice-feed-audio-chunk', buf);
+  },
+  voicePipelineStatus: () => ipcRenderer.invoke('voice-pipeline-status'),
+
   // ── Voice Manager: unified activation lifecycle ──
   voiceManagerDetect: () => ipcRenderer.invoke('voice-manager-detect'),
   voiceManagerActivate: () => ipcRenderer.invoke('voice-manager-activate'),

@@ -1117,6 +1117,31 @@ async function setupIPC(): Promise<void> {
     };
   });
 
+  // Voice: feed audio level from renderer (drives VAD + Orb animation)
+  // The renderer captures mic audio via getUserMedia, computes RMS level,
+  // and sends it here. This triggers VAD → speech end detection → transcription.
+  ipcMain.on('voice-feed-audio-level', (_event, level: number) => {
+    try {
+      getLocalVoiceEngine().feedAudioLevel(level);
+    } catch { /* best-effort */ }
+  });
+
+  // Voice: feed audio chunk (Buffer) from renderer to STT provider
+  // The renderer sends raw PCM audio chunks; the engine forwards them to
+  // the whisper provider's streaming buffer for transcription.
+  ipcMain.on('voice-feed-audio-chunk', (_event, chunk: Buffer) => {
+    try {
+      getLocalVoiceEngine().feedAudioChunk(Buffer.from(chunk));
+    } catch { /* best-effort */ }
+  });
+
+  // Voice: get pipeline diagnostics
+  ipcMain.handle('voice-pipeline-status', async () => {
+    const engine = getLocalVoiceEngine();
+    engine.logPipeline();
+    return { success: true };
+  });
+
   // Voice: set STT model (whisper model path)
   ipcMain.handle('voice-set-stt-model', async (_event, modelPath: string) => {
     try {
@@ -1538,12 +1563,23 @@ async function setupIPC(): Promise<void> {
     },
     onWakeWord: (match) => {
       mainWindow?.webContents.send('voice-conversation-wake', match);
+      // [VOICE_TEST] diagnostic for wake-word detection
+      console.log(`[VOICE_TEST]`);
+      console.log(`  detected="${match.phrase}"`);
+      console.log(`  transcription="${match.phrase}"`);
+      console.log(`  wakeWord=true`);
     },
     onUserUtterance: (text) => {
       mainWindow?.webContents.send('voice-conversation-user', { text });
+      // [VOICE_TEST] diagnostic for user utterance
+      console.log(`[VOICE_TEST]`);
+      console.log(`  detected="${text.substring(0, 100)}"`);
+      console.log(`  transcription="${text.substring(0, 100)}"`);
     },
     onNexResponse: (text) => {
       mainWindow?.webContents.send('voice-conversation-nex', { text });
+      // Store the inference result in the engine for [VOICE_PIPELINE] diagnostics
+      getLocalVoiceEngine().onInferenceResult(text);
     },
     onPartialTranscript: (text) => {
       mainWindow?.webContents.send('voice-conversation-partial', { text });
@@ -1558,6 +1594,36 @@ async function setupIPC(): Promise<void> {
       mainWindow?.webContents.send('voice-conversation-error', { message });
     },
   });
+
+  // ── Wire LocalVoiceEngine → NexVoiceConversation ──────────────────────────
+  // The engine's onFinalTranscript callback (fired after Whisper transcribes
+  // audio) feeds the transcript into the conversation handler. The conversation
+  // handler routes it to the AI model + TTS pipeline:
+  //   mic → whisper → onFinalTranscript → conversation.feedTranscript()
+  //     → AI model → piper speak()
+  try {
+    const engine = getLocalVoiceEngine();
+    engine.setCallbacks({
+      onFinalTranscript: (text: string) => {
+        if (text && text.trim()) {
+          console.log(`[VOICE_PIPELINE] Feeding transcript to conversation: "${text.substring(0, 80)}"`);
+          // Feed the transcript into the conversation handler
+          conversation.feedTranscript(text);
+        }
+      },
+      onStateChange: (state: string) => {
+        // Forward engine state changes to the renderer
+        mainWindow?.webContents.send('voice-engine-state', { state });
+      },
+      onError: (message: string) => {
+        console.warn(`[VOICE_PIPELINE] Engine error: ${message}`);
+        mainWindow?.webContents.send('voice-conversation-error', { message });
+      },
+    });
+    console.log(`[VOICE_PIPELINE] Engine → Conversation wiring complete`);
+  } catch (err: any) {
+    console.warn(`[VOICE_PIPELINE] Failed to wire engine → conversation: ${err?.message}`);
+  }
 
   void WakeWordDetector;
   void AudioEnergyGate;

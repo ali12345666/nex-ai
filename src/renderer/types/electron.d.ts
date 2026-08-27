@@ -116,6 +116,11 @@ export interface NexAPI {
   voiceListVoices: () => Promise<{ success: boolean; voices?: Array<{ name: string; language: string; gender?: string }>; error?: string }>;
   voiceFindBinaries: () => Promise<{ success: boolean; whisper: string | null; piper: string | null }>;
 
+  // Voice pipeline: feed mic audio from renderer → main process
+  voiceFeedAudioLevel: (level: number) => void;
+  voiceFeedAudioChunk: (chunk: ArrayBuffer | Uint8Array) => void;
+  voicePipelineStatus: () => Promise<{ success: boolean }>;
+
   // Voice Manager: unified activation lifecycle
   voiceManagerDetect: () => Promise<{ success: boolean; status?: any; error?: string }>;
   voiceManagerActivate: () => Promise<{ success: boolean; activated: boolean; sttReady: boolean; ttsReady: boolean; missingComponents?: string[]; error?: string }>;
