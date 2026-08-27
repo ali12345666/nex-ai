@@ -149,7 +149,8 @@ async function main(): Promise<void> {
   console.log('\n10) Text wrapping:');
   assert('Model names use truncate', libSrc.includes('truncate'));
   assert('Metadata uses flex-wrap', libSrc.includes('flex-wrap'));
-  assert('Source URLs truncated', libSrc.includes('url.slice(0, 50)'));
+  // Phase 78: URLs are now shown FULL (not truncated) in selectable input fields
+  assert('Source URLs shown full (not truncated)', !libSrc.includes('url.slice(0, 50)'));
 
   // ═══════════════════════════════════════════════════════════════════════
   // 11) No invented URLs

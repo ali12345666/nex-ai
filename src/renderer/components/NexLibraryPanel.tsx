@@ -1137,16 +1137,34 @@ export default function NexLibraryPanel() {
               )}
             </div>
 
-            {/* Sources */}
+            {/* Sources — Phase 78: show FULL URL (not truncated) */}
             {selectedModel.sources && selectedModel.sources.length > 0 && (
               <div className="mb-3">
                 <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--nex-text-muted)' }}>منابع دانلود:</div>
                 {selectedModel.sources.map((s: any, i: number) => (
-                  <div key={i} className="flex items-center gap-1 p-1.5 rounded mb-1" style={{ background: 'var(--nex-bg)' }}>
-                    <span className="text-[9px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{s.label}</span>
-                    <span className="text-[9px] truncate flex-1" style={{ color: 'var(--nex-text-muted)' }}>{s.url.slice(0, 50)}...</span>
-                    <button onClick={() => handleOpenDownloadPage(s.url)} className="nex-click p-0.5 rounded shrink-0" style={{ color: 'var(--nex-accent-text)' }} title="باز کردن در مرورگر"><Globe size={10} /></button>
-                    <button onClick={() => handleCopyUrl(s.url, s.label)} className="nex-click p-0.5 rounded shrink-0" style={{ color: 'var(--nex-accent-text)' }} title="کپی لینک"><Package size={10} /></button>
+                  <div key={i} className="p-2 rounded mb-1.5" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
+                    {/* Source label */}
+                    <div className="flex items-center gap-1 mb-1">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-medium" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{s.label}</span>
+                      {s.priority && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>اولویت: {s.priority}</span>}
+                    </div>
+                    {/* Full URL — visible, selectable, not truncated */}
+                    <div className="flex items-center gap-1">
+                      <input
+                        readOnly
+                        value={s.url}
+                        onClick={(e) => (e.target as HTMLInputElement).select()}
+                        className="flex-1 px-1.5 py-1 rounded text-[9px] font-mono"
+                        style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        title={s.url}
+                      />
+                      <button onClick={() => handleOpenDownloadPage(s.url)} className="nex-click p-1 rounded shrink-0" style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-panel-border)' }} title="باز کردن در مرورگر">
+                        <Globe size={11} />
+                      </button>
+                      <button onClick={() => handleCopyUrl(s.url, s.label)} className="nex-click p-1 rounded shrink-0" style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-panel-border)' }} title="کپی لینک">
+                        <Package size={11} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

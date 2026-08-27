@@ -103,6 +103,8 @@ export interface DownloadableModel {
   sources: ModelSource[];
   /** Filename for the downloaded GGUF file. */
   filename: string;
+  /** Installation subdirectory relative to models/ (e.g. 'llm', 'vision'). Default: '' (root). */
+  installationSubdir?: string;
   /** Description (English). */
   description?: string;
   /** Description (Persian). */
@@ -829,12 +831,31 @@ class ModelDownloadManagerClass {
 
         if (result.success) {
           // Download succeeded — verify integrity
-          console.log(`[MODEL_DL:${download.id}] Download succeeded — ${result.bytesDownloaded} bytes`);
+          console.log(`[MODEL_DOWNLOAD]`);
+          console.log(`  status=success`);
+          console.log(`  bytesDownloaded=${result.bytesDownloaded}`);
+          console.log(`  partPath=${partPath}`);
+          console.log(`  source=${source.type}`);
+          console.log(`  hash=${result.hash ? result.hash.slice(0, 16) + '...' : '(none)'}`);
+
           download.state = 'verifying';
           download.receivedBytes = result.bytesDownloaded;
           this.emitProgress(download);
 
+          console.log(`[MODEL_VERIFY]`);
+          console.log(`  partPath=${partPath}`);
+          console.log(`  expectedSize=${source.expectedSize || 'unknown'}`);
+          console.log(`  expectedHash=${source.expectedHash ? source.expectedHash.slice(0, 16) + '...' : 'none'}`);
           const integrity = await validateGgufIntegrity(partPath, source.expectedHash, source.expectedSize);
+          console.log(`[MODEL_VERIFY] result:`);
+          console.log(`  passed=${integrity.passed}`);
+          console.log(`  actualSize=${integrity.actualSize}`);
+          console.log(`  actualHash=${integrity.actualHash.slice(0, 16)}...`);
+          console.log(`  ggufMagicValid=${integrity.ggufMagicValid}`);
+          if (integrity.error) {
+            console.log(`  error=${integrity.error}`);
+          }
+
           if (integrity.passed) {
             console.log(`[MODEL_DL:${download.id}] Integrity verified — GGUF magic valid, hash: ${integrity.actualHash.slice(0, 16)}...`);
 
@@ -842,7 +863,14 @@ class ModelDownloadManagerClass {
             download.state = 'installing';
             this.emitProgress(download);
 
-            const finalPath = path.join(getModelsDir(), model.filename);
+            // Phase 78: Support installationSubdir (e.g. 'llm' → models/llm/)
+            const installDir = model.installationSubdir
+              ? path.join(getModelsDir(), model.installationSubdir)
+              : getModelsDir();
+            if (!fs.existsSync(installDir)) {
+              fs.mkdirSync(installDir, { recursive: true });
+            }
+            const finalPath = path.join(installDir, model.filename);
             try {
               // Atomic rename (on same filesystem)
               if (fs.existsSync(finalPath)) {
@@ -850,12 +878,13 @@ class ModelDownloadManagerClass {
               }
               fs.renameSync(partPath, finalPath);
 
-              // Phase 73: [MODEL_INSTALL] logging
+              // Phase 73/78: [MODEL_INSTALL] logging
               const finalStat = fs.statSync(finalPath);
               console.log(`[MODEL_INSTALL]`);
               console.log(`  path=${finalPath}`);
               console.log(`  size=${finalStat.size}`);
               console.log(`  ggufValid=${integrity.ggufMagicValid}`);
+              console.log(`  partPath=${partPath} (renamed to final)`);
 
               // Register in model registry
               let registryUpdated = false;

@@ -172,10 +172,35 @@ export function addModel(filePath: string, opts: AddModelOptions = {}): LocalMod
   // Derive name from filename if not provided
   const name = opts.name || path.basename(absPath, '.gguf');
 
-  // Check if same path is already registered
-  const existing = listModels().find((m) => m.path === absPath);
+  // Phase 78: Check if same path is already registered.
+  // Instead of throwing an error, UPDATE the existing entry (upsert).
+  // This fixes the "download completes to 100% but fails at install" bug
+  // where the scanner already registered the file before addModel was called.
+  const existing = listModels().find((m) => {
+    const resolvedMPath = path.resolve(m.path);
+    const resolvedAbsPath = path.resolve(absPath);
+    // Compare both resolved paths and basename to handle portable path normalization
+    return resolvedMPath === resolvedAbsPath ||
+           m.path === absPath ||
+           path.basename(m.path) === path.basename(absPath);
+  });
+
   if (existing) {
-    throw new Error(`Model already registered as "${existing.name}"`);
+    console.log(`[MODEL_REGISTRY] Model already registered as "${existing.name}" — updating metadata`);
+    // Update the existing entry with new metadata
+    const updated = updateModel(existing.id, {
+      name,  // Update name in case it changed
+      quantization: opts.quantization,
+      architecture: opts.architecture,
+      parameterCount: opts.parameterCount,
+      capabilities: opts.capabilities || defaultCapabilitiesForCategory(opts.category || 'general'),
+      source: opts.source || 'local',
+      sourceUrl: opts.sourceUrl,
+      sizeBytes: stat.size,
+    });
+    if (updated) return updated;
+    // If update failed for some reason, return the existing entry
+    return { ...existing, fileExists: true };
   }
 
   // Phase 39: backup before mutation
@@ -232,8 +257,9 @@ export function removeModel(id: string): boolean {
 /**
  * Update a model's metadata (name, contextSize, gpuLayers, category).
  * Phase 39: creates a backup before update (rollback safety).
+ * Phase 78: allow sizeBytes update (for upsert after re-download).
  */
-export function updateModel(id: string, patch: Partial<Omit<LocalModelInfo, 'id' | 'path' | 'sizeBytes' | 'addedAt'>>): LocalModelInfo | null {
+export function updateModel(id: string, patch: Partial<Omit<LocalModelInfo, 'id' | 'path' | 'addedAt'>>): LocalModelInfo | null {
   const state = loadState();
   const models = state.localModels || [];
   const idx = models.findIndex((m) => m.id === id);

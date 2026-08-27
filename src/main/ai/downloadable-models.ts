@@ -29,6 +29,7 @@ export const DOWNLOADABLE_MODELS: DownloadableModel[] = [
     requiredVRAM: 0,
     persianSupport: true,
     filename: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    installationSubdir: 'llm',  // Phase 78: install to models/llm/
     description: 'Small, fast, CPU-compatible, Persian-capable — perfect for first run',
     descriptionFa: 'مدل سبک و سریع برای سخت‌افزار ضعیف — پشتیبانی فارسی',
     sources: [
