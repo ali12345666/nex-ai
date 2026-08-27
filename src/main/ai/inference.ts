@@ -70,10 +70,14 @@ let _loadedModel: any = null;              // node-llama-cpp LlamaModel object
 let _loadedModelInfo: LocalModelInfo | null = null;  // Phase 87: the LocalModelInfo that was passed to loadModel
 let _loadedContext: any = null;
 let _LlamaChatSession: any = null;
-// Phase 86 P2-8: _currentSession removed (was dead code — never held a real session)
 let _ctxSequence: any = null;
-let _abortFlag: boolean = false;
 let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
+
+// Phase 90: Inference serialization — ONE active generation at a time
+let _inFlightPromise: Promise<any> | null = null;
+
+// Phase 90: Per-request abort (replaces global _abortFlag)
+let _activeAbortController: AbortController | null = null;
 
 async function getLlamaInstance() {
   if (!_llama) {
@@ -116,6 +120,24 @@ export function getGpuBackend(): 'cpu' | 'cuda' | 'metal' | 'vulkan' {
 }
 
 /**
+ * Phase 90: Wait for any in-flight inference to complete before proceeding.
+ * This prevents concurrent access to the shared context/sequence.
+ */
+async function waitForInFlight(): Promise<void> {
+  while (_inFlightPromise) {
+    try { await _inFlightPromise; } catch { /* ignore errors from previous request */ }
+  }
+}
+
+/**
+ * Phase 90: Mark inference as in-flight. Returns a function to clear it.
+ */
+function markInFlight<T>(promise: Promise<T>): () => void {
+  _inFlightPromise = promise as Promise<any>;
+  return () => { if (_inFlightPromise === promise) _inFlightPromise = null; };
+}
+
+/**
  * Load a GGUF model into memory. If a different model is already loaded,
  * unload it first. Subsequent inferences use this loaded model.
  */
@@ -132,10 +154,12 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // Phase 86 P1-6: Single idempotency check (was duplicated at lines 129+135)
   if (_loadedModelId === model.id && _loadedContext && _loadedModel) {
     // Phase 87: Update the stored LocalModelInfo even on idempotent path
-    // (the model object from registry may have been updated)
     _loadedModelInfo = model;
     return;
   }
+
+  // Phase 90: Wait for any in-flight inference before unloading
+  await waitForInFlight();
 
   // Unload previous model
   await unloadModel();
@@ -183,7 +207,8 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
  * Use `shutdownLlama()` for full teardown (e.g. before app.exit()).
  */
 export async function unloadModel(): Promise<void> {
-  // Phase 86 P2-8: _currentSession is dead code, removed
+  // Phase 90: Wait for any in-flight inference before disposing
+  await waitForInFlight();
   if (_ctxSequence) {
     try { (_ctxSequence as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Sequence dispose warning:', e?.message); }
     _ctxSequence = null;
@@ -267,37 +292,29 @@ export async function chatComplete(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   opts: InferenceOptions = {}
 ): Promise<InferenceResult> {
-  // Phase 87: Assert model path before inference
   if (!model.path) {
     console.error('[MODEL_PATH_MISSING] chatComplete — model:', JSON.stringify({ id: model.id, name: model.name }));
     throw new Error('Resolved model has no path — cannot perform inference');
   }
+
+  // Phase 90: Wait for any in-flight inference
+  await waitForInFlight();
+
   await loadModel(model, opts);
-
-  if (!_loadedContext) {
-    throw new Error('Model context not initialized');
-  }
-
+  if (!_loadedContext) throw new Error('Model context not initialized');
   await getLlamaInstance();
 
-  // Phase 86 P0-1/P0-2: Use chatHistory constructor option instead of
-  // broken maxTokens:0 replay loop. This properly includes assistant turns
-  // and avoids phantom generation / hangs.
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-  if (!lastUserMsg) {
-    throw new Error('No user message in conversation');
-  }
+  if (!lastUserMsg) throw new Error('No user message in conversation');
 
-  // Build chatHistory: all messages except the final user message (which
-  // will be sent via session.prompt()). System messages are handled by
-  // the systemPrompt option, not chatHistory.
   const chatHistory = messages
     .filter(m => m.role !== 'system')
-    .slice(0, -1) // exclude the final user message
-    .map(m => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }));
+    .slice(0, -1)
+    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+  // Phase 90: Per-request AbortController
+  const abortController = new AbortController();
+  _activeAbortController = abortController;
 
   const session = new _LlamaChatSession({
     contextSequence: getSharedSequence(),
@@ -305,25 +322,38 @@ export async function chatComplete(
     chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
   });
 
-  _abortFlag = false;
   const start = Date.now();
-
-  // Generate response for the final user message
   let response = '';
+
+  // Phase 90: Wrap in serialization
+  const inferencePromise = (async () => {
+    try {
+      const _t0 = Date.now();
+      response = await session.prompt(lastUserMsg.content, {
+        maxTokens: opts.maxTokens ?? 1024,
+        temperature: opts.temperature ?? 0.7,
+        signal: abortController.signal,
+      });
+      const genMs = Date.now() - _t0;
+      const genTokens = estimateTokens(response);
+      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 2048} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${Date.now() - start}`);
+      noteInferenceStats({
+        tokensPerSecond: genTokens / Math.max(0.001, genMs / 1000),
+        generatedTokens: genTokens,
+        durationMs: genMs,
+        active: false,
+      });
+    } finally {
+      try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
+      if (_activeAbortController === abortController) _activeAbortController = null;
+    }
+  })();
+
+  const clearInFlight = markInFlight(inferencePromise);
   try {
-    const _t0 = Date.now();
-    response = await session.prompt(lastUserMsg.content, {
-      maxTokens: opts.maxTokens ?? 1024,
-      temperature: opts.temperature ?? 0.7,
-    });
-    noteInferenceStats({
-      tokensPerSecond: estimateTokens(response) / Math.max(0.001, (Date.now() - _t0) / 1000),
-      generatedTokens: estimateTokens(response),
-      durationMs: Date.now() - _t0,
-      active: false,
-    });
+    await inferencePromise;
   } finally {
-    try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
+    clearInFlight();
   }
 
   return {
@@ -331,7 +361,7 @@ export async function chatComplete(
     tokensGenerated: estimateTokens(response),
     modelId: model.id,
     modelName: model.name,
-    stopped: _abortFlag,
+    stopped: abortController.signal.aborted,
     durationMs: Date.now() - start,
   };
 }
@@ -349,33 +379,29 @@ export async function chatStream(
   onChunk: (chunk: StreamChunk) => void,
   opts: InferenceOptions = {}
 ): Promise<InferenceResult> {
-  // Phase 87: Assert model path before inference
   if (!model.path) {
     console.error('[MODEL_PATH_MISSING] chatStream — model:', JSON.stringify({ id: model.id, name: model.name }));
     throw new Error('Resolved model has no path — cannot perform inference');
   }
+
+  // Phase 90: Wait for any in-flight inference
+  await waitForInFlight();
+
   await loadModel(model, opts);
-
-  if (!_loadedContext) {
-    throw new Error('Model context not initialized');
-  }
-
+  if (!_loadedContext) throw new Error('Model context not initialized');
   await getLlamaInstance();
 
-  // Phase 86 P0-1/P0-2: Use chatHistory constructor option instead of
-  // broken maxTokens:0 replay loop.
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-  if (!lastUserMsg) {
-    throw new Error('No user message in conversation');
-  }
+  if (!lastUserMsg) throw new Error('No user message in conversation');
 
   const chatHistory = messages
     .filter(m => m.role !== 'system')
     .slice(0, -1)
-    .map(m => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }));
+    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+  // Phase 90: Per-request AbortController
+  const abortController = new AbortController();
+  _activeAbortController = abortController;
 
   const session = new _LlamaChatSession({
     contextSequence: getSharedSequence(),
@@ -383,58 +409,77 @@ export async function chatStream(
     chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
   });
 
-  _abortFlag = false;
   const start = Date.now();
   let fullResponse = '';
+  let firstTokenMs = 0;
   noteInferenceStats({ active: true });
 
-  try {
-    const response = await session.prompt(lastUserMsg.content, {
-      maxTokens: opts.maxTokens ?? 1024,
-      temperature: opts.temperature ?? 0.7,
-      onTextChunk: (chunk: string) => {
-        if (_abortFlag) return;
-        fullResponse += chunk;
-        onChunk({ content: chunk, done: false });
-      },
-    });
-    void response;
-    if (response && !fullResponse.endsWith(response.slice(-50))) {
-      fullResponse = response;
+  const inferencePromise = (async () => {
+    try {
+      const response = await session.prompt(lastUserMsg.content, {
+        maxTokens: opts.maxTokens ?? 1024,
+        temperature: opts.temperature ?? 0.7,
+        signal: abortController.signal,
+        onTextChunk: (chunk: string) => {
+          if (abortController.signal.aborted) return;
+          if (!firstTokenMs) firstTokenMs = Date.now() - start;
+          fullResponse += chunk;
+          onChunk({ content: chunk, done: false });
+        },
+      });
+      void response;
+      if (response && !fullResponse.endsWith(response.slice(-50))) {
+        fullResponse = response;
+      }
+      onChunk({ content: '', done: true });
+      const genMs = Date.now() - start;
+      const genTokens = estimateTokens(fullResponse);
+      console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 2048} firstTokenMs=${firstTokenMs} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${genMs}`);
+      noteInferenceStats({
+        tokensPerSecond: genTokens / Math.max(0.001, genMs / 1000),
+        generatedTokens: genTokens,
+        durationMs: genMs,
+        active: false,
+      });
+      return {
+        content: fullResponse,
+        tokensGenerated: genTokens,
+        modelId: model.id,
+        modelName: model.name,
+        stopped: abortController.signal.aborted,
+        durationMs: genMs,
+      };
+    } catch (err: any) {
+      noteInferenceStats({ active: false });
+      onChunk({ content: '', done: true, error: err.message });
+      throw err;
+    } finally {
+      try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
+      if (_activeAbortController === abortController) _activeAbortController = null;
     }
-    onChunk({ content: '', done: true });
-    noteInferenceStats({
-      tokensPerSecond: estimateTokens(fullResponse) / Math.max(0.001, (Date.now() - start) / 1000),
-      generatedTokens: estimateTokens(fullResponse),
-      durationMs: Date.now() - start,
-      active: false,
-    });
-    return {
-      content: fullResponse,
-      tokensGenerated: estimateTokens(fullResponse),
-      modelId: model.id,
-      modelName: model.name,
-      stopped: _abortFlag,
-      durationMs: Date.now() - start,
-    };
-  } catch (err: any) {
-    noteInferenceStats({ active: false });
-    onChunk({ content: '', done: true, error: err.message });
-    throw err;
+  })();
+
+  const clearInFlight = markInFlight(inferencePromise);
+  try {
+    return await inferencePromise;
   } finally {
-    try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
+    clearInFlight();
   }
 }
 
 /**
- * Abort an in-progress inference.
- * Note: node-llama-cpp v3 doesn't have great abort support; this sets a flag
- * that prevents further onTextChunk calls but the underlying generation
- * continues until max_tokens is reached or the model stops naturally.
+ * Phase 90: Abort the currently-active inference request.
+ * Uses per-request AbortController — only aborts the active request,
+ * not future ones.
  */
 export function abortInference(): void {
-  _abortFlag = true;
-  console.log('[NEX AI Local] Inference abort requested');
+  if (_activeAbortController) {
+    console.log('[NEX AI Local] Aborting active inference request');
+    _activeAbortController.abort();
+    _activeAbortController = null;
+  } else {
+    console.log('[NEX AI Local] No active inference to abort');
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
