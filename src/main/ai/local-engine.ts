@@ -72,11 +72,15 @@ export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
     if (activeId) {
       const model = getModel(activeId);
       if (model) {
-        console.log(`[MODEL_RESOLVE] Using active model from settings: ${model.name}`);
+        console.log(`[MODEL_RESOLVE] Using active model from settings: ${model.name} (id=${activeId})`);
         return model;
+      } else {
+        console.log(`[MODEL_RESOLVE] activeLocalModelId=${activeId} not found in registry — falling through`);
       }
     }
-  } catch {}
+  } catch (err: any) {
+    console.error(`[MODEL_RESOLVE] Error reading activeLocalModelId from settings: ${err?.message}`);
+  }
 
   if (config.localModelPath) {
     const all = listModels();
@@ -120,8 +124,8 @@ export function resolveModel(config: LocalChatConfig): LocalModelInfo | null {
         integrityStatus: 'unknown',
       } as any;
     }
-  } catch {
-    // AI Storage Manager not available — fall through
+  } catch (err: any) {
+    console.error(`[MODEL_RESOLVE] Error checking AI Storage registry: ${err?.message}`);
   }
 
   return null;

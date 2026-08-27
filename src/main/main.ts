@@ -669,6 +669,12 @@ async function setupIPC(): Promise<void> {
   // Routes to Local engine if provider === 'local', else to OpenAI/Claude.
   // Local mode requires NO external API and works fully offline.
   ipcMain.handle('ai-chat', async (_event, config: any, messages: AIMessage[]) => {
+    // Phase 83: Log non-streaming chat request
+    console.log(`[CHAT_REQUEST]`);
+    console.log(`  panel=ai-chat (non-streaming)`);
+    console.log(`  provider=${config.provider}`);
+    console.log(`  modelId=${config.localModelId || 'default'}`);
+    console.log(`  messages=${messages.length}`);
     // Use the unified provider abstraction
     if (config.provider === 'local') {
       const result = await localChatComplete(config as any, messages as any);
@@ -690,7 +696,7 @@ async function setupIPC(): Promise<void> {
   // and delivered as 'chat-token' events (mirror of agent_token).
   ipcMain.handle('ai-chat-stream', async (_event, config: any, messages: AIMessage[]) => {
     const replyId = `chat-${Date.now()}`;
-    // Phase 74: Runtime diagnostics
+    // Phase 74/83: Runtime diagnostics
     console.log(`[CHAT_REQUEST]`);
     console.log(`  panel=ai-chat-stream`);
     console.log(`  provider=${config.provider}`);
@@ -710,33 +716,68 @@ async function setupIPC(): Promise<void> {
       const { createTokenStreamer } = await import('./agent/stream-emit');
       let runtime: import('./ai/runtime').AIRuntime | null = null;
       if (config.provider === 'local') {
-        // resolve model exactly like localChatComplete does, then stream via
-        // the default llama.cpp runtime (loadModel idempotent if same model)
+        // Phase 83: Use resolveModel to find the model (checks activeLocalModelId,
+        // AI Storage registry, model registry, etc.)
         const { resolveModel } = await import('./ai/local-engine') as any;
         const model = resolveModel(config);
+
+        // Phase 83: Log model resolution result
+        console.log(`[MODEL_RESOLVE]`);
+        console.log(`  resolved=${model ? 'true' : 'false'}`);
+        if (model) {
+          console.log(`  modelId=${model.id}`);
+          console.log(`  modelPath=${model.path}`);
+          console.log(`  modelName=${model.name}`);
+          console.log(`  fileExists=${model.fileExists}`);
+        }
+
         if (!model) {
-          return { success: false, error: 'No local model configured. Add a .gguf file in Settings > Local AI.' };
+          console.log(`[CHAT_RESPONSE] source=local-stream error=No local model configured`);
+          return { success: false, replyId, error: 'No local model configured. Activate a model in Library → Installed.' };
         }
         if (!model.fileExists) {
-          return { success: false, error: `Model file not found: ${model.path}` };
+          console.log(`[CHAT_RESPONSE] source=local-stream error=Model file not found: ${model.path}`);
+          return { success: false, replyId, error: `Model file not found: ${model.path}` };
         }
-        const { getDefaultRuntime } = await import('./ai/runtime');
-        runtime = getDefaultRuntime();
-        await runtime.loadModel(model, {
-          contextSize: model.contextSize,
-          threads: config.localThreads ?? 4,
-          gpuLayers: model.gpuLayers ?? -1,
-          temperature: config.localTemperature ?? config.temperature ?? 0.7,
-          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
-        });
+
+        // Phase 83: Check if the model is already loaded (by activation).
+        // If so, skip the reload — just use the already-loaded model.
+        const { getLoadedModelInfo } = await import('./ai/inference');
+        const loadedInfo = getLoadedModelInfo();
+        if (loadedInfo && loadedInfo.id === model.id) {
+          console.log(`[INFERENCE_START] Model already loaded: ${model.name} — skipping reload`);
+        } else {
+          console.log(`[INFERENCE_START] Loading model: ${model.name} — ${model.path}`);
+          const { getDefaultRuntime } = await import('./ai/runtime');
+          runtime = getDefaultRuntime();
+          await runtime.loadModel(model, {
+            contextSize: model.contextSize || 2048,
+            threads: config.localThreads ?? 4,
+            gpuLayers: model.gpuLayers ?? -1,
+            temperature: config.localTemperature ?? config.temperature ?? 0.7,
+            maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+          });
+          console.log(`[INFERENCE_START] Model loaded successfully`);
+        }
       } else {
         const { getRuntime } = await import('./ai/runtime');
         runtime = getRuntime('online', 'chat-shared');
       }
 
+      // Phase 83: If runtime is null (model was already loaded by activation),
+      // get the default runtime to use for streaming
+      if (!runtime) {
+        const { getDefaultRuntime } = await import('./ai/runtime');
+        runtime = getDefaultRuntime();
+      }
+
       const streamer = createTokenStreamer(replyId, undefined, 'final', (payload) => {
         mainWindow?.webContents.send('chat-token', { replyId, ...payload });
       });
+
+      // Phase 83: Log inference start
+      console.log(`[INFERENCE_START] Starting chatStream with ${messages.length} messages`);
+
       const result = await runtime.chatStream(
         messages.map((m) => ({ role: m.role, content: m.content })),
         (chunk) => { if (chunk.content) streamer.push(chunk.content); },
@@ -751,6 +792,7 @@ async function setupIPC(): Promise<void> {
       console.log(`  source=${config.provider}-stream`);
       console.log(`  tokens=${result.tokensGenerated || 0}`);
       console.log(`  error=none`);
+      console.log(`  contentLength=${result.content?.length || 0}`);
       return {
         success: true,
         replyId,
@@ -761,8 +803,13 @@ async function setupIPC(): Promise<void> {
         modelName: result.modelName,
       };
     } catch (err: any) {
+      // Phase 83: Log full error details — never hide errors
+      console.error(`[INFERENCE_ERROR]`);
+      console.error(`  message=${err?.message}`);
+      console.error(`  code=${err?.code || 'N/A'}`);
+      console.error(`  stack=${err?.stack || '(no stack)'}`);
       console.log(`[CHAT_RESPONSE] source=${config.provider}-stream error=${err?.message}`);
-      return { success: false, replyId, error: err.message };
+      return { success: false, replyId, error: err?.message || 'Inference failed' };
     }
   });
 
