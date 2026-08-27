@@ -141,7 +141,28 @@ export async function localChatComplete(
   config: LocalChatConfig,
   messages: LocalMessage[]
 ): Promise<LocalChatResult> {
-  const model = resolveModel(config);
+  // ── Model Router: use the router to select the best model ───────────────
+  // Falls back to resolveModel() if the router is unavailable.
+  let model = resolveModel(config);
+  let routerContextSize: number | undefined;
+  let routerGpuLayers: number | undefined;
+  try {
+    const { getModelRouter } = await import('./model-router');
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    const verdict = getModelRouter().routeForChat({
+      userMessage: lastUserMsg?.content || '',
+      messages: messages as any,
+      modelIdOverride: config.localModelId,
+    });
+    if (verdict.model) {
+      model = verdict.model;
+      routerContextSize = verdict.suggestedContextSize;
+      routerGpuLayers = verdict.suggestedGpuLayers;
+      console.log(`[MODEL_ROUTER] source=${verdict.source} tier=${verdict.taskTier} category=${verdict.category} selected=${model.name} alreadyLoaded=${verdict.alreadyLoaded}`);
+    }
+  } catch (e: any) {
+    console.warn(`[MODEL_ROUTER] failed (falling back to resolveModel): ${e?.message}`);
+  }
 
   // Phase 74: Runtime diagnostics
   console.log(`[CHAT_REQUEST]`);
@@ -168,9 +189,9 @@ export async function localChatComplete(
 
   try {
     const result = await chatComplete(model, messages, {
-      contextSize: config.localContextSize || model.contextSize || 1024,
+      contextSize: routerContextSize ?? config.localContextSize ?? model.contextSize ?? 1024,
       threads: config.localThreads,
-      gpuLayers: config.localGpuLayers,
+      gpuLayers: routerGpuLayers ?? config.localGpuLayers ?? -1,
       temperature: config.localTemperature ?? config.temperature,
       maxTokens: config.localMaxTokens ?? config.maxTokens,
       systemPrompt: getSystemPrompt(),
@@ -215,7 +236,27 @@ export async function localChatStream(
   messages: LocalMessage[],
   onChunk: (chunk: StreamChunk) => void
 ): Promise<LocalChatResult> {
-  const model = resolveModel(config);
+  // ── Model Router: use the router to select the best model ───────────────
+  let model = resolveModel(config);
+  let routerContextSize: number | undefined;
+  let routerGpuLayers: number | undefined;
+  try {
+    const { getModelRouter } = await import('./model-router');
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    const verdict = getModelRouter().routeForChat({
+      userMessage: lastUserMsg?.content || '',
+      messages: messages as any,
+      modelIdOverride: config.localModelId,
+    });
+    if (verdict.model) {
+      model = verdict.model;
+      routerContextSize = verdict.suggestedContextSize;
+      routerGpuLayers = verdict.suggestedGpuLayers;
+      console.log(`[MODEL_ROUTER] source=${verdict.source} tier=${verdict.taskTier} category=${verdict.category} selected=${model.name} alreadyLoaded=${verdict.alreadyLoaded}`);
+    }
+  } catch (e: any) {
+    console.warn(`[MODEL_ROUTER] failed (falling back to resolveModel): ${e?.message}`);
+  }
 
   // Phase 74: Runtime diagnostics
   console.log(`[CHAT_REQUEST]`);
@@ -242,9 +283,9 @@ export async function localChatStream(
 
   try {
     const result = await chatStream(model, messages, onChunk, {
-      contextSize: config.localContextSize || model.contextSize || 1024,
+      contextSize: routerContextSize ?? config.localContextSize ?? model.contextSize ?? 1024,
       threads: config.localThreads,
-      gpuLayers: config.localGpuLayers,
+      gpuLayers: routerGpuLayers ?? config.localGpuLayers ?? -1,
       temperature: config.localTemperature ?? config.temperature,
       maxTokens: config.localMaxTokens ?? config.maxTokens,
       systemPrompt: getSystemPrompt(),

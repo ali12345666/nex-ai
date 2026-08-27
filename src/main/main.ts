@@ -717,20 +717,30 @@ async function setupIPC(): Promise<void> {
       const { createTokenStreamer } = await import('./agent/stream-emit');
       let runtime: import('./ai/runtime').AIRuntime | null = null;
       if (config.provider === 'local') {
-        // Phase 83: Use resolveModel to find the model (checks activeLocalModelId,
-        // AI Storage registry, model registry, etc.)
-        const { resolveModel } = await import('./ai/local-engine') as any;
-        const model = resolveModel(config);
+        // ── Model Router: select the smallest capable model ───────────────
+        // The router classifies the task (simple/medium/complex), respects
+        // the user-pinned model, and checks if the model is already loaded
+        // (cache hit = no reload). This eliminates unnecessary model
+        // switching between Qwen3-30B and Qwen2.5-0.5B.
+        const { getModelRouter } = await import('./ai/model-router');
+        const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+        const routerVerdict = getModelRouter().routeForChat({
+          userMessage: lastUserMsg?.content || '',
+          messages: messages.map((m) => ({ role: m.role, content: m.content })),
+          modelIdOverride: config.localModelId,
+        });
+        const model = routerVerdict.model;
 
-        // Phase 83: Log model resolution result
-        console.log(`[MODEL_RESOLVE]`);
-        console.log(`  resolved=${model ? 'true' : 'false'}`);
-        if (model) {
-          console.log(`  modelId=${model.id}`);
-          console.log(`  modelPath=${model.path}`);
-          console.log(`  modelName=${model.name}`);
-          console.log(`  fileExists=${model.fileExists}`);
-        }
+        console.log(`[MODEL_ROUTER]`);
+        console.log(`  source=${routerVerdict.source}`);
+        console.log(`  taskTier=${routerVerdict.taskTier}`);
+        console.log(`  category=${routerVerdict.category}`);
+        console.log(`  selected=${model?.name || 'none'} (id=${model?.id || 'null'})`);
+        console.log(`  alreadyLoaded=${routerVerdict.alreadyLoaded}`);
+        console.log(`  needsSwitch=${routerVerdict.needsSwitch}`);
+        console.log(`  suggestedContext=${routerVerdict.suggestedContextSize}`);
+        console.log(`  suggestedGpuLayers=${routerVerdict.suggestedGpuLayers}`);
+        console.log(`  reason=${routerVerdict.reason}`);
 
         if (!model) {
           console.log(`[CHAT_RESPONSE] source=local-stream error=No local model configured`);
@@ -748,9 +758,9 @@ async function setupIPC(): Promise<void> {
         const { getDefaultRuntime } = await import('./ai/runtime');
         runtime = getDefaultRuntime();
         await runtime.loadModel(model, {
-          contextSize: model.contextSize || 1024,
+          contextSize: routerVerdict.suggestedContextSize,
           threads: config.localThreads ?? 4,
-          gpuLayers: model.gpuLayers ?? -1,
+          gpuLayers: routerVerdict.suggestedGpuLayers,
           temperature: config.localTemperature ?? config.temperature ?? 0.7,
           maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
         });
@@ -5377,6 +5387,38 @@ app.whenReady().then(async () => {
 
   setupIPC().catch((err) => console.error('[NEX AI] IPC setup failed:', err));
   createWindow();
+
+  // ── Preload only the user-selected default model ─────────────────────────
+  // Do NOT scan + auto-activate other models. The Model Router will pick the
+  // best model per-request, but we preload the pinned model (if any) so the
+  // first chat request is fast. This runs in the background (non-blocking).
+  setTimeout(async () => {
+    try {
+      const { getModelRouter } = await import('./ai/model-router');
+      const pinnedId = getModelRouter().getPinnedModelId();
+      if (pinnedId) {
+        console.log(`[STARTUP_PRELOAD] Preloading user-selected model: ${pinnedId}`);
+        const { getModel } = await import('./ai/model-registry');
+        const model = getModel(pinnedId);
+        if (model && model.fileExists) {
+          const { getDefaultRuntime } = await import('./ai/runtime');
+          const runtime = getDefaultRuntime();
+          await runtime.loadModel(model, {
+            contextSize: 1024,
+            threads: 4,
+            gpuLayers: -1,  // auto — Vulkan GPU offload
+          });
+          console.log(`[STARTUP_PRELOAD] Model preloaded: ${model.name}`);
+        } else {
+          console.log(`[STARTUP_PRELOAD] Pinned model not found or file missing — skipping preload`);
+        }
+      } else {
+        console.log(`[STARTUP_PRELOAD] No pinned model — skipping preload (Model Router will select on first request)`);
+      }
+    } catch (err: any) {
+      console.warn(`[STARTUP_PRELOAD] Failed (non-blocking): ${err?.message || err}`);
+    }
+  }, 2000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
