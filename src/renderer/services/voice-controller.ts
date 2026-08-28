@@ -36,6 +36,7 @@ export class VoiceController {
   private orbAudioRef: { current: number } = { current: 0 };
   private orbAudioCallbacks: Set<(level: number) => void> = new Set();
   private orbStateCallbacks: Set<(state: NexOrbState) => void> = new Set();
+  private _audioLogCount = 0;
 
   constructor() {
     voiceService.setCallbacks({
@@ -141,6 +142,12 @@ export class VoiceController {
     this.orbAudioRef.current = level;
     this.orbAudioCallbacks.forEach((cb) => cb(level));
     this.callbacks.onOrbAudioLevel?.(level);
+    // [ORB_AUDIO_DEBUG] — log when controller receives audio level (throttled)
+    if (!this._audioLogCount) this._audioLogCount = 0;
+    this._audioLogCount++;
+    if (this._audioLogCount % 60 === 0) {
+      console.log(`[ORB_AUDIO_DEBUG] VoiceController: level=${level.toFixed(4)} orbAudioRef=${this.orbAudioRef.current.toFixed(4)} subscribers=${this.orbAudioCallbacks.size}`);
+    }
   }
 }
 

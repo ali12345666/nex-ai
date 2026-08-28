@@ -68,6 +68,7 @@ export class VoiceService {
   private _lastChunkSize = 0;
   private _ipcFeedingEnabled = false;
   private _audioProcessEventCount = 0;
+  private _audioLevelLogCount = 0;
 
   constructor(config?: Partial<VoiceConfig>) {
     this.config = { ...DEFAULT_VOICE_CONFIG, ...config };
@@ -394,6 +395,11 @@ export class VoiceService {
         ? this.config.attackSpeed : this.config.releaseSpeed;
       this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
       this.callbacks.onAudioLevel?.(this._smoothedLevel);
+      // [ORB_AUDIO_DEBUG] — log audio level every 60 frames (~1/sec)
+      this._audioLevelLogCount++;
+      if (this._audioLevelLogCount % 60 === 0) {
+        console.log(`[ORB_AUDIO_DEBUG] VoiceService: rms=${rms.toFixed(4)} smoothed=${this._smoothedLevel.toFixed(4)} normalized=${normalized.toFixed(4)}`);
+      }
       this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);

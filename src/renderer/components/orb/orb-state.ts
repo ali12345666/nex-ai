@@ -136,21 +136,23 @@ export function computeOrbVisual(state: NexOrbState, audioLevel: number): NexOrb
       break;
     case 'listening':
       // §8 LISTENING: slightly open, sensitive, audio wave receptive.
-      scale = 1.04 + level * 0.06;
-      particleSpeed = 1.5 + level * 1.5;
-      particleScale = 1.1 + level * 0.2;
+      // Amplified audio reactivity (was too subtle — level*0.06 scale change
+      // was imperceptible). Now scale + speed + glow all react visibly.
+      scale = 1.04 + level * 0.15;
+      particleSpeed = 1.5 + level * 3.0;
+      particleScale = 1.1 + level * 0.4;
       colorShift = 0;
-      glowIntensity = 1.1 + level * 0.3;
-      coreIntensity = 0.8 + level * 0.2;
-      corePulse = 0.5 + level * 0.3;
-      ringSpeed = 1.2 + level * 0.8;
-      ambientDrift = 1.2 + level * 0.5;
+      glowIntensity = 1.1 + level * 0.6;
+      coreIntensity = 0.8 + level * 0.4;
+      corePulse = 0.5 + level * 0.5;
+      ringSpeed = 1.2 + level * 1.5;
+      ambientDrift = 1.2 + level * 1.0;
       pulseSpeed = 0;
       stateColor = null; // theme color (not red — user input, not AI working)
       cohesion = 0.7;
       dispersion = 0.3;
-      turbulence = 0.15 + level * 0.1;
-      waveAmplitude = 0.06 + level * 0.04;
+      turbulence = 0.15 + level * 0.2;
+      waveAmplitude = 0.06 + level * 0.1;
       waveFrequency = 1.5;
       opacity = 0.8;
       break;

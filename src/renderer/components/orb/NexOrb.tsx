@@ -235,9 +235,11 @@ function ParticleSphere({
       }
     }
 
-    // [ORB_TRACE_VISUAL] + [ORB_TRACE_SHADER] diagnostics — throttled to ~1/second
+    // [ORB_TRACE_VISUAL] + [ORB_TRACE_SHADER] + [ORB_AUDIO_DEBUG] diagnostics
     debugFrameCount.current++;
     if (debugFrameCount.current % 60 === 0) {
+      console.log(`[ORB_AUDIO_DEBUG] NexOrb: audioLevelRef.current=${audioLevelRef.current.toFixed(4)} computed energy=${visual.particleSpeed.toFixed(2)}`);
+
       console.log(`[ORB_TRACE_VISUAL]`);
       console.log(`  state=${state}`);
       console.log(`  energy=${visual.particleSpeed.toFixed(2)}`);
