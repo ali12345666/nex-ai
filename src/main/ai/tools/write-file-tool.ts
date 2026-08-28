@@ -100,6 +100,7 @@ export class WriteFileTool implements Tool {
     // ── Check if file already exists (for backup snapshot) ──
     let beforeContent: string | undefined;
     let isOverwrite = false;
+    let snapshotId: string | undefined;
     try {
       if (fs.existsSync(safePath)) {
         const stat = fs.statSync(safePath);
@@ -107,11 +108,25 @@ export class WriteFileTool implements Tool {
           return { success: false, error: 'Path exists and is not a file (may be a directory).' };
         }
         isOverwrite = true;
-        // Capture original content for undo/backup (in-memory only — Phase 112)
+        // Capture original content for undo/backup
         beforeContent = fs.readFileSync(safePath, 'utf-8');
       }
     } catch (err: any) {
       return { success: false, error: `Failed to check existing file: ${err.message}` };
+    }
+
+    // ── Phase 113: Create persistent snapshot before writing ──
+    try {
+      const { createSnapshot } = require('../../agent/snapshot-service');
+      const taskId = context.metadata?.taskId || 'standalone';
+      const snapshot = createSnapshot(taskId, safePath);
+      if (snapshot) {
+        snapshotId = snapshot.id;
+        console.log(`[SNAPSHOT] Created snapshot ${snapshotId} for ${path.basename(safePath)} (existed: ${snapshot.existedBefore})`);
+      }
+    } catch (err: any) {
+      // Snapshot failure is non-blocking — log but continue with write
+      console.warn(`[SNAPSHOT] Failed to create snapshot: ${err.message}`);
     }
 
     // ── Create parent directories if needed ──
@@ -152,6 +167,7 @@ export class WriteFileTool implements Tool {
           created: !isOverwrite,
           overwritten: isOverwrite,
           sizeBytes: contentBytes,
+          snapshotId, // Phase 113: for undo/restore
         },
         // Phase 112: In-memory backup snapshot for future undo
         modifiedFiles: isOverwrite

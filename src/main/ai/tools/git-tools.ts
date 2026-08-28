@@ -1,9 +1,11 @@
 /**
- * Git tools — git_status, git_log, git_diff
+ * Git tools — git_status, git_log, git_diff, git_commit
  *
  * Uses safeExecFile('git', [...]) — no shell interpolation.
  */
 
+import * as path from 'path';
+import * as fs from 'fs';
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../tool-registry';
 import { safeExecFile } from '../../security/shell';
 
@@ -139,5 +141,111 @@ export class GitDiffTool extends GitToolBase {
       output: diff,
       data: { diff, lineCount: diff.split('\n').length },
     };
+  }
+}
+
+export class GitCommitTool extends GitToolBase {
+  readonly definition: ToolDefinition = {
+    name: 'git_commit',
+    description:
+      'Stage all changes and create a git commit. ' +
+      'Stages all modified files (git add -A), then commits with the provided message. ' +
+      'Does NOT push to remote. The commit message should be descriptive and follow conventional commits format.',
+    category: 'git',
+    permission: 'git',
+    destructive: false, // commits are reversible (git revert)
+    parameters: [
+      {
+        name: 'message',
+        type: 'string',
+        description: 'The commit message. Should be descriptive (e.g. "fix: resolve null pointer in parser").',
+        required: true,
+      },
+      {
+        name: 'cwd',
+        type: 'string',
+        description: 'Working directory (default: project root)',
+      },
+      {
+        name: 'add_all',
+        type: 'boolean',
+        description: 'If true (default), stage all changes before committing (git add -A). If false, only already-staged changes are committed.',
+        default: true,
+      },
+    ],
+    returns: { type: 'string', description: 'Commit hash and summary' },
+    tags: ['git', 'commit', 'write'],
+  };
+
+  async execute(params: Record<string, any>, context: ToolContext): Promise<ToolResult> {
+    const started = Date.now();
+    const cwd = params.cwd || context.projectPath || process.cwd();
+    const message = params.message;
+    const addAll = params.add_all !== false; // default true
+
+    // ── Parameter validation ──
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return { success: false, error: 'Missing or empty commit message' };
+    }
+
+    // Limit commit message length
+    if (message.length > 500) {
+      return { success: false, error: 'Commit message too long (max 500 characters)' };
+    }
+
+    // ── Verify we're in a git repository ──
+    const repoCheck = await safeExecFile('git', ['rev-parse', '--is-inside-work-tree'], { cwd, timeout: 5000 });
+    if (!repoCheck.success || repoCheck.stdout.trim() !== 'true') {
+      return { success: false, error: 'Not inside a git repository. Initialize one with "git init" first.' };
+    }
+
+    try {
+      // ── Stage changes if requested ──
+      if (addAll) {
+        const addResult = await safeExecFile('git', ['add', '-A'], { cwd, timeout: 10000 });
+        if (!addResult.success) {
+          return { success: false, error: `Failed to stage changes: ${addResult.error || addResult.stderr}` };
+        }
+      }
+
+      // ── Check if there are changes to commit ──
+      const statusResult = await safeExecFile('git', ['status', '--porcelain'], { cwd, timeout: 5000 });
+      if (statusResult.success && statusResult.stdout.trim().length === 0) {
+        return { success: false, error: 'No changes to commit (working tree is clean)' };
+      }
+
+      // ── Commit ──
+      // Use -m with the message directly (safeExecFile uses arg array, no shell injection)
+      const commitResult = await safeExecFile('git', ['commit', '-m', message], {
+        cwd,
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+
+      if (!commitResult.success) {
+        return {
+          success: false,
+          error: `Git commit failed: ${commitResult.error || commitResult.stderr}`,
+          output: commitResult.stderr || commitResult.stdout,
+        };
+      }
+
+      // ── Get the commit hash ──
+      const hashResult = await safeExecFile('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000 });
+      const commitHash = hashResult.success ? hashResult.stdout.trim().substring(0, 12) : 'unknown';
+
+      return {
+        success: true,
+        output: `Committed: ${commitHash}\n${message}\n${commitResult.stdout.trim()}`,
+        data: {
+          hash: commitHash,
+          message,
+          output: commitResult.stdout,
+        },
+        durationMs: Date.now() - started,
+      };
+    } catch (err: any) {
+      return { success: false, error: `Git commit failed: ${err.message}`, durationMs: Date.now() - started };
+    }
   }
 }

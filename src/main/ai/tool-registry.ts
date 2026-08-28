@@ -354,4 +354,8 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   // Phase 112: write_file — direct single-file write (no diff approval)
   const { WriteFileTool } = await import('./tools/write-file-tool');
   registerTool(new WriteFileTool());
+
+  // Phase 113: git_commit — complete the git workflow
+  const { GitCommitTool } = await import('./tools/git-tools');
+  registerTool(new GitCommitTool());
 }
