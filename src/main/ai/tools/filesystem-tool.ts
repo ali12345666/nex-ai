@@ -3,10 +3,12 @@
  *
  * Reads a file's content from disk.
  * Permission: 'read'
+ * Security: assertPathInside(projectPath) — all paths jailed to workspace.
  */
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { assertPathInside } from '../../security';
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../tool-registry';
 
 export class FileSystemTool implements Tool {
@@ -40,12 +42,20 @@ export class FileSystemTool implements Tool {
       return { success: false, error: 'Missing required parameter: path' };
     }
     const absPath = path.isAbsolute(filePath) ? filePath : path.join(context.projectPath || process.cwd(), filePath);
-    if (!fs.existsSync(absPath)) {
-      return { success: false, error: `File not found: ${absPath}` };
+
+    // Security: validate path is inside workspace + not a sensitive system path
+    const root = context.projectPath || process.cwd();
+    const guard = assertPathInside(absPath, [root]);
+    if (!guard.ok) {
+      return { success: false, error: `Access denied: ${guard.reason}. Path must be inside the project workspace.` };
     }
-    const stat = fs.statSync(absPath);
+
+    if (!fs.existsSync(guard.resolved!)) {
+      return { success: false, error: `File not found: ${guard.resolved}` };
+    }
+    const stat = fs.statSync(guard.resolved!);
     if (!stat.isFile()) {
-      return { success: false, error: `Not a file: ${absPath}` };
+      return { success: false, error: `Not a file: ${guard.resolved}` };
     }
     // Limit: 5MB to prevent huge file reads
     if (stat.size > 5 * 1024 * 1024) {
@@ -53,11 +63,11 @@ export class FileSystemTool implements Tool {
     }
     try {
       const encoding = params.encoding || 'utf-8';
-      const content = fs.readFileSync(absPath, { encoding: encoding as BufferEncoding });
+      const content = fs.readFileSync(guard.resolved!, { encoding: encoding as BufferEncoding });
       return {
         success: true,
         output: content,
-        data: { path: absPath, size: stat.size, encoding },
+        data: { path: guard.resolved, size: stat.size, encoding },
       };
     } catch (err: any) {
       return { success: false, error: `Failed to read file: ${err.message}` };

@@ -49,6 +49,11 @@ export function assertPathInside(target: string, roots: string[]): PathAssertion
   if (resolved.includes('\0')) {
     return { ok: false, reason: 'Null byte in path' };
   }
+  // Block sensitive system paths (defense-in-depth, even if inside a root)
+  const blocked = isSensitivePath(resolved);
+  if (blocked) {
+    return { ok: false, reason: `Blocked sensitive path: ${blocked}` };
+  }
   for (const root of roots) {
     if (!root) continue;
     if (isPathInside(resolved, root)) {
@@ -56,6 +61,45 @@ export function assertPathInside(target: string, roots: string[]): PathAssertion
     }
   }
   return { ok: false, reason: 'Path outside allowed roots', resolved };
+}
+
+/**
+ * Check if a path is a sensitive system path that should NEVER be accessed
+ * by the agent, regardless of workspace roots. Returns the reason if blocked,
+ * or null if the path is safe.
+ *
+ * Blocks:
+ *   Windows: C:\Windows, C:\System32, user .ssh, AppData\Roaming\nex-ai\secrets
+ *   Linux/macOS: /etc, /var, /usr, ~/.ssh, ~/.config, ~/.gnupg
+ */
+export function isSensitivePath(target: string): string | null {
+  const resolved = path.resolve(target).toLowerCase();
+  const home = (require('os').homedir() as string).toLowerCase();
+
+  // Cross-platform: block .ssh, .gnupg, .config
+  if (resolved.includes(path.join(home, '.ssh').toLowerCase())) return '.ssh directory';
+  if (resolved.includes(path.join(home, '.gnupg').toLowerCase())) return '.gnupg directory';
+
+  if (process.platform === 'win32') {
+    // Block Windows system directories
+    if (resolved.includes('\\windows\\system32\\') && !resolved.includes('\\system32\\temp')) return 'System32';
+    if (resolved.includes('\\windows\\system32\\config\\')) return 'System32 config';
+    if (resolved.match(/^[a-z]:\\windows\\/i)) return 'Windows directory';
+    // Block AppData secrets
+    if (resolved.includes('\\appdata\\roaming\\nex-ai\\secrets')) return 'secrets.json';
+    if (resolved.includes('\\appdata\\roaming\\nex-ai\\config.json')) return 'config.json';
+  } else {
+    // Linux/macOS system directories
+    if (resolved.startsWith('/etc/')) return '/etc';
+    if (resolved.startsWith('/var/')) return '/var';
+    if (resolved.startsWith('/usr/') && !resolved.startsWith('/usr/local/')) return '/usr';
+    if (resolved.startsWith('/boot/')) return '/boot';
+    if (resolved.startsWith('/root/')) return '/root';
+    // Block .config (may contain credentials)
+    if (resolved.includes(path.join(home, '.config').toLowerCase())) return '.config directory';
+  }
+
+  return null;
 }
 
 // ─── Safe Content Sanitization (for AI chat output) ─────────────────────────
