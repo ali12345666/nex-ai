@@ -350,4 +350,8 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   registerTool(new ForgetTool());
   registerTool(new FindSymbolTool());
   registerTool(new FindReferencesTool());
+
+  // Phase 112: write_file — direct single-file write (no diff approval)
+  const { WriteFileTool } = await import('./tools/write-file-tool');
+  registerTool(new WriteFileTool());
 }
