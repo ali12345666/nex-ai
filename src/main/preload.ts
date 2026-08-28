@@ -183,7 +183,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
   wakeWordStatus: () => ipcRenderer.invoke('wake-word-status'),
   voiceCommandParse: (text: string) => ipcRenderer.invoke('voice-command-parse', text),
   onVoiceConversationState: (callback: (ev: any) => void) => {
-    const listener = (_e: any, ev: any) => callback(ev);
+    const listener = (_e: any, ev: any) => {
+      console.log(`[ORB_TRACE_PRELOAD] received state=${ev?.state} source=${ev?.source || 'conversation'}`);
+      callback(ev);
+    };
     ipcRenderer.on('voice-conversation-state', listener);
     return () => ipcRenderer.removeListener('voice-conversation-state', listener);
   },

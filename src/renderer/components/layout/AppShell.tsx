@@ -200,6 +200,8 @@ export default function AppShell() {
     const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
       const state = ev?.state as string;
       if (!state) return;
+      console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${ev?.source || 'conversation'}`);
+
       // Map conversation state to Orb state
       const orbStateMap: Record<string, string> = {
         idle: 'idle',
@@ -210,26 +212,26 @@ export default function AppShell() {
         error: 'error',
       };
       const orbState = orbStateMap[state] || 'idle';
-      console.log(`[ORB_DEBUG] main-side conversation state: ${state} -> orbState: ${orbState}`);
+      console.log(`[ORB_TRACE_RENDERER] mapped orbState=${orbState}`);
 
       // Drive the voiceController's state machine with the main-side states.
-      // The voiceController uses a condition-based system (setCondition/clearCondition)
-      // where the highest-priority active condition wins.
-      // We use 'main' as the condition key to distinguish from renderer-side 'mic'/'tts'.
-      // Note: 'interrupted' maps to 'thinking' (AI is processing the interrupt)
-      // because VoiceState doesn't include 'active'.
+      // Use 'engine' as the condition key for engine states, 'main' for
+      // conversation states. The highest-priority active condition wins.
       if (orbState === 'listening') {
-        voiceController.setCondition('main', 'listening');
+        voiceController.setCondition('engine', 'listening');
       } else if (orbState === 'thinking' || orbState === 'active') {
-        voiceController.setCondition('main', 'thinking');
+        voiceController.setCondition('engine', 'thinking');
       } else if (orbState === 'speaking') {
-        voiceController.setCondition('main', 'speaking');
+        voiceController.setCondition('engine', 'speaking');
       } else if (orbState === 'error') {
-        voiceController.setCondition('main', 'error');
+        voiceController.setCondition('engine', 'error');
       } else {
-        // idle — clear the main condition so Orb returns to idle
-        voiceController.clearCondition('main');
+        // idle — clear the engine condition so Orb returns to idle
+        voiceController.clearCondition('engine');
       }
+
+      // Log the controller's resolved state for diagnostics
+      console.log(`[ORB_TRACE_CONTROLLER] conditions=engine:${orbState} resolvedState=${voiceController.orbState}`);
     });
     return () => { if (off) off(); };
   }, []);

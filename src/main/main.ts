@@ -1607,7 +1607,10 @@ async function setupIPC(): Promise<void> {
   // Wire conversation state changes → forward to renderer (for orb + UI)
   conversation.setCallbacks({
     onStateChange: (state, prev) => {
-      mainWindow?.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state] });
+      console.log(`[ORB_TRACE_MAIN] conversation state: ${prev} -> ${state}`);
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        mainWindow.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state] });
+      }
     },
     onWakeWord: (match) => {
       mainWindow?.webContents.send('voice-conversation-wake', match);
@@ -1660,8 +1663,15 @@ async function setupIPC(): Promise<void> {
         }
       },
       onStateChange: (state: string) => {
-        // Forward engine state changes to the renderer
-        mainWindow?.webContents.send('voice-engine-state', { state });
+        // Forward engine state changes to the renderer via the SAME channel
+        // as conversation state changes ('voice-conversation-state'). The
+        // engine's real-time states (listening/thinking/speaking) are what
+        // the Orb needs to react to — the conversation FSM only sets states
+        // on transcript feed, not on every engine transition.
+        console.log(`[ORB_TRACE_MAIN] engine state: ${state}`);
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-conversation-state', { state, source: 'engine' });
+        }
       },
       onError: (message: string) => {
         console.warn(`[VOICE_PIPELINE] Engine error: ${message}`);

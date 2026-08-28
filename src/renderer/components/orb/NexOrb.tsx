@@ -235,17 +235,26 @@ function ParticleSphere({
       }
     }
 
-    // [ORB_DEBUG] diagnostics — throttled to ~1/second (every 60 frames)
+    // [ORB_TRACE_VISUAL] + [ORB_TRACE_SHADER] diagnostics — throttled to ~1/second
     debugFrameCount.current++;
     if (debugFrameCount.current % 60 === 0) {
-      console.log(`[ORB_DEBUG]`);
+      console.log(`[ORB_TRACE_VISUAL]`);
       console.log(`  state=${state}`);
       console.log(`  energy=${visual.particleSpeed.toFixed(2)}`);
+      console.log(`  speed=${visual.particleSpeed.toFixed(2)}`);
+      console.log(`  glow=${visual.glowIntensity.toFixed(2)}`);
+      console.log(`  scale=${visual.scale.toFixed(2)}`);
       console.log(`  audioLevel=${audioLevel.toFixed(3)}`);
-      console.log(`  uniformIntensity=${smoothGlow.current.toFixed(2)}`);
-      console.log(`  scale=${smoothScale.current.toFixed(2)}`);
-      console.log(`  colorShift=${smoothColorShift.current.toFixed(2)}`);
       console.log(`  stateColor=${visual.stateColor || '(theme)'}`);
+
+      console.log(`[ORB_TRACE_SHADER]`);
+      console.log(`  uEnergy=${uniforms.uSpeed.value.toFixed(2)}`);
+      console.log(`  uSpeed=${uniforms.uSpeed.value.toFixed(2)}`);
+      console.log(`  uGlow=${uniforms.uGlow.value.toFixed(2)}`);
+      console.log(`  uIntensity=${uniforms.uGlow.value.toFixed(2)}`);
+      console.log(`  uAudio=${uniforms.uAudio.value.toFixed(3)}`);
+      console.log(`  uScale=${uniforms.uScale.value.toFixed(2)}`);
+      console.log(`  uColorShift=${uniforms.uColorShift.value.toFixed(2)}`);
     }
   });
 
@@ -606,6 +615,11 @@ export default function NexOrb({
   useEffect(() => {
     if (!audioLevelRef) internalAudioRef.current = audioLevel;
   }, [audioLevel, audioLevelRef]);
+
+  // [ORB_TRACE_ORB] — log when the state prop changes (proves React re-render)
+  useEffect(() => {
+    console.log(`[ORB_TRACE_ORB] propState=${state} audioLevel=${(audioLevelRef?.current ?? audioLevel).toFixed(3)}`);
+  }, [state, audioLevel, audioLevelRef]);
 
   // Reduced-motion support — now actually gates Three.js rotations (UI-01 fix).
   const [reducedMotion, setReducedMotion] = React.useState(false);
