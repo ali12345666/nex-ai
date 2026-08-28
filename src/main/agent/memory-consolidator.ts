@@ -92,17 +92,16 @@ export function consolidateTaskMemory(
       if (semanticStore && typeof value === 'string' && value.length > 0) {
         semanticStore.upsert(
           `${store}:${key}`,
-          store === 'user' ? 'preference' : store === 'project' ? 'decision' : 'pattern',
+          store === 'user' ? 'user' : store === 'project' ? 'project' : 'task',
           value,
           { importance: store === 'user' ? 0.8 : 0.5, projectId: setOpts?.projectId, createdAt: now() }
         ).catch(() => { /* best-effort — semantic store is non-blocking */ });
       } else if (semanticStore && typeof value === 'object' && value !== null) {
-        // For object values, embed the JSON string representation
         const contentStr = JSON.stringify(value).substring(0, 500);
         if (contentStr.length > 10) {
           semanticStore.upsert(
             `${store}:${key}`,
-            store === 'user' ? 'preference' : store === 'project' ? 'decision' : 'pattern',
+            store === 'user' ? 'user' : store === 'project' ? 'project' : 'task',
             contentStr,
             { importance: store === 'user' ? 0.8 : 0.5, projectId: setOpts?.projectId, createdAt: now() }
           ).catch(() => { /* best-effort */ });

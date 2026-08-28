@@ -4,6 +4,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { assertPathInside } from '../../security';
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../tool-registry';
 
 const IGNORED_DIRS = new Set([
@@ -37,18 +38,26 @@ export class ListDirectoryTool implements Tool {
   async execute(params: Record<string, any>, context: ToolContext): Promise<ToolResult> {
     const dir = params.path || context.projectPath || process.cwd();
     const absDir = path.isAbsolute(dir) ? dir : path.join(context.projectPath || process.cwd(), dir);
-    if (!fs.existsSync(absDir)) {
-      return { success: false, error: `Directory not found: ${absDir}` };
+
+    // Security: validate path is inside workspace + not a sensitive system path
+    const root = context.projectPath || process.cwd();
+    const guard = assertPathInside(absDir, [root]);
+    if (!guard.ok) {
+      return { success: false, error: `Access denied: ${guard.reason}. Path must be inside the project workspace.` };
     }
-    const stat = fs.statSync(absDir);
+
+    if (!fs.existsSync(guard.resolved!)) {
+      return { success: false, error: `Directory not found: ${guard.resolved}` };
+    }
+    const stat = fs.statSync(guard.resolved!);
     if (!stat.isDirectory()) {
-      return { success: false, error: `Not a directory: ${absDir}` };
+      return { success: false, error: `Not a directory: ${guard.resolved}` };
     }
     const recursive = params.recursive === true;
     try {
       const entries = recursive
-        ? listRecursive(absDir, 3)
-        : listOne(absDir);
+        ? listRecursive(guard.resolved!, 3)
+        : listOne(guard.resolved!);
       return {
         success: true,
         output: entries.map((e) => `${e.type === 'dir' ? '📁' : '📄'} ${e.path}`).join('\n'),

@@ -5753,6 +5753,16 @@ app.on('before-quit', (event) => {
   _shuttingDown = true;
   event.preventDefault();
   console.log('[NEX AI] Graceful shutdown: disposing local AI engine...');
+  // Phase 108: Flush semantic memory to disk before quitting.
+  // Without this, all embedded memories are lost on every restart.
+  try {
+    const { getMemoryRetrievalEngine } = require('./memory/memory-retrieval-engine');
+    const engine = getMemoryRetrievalEngine();
+    if (engine?.semanticStore) {
+      engine.semanticStore.flush();
+      console.log('[NEX AI] Semantic memory flushed to disk');
+    }
+  } catch { /* best-effort */ }
   shutdownLlama()
     .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
     .finally(() => {
