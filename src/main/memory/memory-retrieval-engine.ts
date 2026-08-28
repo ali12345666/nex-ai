@@ -82,7 +82,8 @@ export interface MemoryRetrievalResult {
  *   // result.memories → ranked list of relevant memories
  */
 export class MemoryRetrievalEngine {
-  private semanticStore: SemanticMemoryStore;
+  /** Phase 107: made public so agent/core.ts can pass it to the consolidator */
+  semanticStore: SemanticMemoryStore;
   private embedder: Embedder;
 
   constructor(semanticStore: SemanticMemoryStore, embedder: Embedder) {

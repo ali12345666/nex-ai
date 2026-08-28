@@ -498,6 +498,18 @@ export async function runTask(taskId: string): Promise<AgentTask> {
             .flatMap((tc) => (tc.afterState?.files || []).map((f) => f.path))
         ),
       ];
+
+      // Phase 107: Get the SemanticMemoryStore so memories are embedded
+      // (not just stored as JSON). This is the critical fix that activates
+      // semantic retrieval — previously .upsert() was never called.
+      let semanticStore: any = null;
+      try {
+        const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+        const engine = getMemoryRetrievalEngine();
+        // Access the semantic store from the engine (it was injected at startup)
+        semanticStore = (engine as any).semanticStore || null;
+      } catch { /* non-blocking */ }
+
       const consolidation = consolidateTaskMemory(
         {
           taskId: task.id,
@@ -508,11 +520,7 @@ export async function runTask(taskId: string): Promise<AgentTask> {
           stepsCompleted: task.plan.filter((st) => st.status === 'completed').length,
           toolsUsed: task.toolCalls.map((tc) => tc.toolName),
           filesTouched,
-          // Phase 40: extract lessons from observations (was dead code before)
-          // Look for error→fix patterns in the task's observations + errors.
           lessonsLearned: extractLessonsFromTask(task),
-          // Phase 13: user corrections — step failures caused by permission
-          // denials are recorded in task.errors ('Permission denied for ...').
           userCorrections: task.errors
             .filter((e) => e.type === 'permission_denied')
             .slice(0, 3)
@@ -522,7 +530,8 @@ export async function runTask(taskId: string): Promise<AgentTask> {
           set: (store, key, value, o) => memory.setMemory(store as any, key, value, o as any),
           get: (store, key, projectId) => memory.getMemory(store as any, key, projectId) as any,
           list: (store, projectId) => memory.listMemory(store as any, projectId) as any,
-        }
+        },
+        { semanticStore: semanticStore || undefined }
       );
       if (consolidation.written.length > 0 || consolidation.errors.length > 0) {
         AgentLogger.debug(`Memory consolidated: ${consolidation.written.length} written, ${consolidation.skippedDuplicates} dup, ${consolidation.errors.length} err`, { taskId });

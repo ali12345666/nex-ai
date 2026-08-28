@@ -67,9 +67,10 @@ function keyFor(prefix: string, taskId: string, n = 0): string {
 export function consolidateTaskMemory(
   outcome: TaskOutcome,
   memory: MemoryApi,
-  opts: { now?: () => number } = {}
+  opts: { now?: () => number; semanticStore?: { upsert: (id: string, type: string, content: string, o?: any) => Promise<unknown> } } = {}
 ): ConsolidationResult {
   const now = opts.now ?? Date.now;
+  const semanticStore = opts.semanticStore;
   const result: ConsolidationResult = { written: [], skippedDuplicates: 0, redactedCount: 0, errors: [] };
 
   const safeSet = (store: Parameters<MemoryApi['set']>[0], key: string, value: unknown, setOpts?: { tags?: string[]; expiresAt?: number; projectId?: string }) => {
@@ -83,6 +84,31 @@ export function consolidateTaskMemory(
         return;
       }
       memory.set(store, key, value, setOpts);
+
+      // Phase 107: Also upsert into the SemanticMemoryStore so that future
+      // retrieval uses embeddings + cosine similarity instead of just
+      // keyword substring matching. This is the critical fix that makes
+      // semantic memory actually work — previously .upsert() was never called.
+      if (semanticStore && typeof value === 'string' && value.length > 0) {
+        semanticStore.upsert(
+          `${store}:${key}`,
+          store === 'user' ? 'preference' : store === 'project' ? 'decision' : 'pattern',
+          value,
+          { importance: store === 'user' ? 0.8 : 0.5, projectId: setOpts?.projectId, createdAt: now() }
+        ).catch(() => { /* best-effort — semantic store is non-blocking */ });
+      } else if (semanticStore && typeof value === 'object' && value !== null) {
+        // For object values, embed the JSON string representation
+        const contentStr = JSON.stringify(value).substring(0, 500);
+        if (contentStr.length > 10) {
+          semanticStore.upsert(
+            `${store}:${key}`,
+            store === 'user' ? 'preference' : store === 'project' ? 'decision' : 'pattern',
+            contentStr,
+            { importance: store === 'user' ? 0.8 : 0.5, projectId: setOpts?.projectId, createdAt: now() }
+          ).catch(() => { /* best-effort */ });
+        }
+      }
+
       result.written.push({ store, key });
     } catch (err: any) {
       result.errors.push(`${store}/${key}: ${err.message}`);
