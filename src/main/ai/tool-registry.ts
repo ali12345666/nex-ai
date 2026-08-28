@@ -335,4 +335,19 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   registerTool(new ProjectStructureTool());
   registerTool(new MultiFileEditTool());
   registerTool(new KnowledgeSearchTool());
+
+  // Phase 105: New agent tools
+  const { WebFetchTool, WebSearchTool } = await import('./tools/web-tool');
+  const { AnalyzeImageTool } = await import('./tools/vision-tool');
+  const { RememberTool, SearchMemoryTool, ForgetTool } = await import('./tools/memory-tool');
+  const { FindSymbolTool, FindReferencesTool } = await import('./tools/code-intelligence-tool');
+
+  registerTool(new WebSearchTool());
+  registerTool(new WebFetchTool());
+  registerTool(new AnalyzeImageTool());
+  registerTool(new RememberTool());
+  registerTool(new SearchMemoryTool());
+  registerTool(new ForgetTool());
+  registerTool(new FindSymbolTool());
+  registerTool(new FindReferencesTool());
 }
