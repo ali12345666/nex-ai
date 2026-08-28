@@ -1673,6 +1673,14 @@ async function setupIPC(): Promise<void> {
           mainWindow.webContents.send('voice-conversation-state', { state, source: 'engine' });
         }
       },
+      onTTSAudioReady: (audioFilePath: string, text: string) => {
+        // Send the TTS audio file path to the renderer for playback.
+        // The renderer creates an <audio> element and plays the file.
+        console.log(`[VOICE_PIPELINE] Sending TTS audio to renderer: ${audioFilePath}`);
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-tts-audio', { audioFilePath, text });
+        }
+      },
       onError: (message: string) => {
         console.warn(`[VOICE_PIPELINE] Engine error: ${message}`);
         mainWindow?.webContents.send('voice-conversation-error', { message });

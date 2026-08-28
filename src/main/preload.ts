@@ -190,6 +190,14 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('voice-conversation-state', listener);
     return () => ipcRenderer.removeListener('voice-conversation-state', listener);
   },
+  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string) => void) => {
+    const listener = (_e: any, ev: any) => {
+      console.log(`[VOICE_PIPELINE] preload received TTS audio: ${ev?.audioFilePath}`);
+      callback(ev?.audioFilePath, ev?.text || '');
+    };
+    ipcRenderer.on('voice-tts-audio', listener);
+    return () => ipcRenderer.removeListener('voice-tts-audio', listener);
+  },
   onVoiceConversationWake: (callback: (ev: any) => void) => {
     const listener = (_e: any, ev: any) => callback(ev);
     ipcRenderer.on('voice-conversation-wake', listener);

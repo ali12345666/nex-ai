@@ -55,6 +55,33 @@ function App() {
     };
   }, []);
 
+  // ── TTS audio playback: play WAV file when engine sends it ────────────────
+  // The LocalVoiceEngine synthesizes text to a WAV file via Piper, then sends
+  // the file path here. We create an <audio> element and play it.
+  useEffect(() => {
+    const off = window.nexAPI?.onVoiceTTSAudio?.((audioFilePath: string, text: string) => {
+      console.log(`[VOICE_PIPELINE] Renderer received TTS audio: ${audioFilePath}`);
+      // Play the audio file using a file:// URL
+      try {
+        // Convert path to file:// URL (handle Windows backslashes)
+        const fileUrl = `file://${audioFilePath.replace(/\\/g, '/')}`;
+        const audio = new Audio(fileUrl);
+        audio.onended = () => {
+          console.log('[VOICE_PIPELINE] TTS audio playback completed');
+        };
+        audio.onerror = (e) => {
+          console.warn('[VOICE_PIPELINE] TTS audio playback error:', e);
+        };
+        audio.play().catch((err) => {
+          console.warn('[VOICE_PIPELINE] TTS audio play() failed:', err?.message);
+        });
+      } catch (err: any) {
+        console.warn('[VOICE_PIPELINE] TTS audio playback error:', err?.message);
+      }
+    });
+    return () => { if (off) off(); };
+  }, []);
+
   // ── Permission Prompt state ──
   const [pendingPermission, setPendingPermission] = useState<any>(null);
 

@@ -153,6 +153,8 @@ export interface VoiceEngineCallbacks {
   onFinalTranscript?: (text: string) => void;
   onError?: (message: string) => void;
   onPermissionChange?: (granted: boolean | null) => void;
+  /** Called when TTS has synthesized audio — the renderer should play this file */
+  onTTSAudioReady?: (audioFilePath: string, text: string) => void;
 }
 
 export class LocalVoiceEngine {
@@ -329,7 +331,19 @@ export class LocalVoiceEngine {
     this.ttsActive = true;
     this.setState('speaking');
     console.log(`[VOICE_PIPELINE] TTS speaking: "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
-    try { await this.ttsProvider.synthesize(text, opts); }
+    try {
+      const result = await this.ttsProvider.synthesize(text, opts);
+      // CRITICAL: emit the audio file path so the renderer can play it.
+      // Previously the result was ignored — TTS synthesized the WAV file
+      // but nobody played it.
+      if (result.success && result.audioFilePath) {
+        console.log(`[VOICE_PIPELINE] TTS audio ready: ${result.audioFilePath}`);
+        this.callbacks.onTTSAudioReady?.(result.audioFilePath, text);
+      } else if (!result.success) {
+        console.warn(`[VOICE_PIPELINE] TTS synthesis failed: ${result.error}`);
+        this.callbacks.onError?.(`TTS synthesis failed: ${result.error}`);
+      }
+    }
     catch (err: any) { this.callbacks.onError?.(`TTS failed: ${err.message}`); }
     this.ttsActive = false;
     this.setState(wasListening ? 'listening' : 'idle');

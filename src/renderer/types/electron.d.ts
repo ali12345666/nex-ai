@@ -160,6 +160,7 @@ export interface NexAPI {
   wakeWordStatus: () => Promise<{ success: boolean; lastMatch?: any; matchCount?: number; config?: any; error?: string }>;
   voiceCommandParse: (text: string) => Promise<{ success: boolean; result?: any; error?: string }>;
   onVoiceConversationState: (callback: (ev: any) => void) => () => void;
+  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string) => void) => () => void;
   onVoiceConversationWake: (callback: (ev: any) => void) => () => void;
   onVoiceConversationUser: (callback: (ev: any) => void) => () => void;
   onVoiceConversationNex: (callback: (ev: any) => void) => () => void;
