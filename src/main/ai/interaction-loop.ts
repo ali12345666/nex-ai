@@ -1,6 +1,15 @@
 /**
  * NEX AI — Basic Interaction Loop (Phase 62: Basic Interaction MVP)
  *
+ * Phase 104: This is the BASIC interaction service (not the Agent Brain).
+ * It provides simple Text/Voice → LLM → TTS without tools.
+ * For agent tasks (file ops, commands, coding), use:
+ *   brain-route → route='agent' → agent/core.ts
+ *
+ * This service is used by the BasicInteractionPanel and the voice
+ * conversation system for simple Q&A. It is NOT deprecated — it serves
+ * a different purpose than the Agent Brain.
+ *
  * The unified interaction loop that connects everything:
  *
  *   Text Input ──┐

@@ -835,6 +835,50 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 104: Unified Brain Router ──────────────────────────────────────
+  // Single entry point for all user messages. Routes to either:
+  //   - 'chat'  → runtime.chatStream() (simple conversation)
+  //   - 'agent' → createTask() + runTask() (agent with tools)
+  //
+  // The renderer calls 'brain-route' instead of directly calling
+  // 'ai-chat-stream' or 'agent-run-task'. The router decides which path
+  // based on the message content.
+  ipcMain.handle('brain-route', async (_event, request: any) => {
+    try {
+      const { getNexBrainRouter } = await import('./ai/nex-brain-router');
+      const router = getNexBrainRouter();
+      const { route, reason } = router.route({
+        message: request.message || '',
+        history: request.history,
+        forceRoute: request.forceRoute,
+      });
+
+      if (route === 'agent') {
+        // Route to Agent Core (agent/core.ts)
+        const { createTask, runTask } = await import('./agent/core');
+        const agentRequest = {
+          userRequest: request.message,
+          workspaceRoot: request.projectPath || process.cwd(),
+          sessionId: request.sessionId || `session-${Date.now()}`,
+          preferredModel: request.modelId,
+          toolContextExtras: {},
+        };
+        const task = await createTask(agentRequest);
+        runTask(task.id).catch((err) => {
+          console.error(`[BRAIN_ROUTER] Agent task ${task.id} failed:`, err);
+        });
+        return { success: true, route: 'agent', taskId: task.id, reason };
+      } else {
+        // Route to Simple Chat (runtime.chatStream)
+        // Return the route decision — the renderer will call ai-chat-stream
+        // with the same message. This keeps the streaming UI consistent.
+        return { success: true, route: 'chat', reason };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message, route: 'chat' };
+    }
+  });
+
   function getSystemPromptFor(_config: any): string {
     return getSystemPrompt();
   }
@@ -4500,10 +4544,15 @@ async function setupIPC(): Promise<void> {
   });
 
   // ── Phase 54: Agent Skills & Tool Execution Layer ──
+  // Phase 104: nex-agent-executor.executePlan() is a STUB — it simulates
+  // execution without calling real tools. The real agent path is
+  // agent/core.ts (createTask + runTask). These IPC handlers are kept for
+  // backward compatibility with the Planner UI but should be migrated to
+  // use brain-route → agent/core.ts.
   const { getNexAgentExecutor } = await import('./ai/nex-agent-executor');
   const { getSkillRegistry, getSkill, getSkillsByDomain } = await import('./ai/agent-skill-registry');
 
-  // Agent executor: create execution plan
+  // Agent executor: create execution plan (kept for Planner UI)
   ipcMain.handle('agent-create-plan', async (_event, request: string) => {
     try {
       const executor = getNexAgentExecutor();
@@ -4514,8 +4563,12 @@ async function setupIPC(): Promise<void> {
     }
   });
 
-  // Agent executor: execute plan (with permission checks)
+  // Agent executor: execute plan
+  // Phase 104 WARNING: This is a STUB. executePlan() only changes step status
+  // without calling real tools. For real agent execution, use:
+  //   brain-route → route='agent' → createTask + runTask
   ipcMain.handle('agent-execute-plan', async (_event, plan: any) => {
+    console.warn('[DEPRECATED] agent-execute-plan is a stub. Use brain-route for real agent execution.');
     try {
       const executor = getNexAgentExecutor();
       const result = await executor.executePlan(plan);

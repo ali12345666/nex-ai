@@ -1,5 +1,18 @@
 /**
- * NEX AI — Agent Executor (Phase 54)
+ * NEX AI — Agent Executor (Phase 54) — ⚠️ DEPRECATED
+ *
+ * Phase 104: This module is DEPRECATED. executePlan() is a STUB that only
+ * changes step status without calling real tools. The real agent execution
+ * path is agent/core.ts (createTask + runTask + ReAct loop).
+ *
+ * This file is kept for backward compatibility with the Planner UI
+ * (agent-create-plan, agent-execute-plan IPC handlers). New code should
+ * use the Brain Router:
+ *   brain-route → route='agent' → createTask + runTask
+ *
+ * DO NOT extend this file. Migrate callers to agent/core.ts instead.
+ *
+ * ── Original header (Phase 54) ──
  *
  * Connects the Expert System with real tool execution.
  *

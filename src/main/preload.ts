@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld('nexAPI', {
     return () => ipcRenderer.removeListener('chat-token', listener);
   },
   aiAbort: () => ipcRenderer.invoke('ai-abort'),
+
+  // Phase 104: Unified Brain Router — single entry point for all user messages
+  brainRoute: (request: any) => ipcRenderer.invoke('brain-route', request),
   aiDefaultConfig: (provider: string) =>
     ipcRenderer.invoke('ai-default-config', provider),
 
