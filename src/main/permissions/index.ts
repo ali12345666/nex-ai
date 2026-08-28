@@ -121,7 +121,7 @@ export function requestPermission(
   description: string,
   context: PermissionContext,
   detail?: string
-): { requestId: string; status: PermissionDecision } {
+): { requestId: string; status: PermissionDecision; reason?: string } {
   // 1. Check session grants (fastest)
   if (hasSessionGrant(context.sessionId, tool, permission, context.targetPath)) {
     return { requestId: '', status: 'allow' };
@@ -149,8 +149,11 @@ export function requestPermission(
   if (_permissionRequestHandler) {
     _permissionRequestHandler(request);
   } else {
-    // No UI handler set up — default to deny for safety
-    console.warn(`[NEX AI Permissions] No handler set — auto-denying ${tool} (${permission})`);
+    // No UI handler set up — fail fast instead of hanging for 60s.
+    // Clean up the pending request context and return immediate denial.
+    _pendingRequestContexts.delete(requestId);
+    console.warn(`[NEX AI Permissions] No handler set — immediately denying ${tool} (${permission})`);
+    return { requestId, status: 'deny' as PermissionDecision, reason: 'Permission handler unavailable' };
   }
   return { requestId, status: 'pending' };
 }
@@ -222,9 +225,9 @@ export async function requestPermissionAndWait(
   context: PermissionContext,
   detail?: string
 ): Promise<{ decision: PermissionDecision; reason?: string }> {
-  const { requestId, status } = requestPermission(tool, permission, description, context, detail);
+  const { requestId, status, reason } = requestPermission(tool, permission, description, context, detail);
   if (status !== 'pending') {
-    return { decision: status };
+    return { decision: status, reason };
   }
   const response = await awaitPermissionDecision(requestId);
   if (response.decision === 'allow' && response.scope === 'session') {
