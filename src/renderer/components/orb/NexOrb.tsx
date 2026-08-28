@@ -48,6 +48,7 @@ function ParticleSphere({
   const smoothGlow = useRef(0.8);
   const smoothColorShift = useRef(0);
   const stateColorRef = useRef(new THREE.Color(primaryColor));
+  const debugFrameCount = useRef(0); // [ORB_DEBUG] throttle
 
   // Fibonacci sphere positions
   const positions = useMemo(() => {
@@ -232,6 +233,19 @@ function ParticleSphere({
         pointsRef.current.rotation.y += delta * 0.15; // very slow rotation
         pointsRef.current.rotation.z += delta * 0.03;
       }
+    }
+
+    // [ORB_DEBUG] diagnostics — throttled to ~1/second (every 60 frames)
+    debugFrameCount.current++;
+    if (debugFrameCount.current % 60 === 0) {
+      console.log(`[ORB_DEBUG]`);
+      console.log(`  state=${state}`);
+      console.log(`  energy=${visual.particleSpeed.toFixed(2)}`);
+      console.log(`  audioLevel=${audioLevel.toFixed(3)}`);
+      console.log(`  uniformIntensity=${smoothGlow.current.toFixed(2)}`);
+      console.log(`  scale=${smoothScale.current.toFixed(2)}`);
+      console.log(`  colorShift=${smoothColorShift.current.toFixed(2)}`);
+      console.log(`  stateColor=${visual.stateColor || '(theme)'}`);
     }
   });
 

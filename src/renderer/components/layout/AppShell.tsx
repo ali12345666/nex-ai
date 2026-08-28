@@ -210,9 +210,26 @@ export default function AppShell() {
         error: 'error',
       };
       const orbState = orbStateMap[state] || 'idle';
-      // Use voiceController's internal state machine to drive the Orb
-      if (orbState === 'thinking') voiceController.setThinking(true);
-      else voiceController.setThinking(false);
+      console.log(`[ORB_DEBUG] main-side conversation state: ${state} -> orbState: ${orbState}`);
+
+      // Drive the voiceController's state machine with the main-side states.
+      // The voiceController uses a condition-based system (setCondition/clearCondition)
+      // where the highest-priority active condition wins.
+      // We use 'main' as the condition key to distinguish from renderer-side 'mic'/'tts'.
+      // Note: 'interrupted' maps to 'thinking' (AI is processing the interrupt)
+      // because VoiceState doesn't include 'active'.
+      if (orbState === 'listening') {
+        voiceController.setCondition('main', 'listening');
+      } else if (orbState === 'thinking' || orbState === 'active') {
+        voiceController.setCondition('main', 'thinking');
+      } else if (orbState === 'speaking') {
+        voiceController.setCondition('main', 'speaking');
+      } else if (orbState === 'error') {
+        voiceController.setCondition('main', 'error');
+      } else {
+        // idle — clear the main condition so Orb returns to idle
+        voiceController.clearCondition('main');
+      }
     });
     return () => { if (off) off(); };
   }, []);

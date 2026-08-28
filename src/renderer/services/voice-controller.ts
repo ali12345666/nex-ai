@@ -105,6 +105,20 @@ export class VoiceController {
     else voiceService.clearCondition('chat');
   }
 
+  /**
+   * Set a named condition state on the VoiceService. Used by the main-side
+   * conversation bridge to drive the Orb with main-side states.
+   * The highest-priority active condition wins (see STATE_PRIORITY in voice-service).
+   */
+  setCondition(key: string, state: VoiceState): void {
+    voiceService.setCondition(key, state);
+  }
+
+  /** Clear a named condition state. */
+  clearCondition(key: string): void {
+    voiceService.clearCondition(key);
+  }
+
   /** Full cleanup on app shutdown. */
   dispose(): void {
     voiceService.dispose();
