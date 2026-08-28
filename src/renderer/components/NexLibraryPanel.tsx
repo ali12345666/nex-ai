@@ -26,6 +26,7 @@ import ModelCard, { type ModelCardData, type ModelType } from './library/ModelCa
 import DownloadCard, { type DownloadCardData } from './library/DownloadCard';
 import StoragePanel, { type StorageData } from './library/StoragePanel';
 import EmptyState from './library/EmptyState';
+import ModelDetailsModal from './library/ModelDetailsModal';
 import { useDownloadStore } from '../store/download-store';
 
 type Tab = 'models' | 'installed' | 'downloads' | 'extensions' | 'knowledge' | 'recommendations';
@@ -51,6 +52,8 @@ export default function NexLibraryPanel() {
   const [voiceComponents, setVoiceComponents] = useState<any[]>([]);
   const [unifiedDownloads, setUnifiedDownloads] = useState<Map<string, any>>(new Map());
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [downloadableModels, setDownloadableModels] = useState<any[]>([]);
+  const [detailsModel, setDetailsModel] = useState<ModelCardData | null>(null);
 
   // Download store
   const { downloads, history } = useDownloadStore();
@@ -59,19 +62,22 @@ export default function NexLibraryPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, instRes, statRes, storageRes, voiceRes] = await Promise.all([
+      const [catRes, instRes, statRes, storageRes, voiceRes, dlRes] = await Promise.all([
         window.nexAPI.ecosystemCatalog().catch(() => ({ success: false, catalog: [] })),
         window.nexAPI.modelList().catch(() => []),
         window.nexAPI.localRuntimeStatus().catch(() => null),
         window.nexAPI.aiStorageInfo().catch(() => null),
         window.nexAPI.componentUnifiedVoiceList().catch(() => ({ success: false, components: [] })),
+        window.nexAPI.modelDownloadList().catch(() => ({ success: false, models: [] })),
       ]);
       const cat = (catRes as any)?.catalog || (catRes as any) || [];
       const voice = (voiceRes as any)?.components || (voiceRes as any) || [];
+      const dls = (dlRes as any)?.models || [];
       setCatalog(Array.isArray(cat) ? cat : []);
       setInstalled(Array.isArray(instRes) ? instRes : []);
       setStatus(statRes);
       setVoiceComponents(Array.isArray(voice) ? voice : []);
+      setDownloadableModels(Array.isArray(dls) ? dls : []);
 
       // Build storage data
       if (storageRes) {
@@ -116,9 +122,15 @@ export default function NexLibraryPanel() {
   }, [refresh]);
 
   // ── Model catalog → ModelCardData mapping ───────────────────────────────
+  // Merge ecosystem catalog (display metadata) with downloadable models (actual
+  // download URLs). Only models present in downloadableModels can actually be
+  // downloaded — the rest are display-only catalog entries.
   const allModels: ModelCardData[] = React.useMemo(() => {
     const installedIds = new Set((installed || []).map((m: any) => m.id));
-    return (catalog || []).map((entry: any): ModelCardData => {
+    const downloadableIds = new Set((downloadableModels || []).map((m: any) => m.id));
+
+    // Map ecosystem catalog entries
+    const fromCatalog = (catalog || []).map((entry: any): ModelCardData => {
       const isInstalled = installedIds.has(entry.id);
       const dl = unifiedDownloads.get(entry.id);
       const isActive = entry.id === activeModelId;
@@ -150,7 +162,39 @@ export default function NexLibraryPanel() {
         downloadEta: dl?.eta || undefined,
       };
     });
-  }, [catalog, installed, unifiedDownloads, activeModelId]);
+
+    // Also add downloadable models not in the catalog
+    const catalogIds = new Set((catalog || []).map((e: any) => e.id));
+    const extraDownloadable = (downloadableModels || [])
+      .filter((m: any) => !catalogIds.has(m.id))
+      .map((m: any): ModelCardData => {
+        const isInstalled = installedIds.has(m.id);
+        const dl = unifiedDownloads.get(m.id);
+        const isActive = m.id === activeModelId;
+        return {
+          id: m.id,
+          name: m.name,
+          nameFa: m.nameFa,
+          provider: m.provider || 'unknown',
+          type: (m.category === 'vision' ? 'vision' : m.category === 'embedding' ? 'embedding' : 'llm') as ModelType,
+          sizeBytes: 0, // DownloadableModel doesn't have sizeBytes directly
+          quantization: m.quantization,
+          parameterCount: m.parameterCount,
+          architecture: m.architecture,
+          contextSize: undefined,
+          requiredRAM: m.requiredRAM ? m.requiredRAM * 1024 * 1024 * 1024 : undefined,
+          requiredVRAM: m.requiredVRAM ? m.requiredVRAM * 1024 * 1024 * 1024 : undefined,
+          persianSupport: m.persianSupport,
+          status: dl ? 'downloading' : isInstalled ? 'installed' : 'available',
+          isActive,
+          downloadProgress: dl?.percentage || undefined,
+          downloadSpeed: dl?.speed || undefined,
+          downloadEta: dl?.eta || undefined,
+        };
+      });
+
+    return [...fromCatalog, ...extraDownloadable];
+  }, [catalog, installed, unifiedDownloads, activeModelId, downloadableModels]);
 
   // Filter models
   const filteredModels = React.useMemo(() => {
@@ -234,8 +278,34 @@ export default function NexLibraryPanel() {
   const completedDownloads = downloadCards.filter((d) => d.state === 'completed');
 
   // ── Action handlers ─────────────────────────────────────────────────────
-  const handleDownload = useCallback(async (modelId: string) => {
-    try { await window.nexAPI.modelDownloadStart(modelId); } catch (err) { console.error('Download failed:', err); }
+  // Download button opens the details modal (not direct download)
+  const handleDownload = useCallback((modelId: string) => {
+    const model = allModels.find((m) => m.id === modelId);
+    if (model) {
+      setDetailsModel(model);
+    } else {
+      console.error('[Library] Model not found for download:', modelId);
+    }
+  }, [allModels]);
+
+  // Confirm download from the modal — actually starts the download
+  const handleConfirmDownload = useCallback(async (model: ModelCardData) => {
+    console.log('[Library] Confirming download for:', model.id, model.name);
+    try {
+      const result = await window.nexAPI.modelDownloadStart(model.id);
+      if (!(result as any)?.success) {
+        console.error('[Library] Download start failed:', (result as any)?.error);
+        // If modelDownloadStart fails (model not in downloadable list),
+        // try componentUnifiedInstall as fallback (for voice components)
+        try {
+          await window.nexAPI.componentUnifiedInstall(model.id);
+        } catch (err2) {
+          console.error('[Library] Fallback install also failed:', err2);
+        }
+      }
+    } catch (err) {
+      console.error('[Library] Download failed:', err);
+    }
   }, []);
   const handleLoad = useCallback(async (modelId: string) => {
     try { await window.nexAPI.localRuntimeActivateModel(modelId); await refresh(); } catch (err) { console.error('Load failed:', err); }
@@ -616,6 +686,23 @@ export default function NexLibraryPanel() {
           </>
         )}
       </div>
+
+      {/* ── Model Details Modal (shown before download) ── */}
+      {detailsModel && (
+        <ModelDetailsModal
+          model={detailsModel}
+          onClose={() => setDetailsModel(null)}
+          onConfirmDownload={handleConfirmDownload}
+          hardware={{
+            gpu: status?.hardware?.gpu?.name,
+            ram: status?.hardware?.ramTotalBytes ? `${(status.hardware.ramTotalBytes / (1024 * 1024 * 1024)).toFixed(0)} GB` : undefined,
+            vram: status?.hardware?.gpu?.vramTotalBytes ? `${(status.hardware.gpu.vramTotalBytes / (1024 * 1024 * 1024)).toFixed(0)} GB` : undefined,
+            backend: status?.gpuBackend,
+            compatible: detailsModel.status !== 'not-compatible',
+          }}
+          downloadUrl={(downloadableModels.find((m: any) => m.id === detailsModel.id)?.sources?.[0]?.url) || undefined}
+        />
+      )}
     </div>
   );
 }
