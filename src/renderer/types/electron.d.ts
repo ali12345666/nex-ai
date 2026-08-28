@@ -70,7 +70,7 @@ export interface NexAPI {
   onChatToken: (callback: (ev: { replyId: string; text: string; chars: number; done: boolean; phase?: string }) => void) => () => void;
   aiAbort: () => Promise<{ success: boolean }>;
   // Phase 104: Unified Brain Router
-  brainRoute: (request: { message: string; history?: any[]; forceRoute?: 'chat' | 'agent'; projectPath?: string; sessionId?: string; modelId?: string }) =>
+  brainRoute: (request: { message: string; history?: any[]; forceRoute?: 'chat' | 'agent'; projectPath?: string; sessionId?: string; modelId?: string; inAgentTask?: boolean }) =>
     Promise<{ success: boolean; route: 'chat' | 'agent'; taskId?: string; reason?: string; error?: string }>;
   aiDefaultConfig: (provider: string) => Promise<any>;
 

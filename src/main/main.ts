@@ -851,6 +851,7 @@ async function setupIPC(): Promise<void> {
         message: request.message || '',
         history: request.history,
         forceRoute: request.forceRoute,
+        inAgentTask: request.inAgentTask || false,
       });
 
       if (route === 'agent') {
@@ -869,12 +870,14 @@ async function setupIPC(): Promise<void> {
         });
         return { success: true, route: 'agent', taskId: task.id, reason };
       } else {
-        // Route to Simple Chat (runtime.chatStream)
-        // Return the route decision — the renderer will call ai-chat-stream
-        // with the same message. This keeps the streaming UI consistent.
+        // Route to Simple Chat — the renderer will call aiChatStream
+        // with the same message for token streaming.
         return { success: true, route: 'chat', reason };
       }
     } catch (err: any) {
+      // CRITICAL: on any error, fall back to chat mode so the user
+      // still gets a response (not a dead-end).
+      console.error('[BRAIN_ROUTER] Error, falling back to chat:', err.message);
       return { success: false, error: err.message, route: 'chat' };
     }
   });

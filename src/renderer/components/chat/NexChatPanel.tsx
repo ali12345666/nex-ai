@@ -357,6 +357,83 @@ export default function NexChatPanel() {
     return off;
   }, []);
 
+  // ── Phase 109: Agent event listener — updates chat UI with agent progress ──
+  useEffect(() => {
+    const off = window.nexAPI?.onAgentEvent?.((event: any) => {
+      const eventType = event?.type || event?.event;
+      const taskId = event?.taskId;
+
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (!last || last.metadata?.agentTaskId !== taskId) return prev;
+
+        // Map agent events to user-visible status messages
+        switch (eventType) {
+          case 'planning_completed':
+          case 'plan_created':
+            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n📋 Plan created. Executing steps...' };
+            break;
+          case 'step_started':
+          case 'tool_call':
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n🔧 Running ${event.toolName || event.step?.toolName || 'tool'}...`,
+            };
+            break;
+          case 'step_completed':
+          case 'tool_result':
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n✅ ${event.toolName || 'Step'} completed.`,
+            };
+            break;
+          case 'verification':
+            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔍 Verifying results...' };
+            break;
+          case 'replanning':
+            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔄 Re-planning based on results...' };
+            break;
+          case 'task_completed':
+          case 'completed':
+            // Agent finished — replace placeholder with actual response
+            const finalText = event.result || event.response || event.message || '✅ Task completed.';
+            next[next.length - 1] = {
+              ...last,
+              content: typeof finalText === 'string' ? finalText : JSON.stringify(finalText),
+              status: 'complete',
+              metadata: { ...last.metadata, completed: true },
+            };
+            setIsGenerating(false);
+            setChatStreaming(false);
+            break;
+          case 'task_failed':
+          case 'failed':
+            next[next.length - 1] = {
+              ...last,
+              content: `❌ Agent task failed: ${event.error || event.message || 'Unknown error'}`,
+              status: 'error',
+              metadata: { ...last.metadata, failed: true, error: event.error },
+            };
+            setIsGenerating(false);
+            setChatStreaming(false);
+            break;
+          case 'permission_request':
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n⚠️ Permission required: ${event.action || event.description || 'Action requires approval'}`,
+            };
+            break;
+          default:
+            // Unknown event — don't update the message
+            break;
+        }
+        return next;
+      });
+    });
+    return () => { if (off) off(); };
+  }, []);
+
   // Scroll follow
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -544,7 +621,53 @@ export default function NexChatPanel() {
     const providerConfig = getProviderConfig(settings, aiMode, activeLocalModel);
 
     try {
-      // Try streaming first (P17)
+      // Phase 109: Route through Brain Router first.
+      // The router decides: chat (streaming) or agent (tools + ReAct).
+      // For chat: fall through to aiChatStream (preserves token streaming).
+      // For agent: agent events come via onAgentEvent/onChatToken.
+      const routeResult = await window.nexAPI.brainRoute({
+        message: fullContent,
+        history: messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-5).map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+        projectPath: projectPath || undefined,
+        forceRoute: undefined, // let the router decide
+        inAgentTask: false, // TODO: track active agent task state
+      });
+
+      if (routeResult.success && routeResult.route === 'agent' && routeResult.taskId) {
+        // Agent mode — the agent is running asynchronously.
+        // Agent events (planning, tool_call, verification, completion)
+        // arrive via the agent-event IPC listener (added below).
+        // Show "Agent is working..." status — the listener will update
+        // the message as events arrive.
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last) {
+            next[next.length - 1] = {
+              ...last,
+              content: '🧠 Agent is working on this task...\n\n📋 Planning...',
+              status: 'streaming',
+              metadata: { agentTaskId: routeResult.taskId, route: 'agent' },
+            };
+          }
+          return next;
+        });
+        // Keep isGenerating=true — the agent event listener (useEffect below)
+        // will set it to false when the agent completes or fails.
+        // Don't call aiChatStream — agent runs via its own path.
+        return;
+      }
+
+      // If brainRoute failed or returned chat, fall through to streaming.
+      // Also handle the case where brainRoute itself errors — fall back to chat.
+      if (!routeResult.success) {
+        console.warn('[BRAIN_ROUTER] Error, falling back to direct chat:', routeResult.error);
+      }
+
+      // Chat mode — proceed with streaming (preserves existing behavior)
       const stream = await window.nexAPI.aiChatStream(providerConfig, apiMessages);
       if (stream.success) {
         const finalContent = stream.content || streamBufRef.current;

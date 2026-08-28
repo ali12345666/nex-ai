@@ -32,6 +32,11 @@ export interface NexMessage {
     model?: string;
     durationMs?: number;
     error?: string;
+    // Phase 109: Agent routing metadata
+    agentTaskId?: string;
+    route?: string;
+    completed?: boolean;
+    failed?: boolean;
   };
 }
 
