@@ -93,6 +93,9 @@ function sanitizeProjectId(id: string): string {
 
 /**
  * Set a memory entry.
+ * Phase 111: Secret redaction is enforced AT THE STORAGE LAYER — even if
+ * a caller bypasses the consolidator and calls setMemory() directly,
+ * secrets are still redacted before persistence.
  */
 export function setMemory(
   store: MemoryStoreType,
@@ -100,12 +103,20 @@ export function setMemory(
   value: any,
   opts: { tags?: string[]; expiresAt?: number; projectId?: string; metadata?: Record<string, any> } = {}
 ): MemoryEntry {
-  const id = generateId(key);
+  // Phase 111: Enforce secret redaction at the storage layer.
+  // This is the defense-in-depth fix: even if a caller (remember tool,
+  // IPC handler, consolidator bypass) calls setMemory() directly with
+  // raw secrets, they are redacted before being written to disk.
+  const { redactObjectDeep } = require('../agent/logger');
+  const safeValue = redactObjectDeep(value);
+  const safeKey = redactObjectDeep(key);
+
+  const id = generateId(safeKey);
   const entry: MemoryEntry = {
     id,
-    key,
-    value,
-    type: Array.isArray(value) ? 'array' : typeof value,
+    key: safeKey,
+    value: safeValue,
+    type: Array.isArray(safeValue) ? 'array' : typeof safeValue,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     expiresAt: opts.expiresAt,

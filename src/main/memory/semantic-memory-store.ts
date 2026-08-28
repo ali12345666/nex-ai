@@ -106,6 +106,8 @@ export class SemanticMemoryStore {
   private indexPath: string;
   private embedder: Embedder;
   private dirty: boolean = false;
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private flushing: boolean = false;
 
   constructor(embedder: Embedder, userDataDir?: string) {
     this.embedder = embedder;
@@ -116,6 +118,11 @@ export class SemanticMemoryStore {
     }
     this.indexPath = path.join(dir, INDEX_FILE);
     this.load();
+    // Phase 111: Periodic auto-flush every 30 seconds.
+    // Ensures embeddings survive crashes that bypass the before-quit handler.
+    this.flushTimer = setInterval(() => this.flush(), 30_000);
+    // Don't keep the process alive just for this timer
+    if (this.flushTimer.unref) this.flushTimer.unref();
   }
 
   // ─── Persistence ──────────────────────────────────────────────────────
@@ -136,8 +143,13 @@ export class SemanticMemoryStore {
     }
   }
 
+  /**
+   * Phase 111: Flush is now re-entrant safe (flushing flag prevents
+   * concurrent writes that could cause corruption).
+   */
   flush(): void {
-    if (!this.dirty) return;
+    if (!this.dirty || this.flushing) return;
+    this.flushing = true;
     try {
       const data = { items: Array.from(this.items.values()), flushedAt: Date.now() };
       const tmp = this.indexPath + '.tmp';
@@ -145,7 +157,9 @@ export class SemanticMemoryStore {
       fs.renameSync(tmp, this.indexPath);
       this.dirty = false;
     } catch {
-      // best-effort
+      // best-effort — dirty stays true, will retry on next flush
+    } finally {
+      this.flushing = false;
     }
   }
 
@@ -166,13 +180,19 @@ export class SemanticMemoryStore {
       createdAt?: number;
     } = {},
   ): Promise<SemanticMemoryItem> {
+    // Phase 111: Enforce secret redaction at the semantic store layer.
+    // Even if a caller bypasses the consolidator, secrets are redacted
+    // before being embedded and persisted.
+    const { redactSecrets } = require('../agent/logger');
+    const safeContent = redactSecrets(content).redacted;
+
     const existing = this.items.get(id);
-    const contentChanged = !existing || existing.content !== content;
+    const contentChanged = !existing || existing.content !== safeContent;
 
     let embedding: number[] | null = existing?.embedding || null;
-    if (contentChanged && content.length > 0) {
+    if (contentChanged && safeContent.length > 0) {
       try {
-        embedding = await this.embedder.embed(content);
+        embedding = await this.embedder.embed(safeContent);
       } catch {
         embedding = null; // embedder failed — store without embedding
       }
@@ -181,7 +201,7 @@ export class SemanticMemoryStore {
     const item: SemanticMemoryItem = {
       id,
       type,
-      content,
+      content: safeContent,
       embedding,
       importance: opts.importance ?? existing?.importance ?? 0.5,
       metadata: opts.metadata ?? existing?.metadata ?? {},
@@ -360,8 +380,12 @@ export class SemanticMemoryStore {
     this.dirty = true;
   }
 
-  /** Dispose — flush pending writes. */
+  /** Dispose — flush pending writes + clear timer. */
   dispose(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
     this.flush();
   }
 }

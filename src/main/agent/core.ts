@@ -282,6 +282,20 @@ export async function runTask(taskId: string): Promise<AgentTask> {
 
   const startTime = Date.now();
 
+  // Phase 111: Global task timeout — prevents agent from running forever
+  // if the LLM hangs or tools never complete.
+  // Default: 5 minutes (300,000 ms). Can be overridden via task.timeoutMs.
+  const TASK_TIMEOUT_MS = task.timeoutMs || 300_000;
+  let timeoutFired = false;
+  const timeoutTimer = setTimeout(() => {
+    if (!timeoutFired && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled' && !task.cancelled) {
+      timeoutFired = true;
+      console.warn(`[AGENT] Task ${taskId} timed out after ${TASK_TIMEOUT_MS}ms`);
+      cancelTask(taskId, `Global timeout (${TASK_TIMEOUT_MS}ms)`);
+    }
+  }, TASK_TIMEOUT_MS);
+  if (timeoutTimer.unref) timeoutTimer.unref();
+
   try {
     // ── Phase 1: Planning ──
     token.throwIfCancelled();
@@ -544,13 +558,18 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     return task;
   } catch (err: any) {
     if (err.code === 'AGENT_CANCELLED' || task.cancelled) {
-      task.status = 'cancelled';
-      task.completedAt = Date.now();
+      // Phase 111: Ensure single terminal state — don't override if already set
+      if (task.status !== 'completed' && task.status !== 'failed') {
+        task.status = timeoutFired ? 'failed' : 'cancelled';
+        task.completedAt = Date.now();
+      }
       emit({
-        type: 'task_cancelled',
+        type: timeoutFired ? 'task_failed' : 'task_cancelled',
         taskId,
-        message: `Task cancelled: ${task.cancelReason || 'no reason given'}`,
-        data: { reason: task.cancelReason },
+        message: timeoutFired
+          ? `Task timed out: ${task.cancelReason || 'timeout'}`
+          : `Task cancelled: ${task.cancelReason || 'no reason given'}`,
+        data: { reason: task.cancelReason, timeout: timeoutFired },
       });
       return task;
     }
@@ -561,8 +580,11 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       timestamp: Date.now(),
     };
     task.errors.push(error);
-    task.status = 'failed';
-    task.completedAt = Date.now();
+    // Phase 111: Ensure single terminal state
+    if (task.status !== 'completed' && task.status !== 'cancelled') {
+      task.status = 'failed';
+      task.completedAt = Date.now();
+    }
     emit({
       type: 'task_failed',
       taskId,
@@ -572,6 +594,8 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     AgentLogger.error(`Task ${taskId} failed: ${err.message}`, { taskId, data: { stack: err.stack } });
     return task;
   } finally {
+    // Phase 111: Clear the timeout timer — no lingering timers
+    clearTimeout(timeoutTimer);
     // Clean up the cancellation token (task is done)
     _cancellationTokens.delete(taskId);
   }

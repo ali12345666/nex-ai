@@ -67,6 +67,8 @@ export interface AgentTask {
   cancelReason?: string;
   // Phase 9 / P9-S5: wiring-layer tool services (opaque to agent core)
   toolContextExtras?: Record<string, unknown>;
+  // Phase 111: Global task timeout (ms) — overrides default 300000 (5 min)
+  timeoutMs?: number;
 }
 
 export interface AgentStep {
