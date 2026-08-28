@@ -293,13 +293,13 @@ export default function NexLibraryPanel() {
         </div>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex items-center gap-0.5 px-3 py-2 shrink-0 overflow-x-auto nex-scroll" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+      {/* Tab bar — equal width, flex, no scroll */}
+      <div className="flex items-stretch gap-0.5 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)', overflowX: 'hidden' }}>
         {TABS.map(({ id, label, icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all whitespace-nowrap nex-click"
+            className="flex items-center justify-center gap-1 flex-1 min-w-0 py-1 rounded-md text-[9px] font-medium transition-all nex-click truncate"
             style={
               tab === id
                 ? { background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }
@@ -307,9 +307,9 @@ export default function NexLibraryPanel() {
             }
           >
             {icon}
-            {label}
+            <span className="truncate">{label}</span>
             {id === 'downloads' && activeDownloads.length > 0 && (
-              <span className="ml-0.5 text-[8px] px-1 py-0.5 rounded-full" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>
+              <span className="ml-0.5 text-[7px] px-1 py-0.5 rounded-full shrink-0" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>
                 {activeDownloads.length}
               </span>
             )}
@@ -369,7 +369,7 @@ export default function NexLibraryPanel() {
                     onAction={() => { setSearchQuery(''); setFilterType('all'); }}
                   />
                 ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {filteredModels.map((model) => (
                       <ModelCard
                         key={model.id}
@@ -429,7 +429,7 @@ export default function NexLibraryPanel() {
                     onAction={() => setTab('models')}
                   />
                 ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {installedModels.map((model) => (
                       <ModelCard
                         key={model.id}
@@ -526,7 +526,7 @@ export default function NexLibraryPanel() {
                     description="Voice components (Whisper STT, Piper TTS) will appear here when available for installation."
                   />
                 ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {voiceComponents.map((comp: any) => (
                       <ModelCard
                         key={comp.id}
@@ -597,7 +597,7 @@ export default function NexLibraryPanel() {
                     onAction={() => setTab('models')}
                   />
                 ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {allModels
                       .filter((m) => m.status === 'recommended')
                       .map((model) => (
