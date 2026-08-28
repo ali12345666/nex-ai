@@ -612,6 +612,9 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // ── Agent Core (Phase 7) ──
   agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
   agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
+  // Phase 114: Snapshot / Undo API
+  snapshotRestore: (snapshotId: string) => ipcRenderer.invoke('snapshot-restore', snapshotId),
+  snapshotList: (taskId: string) => ipcRenderer.invoke('snapshot-list', taskId),
   agentGetTask: (taskId: string) => ipcRenderer.invoke('agent-get-task', taskId),
   agentListTasks: () => ipcRenderer.invoke('agent-list-tasks'),
   agentDeleteTask: (taskId: string) => ipcRenderer.invoke('agent-delete-task', taskId),

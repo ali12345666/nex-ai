@@ -74,6 +74,9 @@ export interface NexAPI {
     Promise<{ success: boolean; route: 'chat' | 'agent'; taskId?: string; reason?: string; error?: string }>;
   // Phase 110: Agent task cancellation from renderer
   agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
+  // Phase 114: Snapshot / Undo API
+  snapshotRestore: (snapshotId: string) => Promise<{ success: boolean; error?: string; restoredPath?: string }>;
+  snapshotList: (taskId: string) => Promise<{ success: boolean; snapshots?: any[]; error?: string }>;
   aiDefaultConfig: (provider: string) => Promise<any>;
 
   // Local Model Management (Phase 3-4)

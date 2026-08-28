@@ -1,16 +1,20 @@
 /**
- * NEX AI — File Snapshot Service (Phase 113)
+ * NEX AI — File Snapshot Service (Phase 113/114)
  *
  * Persistent snapshot system for agent file modifications.
- * Before write_file overwrites a file, the original content is saved
- * to <userData>/snapshots/<taskId>/<timestamp>/<filename>.
+ * Before write_file/edit_file overwrites a file, the original content is
+ * saved to <userData>/nex-snapshots/<taskId>/<timestamp>-<filename>.
  *
- * Snapshots survive app restarts and can be restored via the restore API.
+ * Phase 114 additions:
+ *   - Retention policy: 7-day max age, 100/task max count, 500MB global max
+ *   - Startup cleanup: old/excess snapshots pruned automatically
+ *   - getSnapshotById: for restore API
  *
  * Architecture:
- *   write_file → snapshot existing → write new content
- *   restore    → read snapshot    → overwrite current with original
- *   list       → show all snapshots for a task
+ *   write_file/edit_file → snapshot existing → write new content
+ *   restore              → read snapshot    → overwrite current with original
+ *   list                 → show all snapshots for a task
+ *   cleanup              → prune old/excess snapshots
  *
  * Security:
  *   - Snapshots stored OUTSIDE the workspace (in userData)
@@ -33,14 +37,17 @@ export interface SnapshotEntry {
 
 const snapshots = new Map<string, SnapshotEntry>();
 
+// ─── Retention Policy (Phase 114) ──────────────────────────────────────────
+const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const MAX_SNAPSHOTS_PER_TASK = 100;
+const MAX_GLOBAL_SNAPSHOT_SIZE = 500 * 1024 * 1024; // 500 MB
+
 function getSnapshotsDir(): string {
   let base: string;
   try {
-    // In Electron, use userData directory
     const { app } = require('electron');
     base = app.getPath('userData');
   } catch {
-    // Outside Electron (tests, CLI) — use OS temp directory
     base = require('os').tmpdir();
   }
   const dir = path.join(base, 'nex-snapshots');
@@ -218,4 +225,107 @@ export function clearTaskSnapshots(taskId: string): void {
       fs.rmSync(taskDir, { recursive: true, force: true });
     }
   } catch { /* best-effort */ }
+}
+
+// ─── Phase 114: Retention / Disk Safety ────────────────────────────────────
+
+/**
+ * Get a single snapshot by ID (for restore API).
+ */
+export function getSnapshotById(snapshotId: string): SnapshotEntry | null {
+  return snapshots.get(snapshotId) || null;
+}
+
+/**
+ * Phase 114: Run retention cleanup.
+ * - Delete snapshots older than 7 days
+ * - Enforce max 100 snapshots per task (delete oldest)
+ * - Enforce max 500MB global snapshot storage (delete oldest)
+ * - Never crashes — all errors caught and logged
+ *
+ * Should be called on startup and periodically.
+ */
+export function cleanupOldSnapshots(): { deleted: number; reason: string } {
+  let deleted = 0;
+  const now = Date.now();
+
+  try {
+    // 1. Delete snapshots older than MAX_SNAPSHOT_AGE_MS
+    const toDeleteByAge: string[] = [];
+    for (const [id, entry] of snapshots.entries()) {
+      if (now - entry.timestamp > MAX_SNAPSHOT_AGE_MS) {
+        toDeleteByAge.push(id);
+      }
+    }
+    for (const id of toDeleteByAge) {
+      deleteSnapshot(id);
+      deleted++;
+    }
+
+    // 2. Enforce max snapshots per task
+    const taskCounts = new Map<string, SnapshotEntry[]>();
+    for (const entry of snapshots.values()) {
+      if (!taskCounts.has(entry.taskId)) taskCounts.set(entry.taskId, []);
+      taskCounts.get(entry.taskId)!.push(entry);
+    }
+    for (const [taskId, entries] of taskCounts) {
+      if (entries.length > MAX_SNAPSHOTS_PER_TASK) {
+        // Sort by timestamp ascending (oldest first), delete excess
+        entries.sort((a, b) => a.timestamp - b.timestamp);
+        const excess = entries.slice(0, entries.length - MAX_SNAPSHOTS_PER_TASK);
+        for (const entry of excess) {
+          deleteSnapshot(entry.id);
+          deleted++;
+        }
+      }
+    }
+
+    // 3. Enforce global size limit
+    let totalSize = 0;
+    for (const entry of snapshots.values()) {
+      totalSize += entry.size;
+    }
+    if (totalSize > MAX_GLOBAL_SNAPSHOT_SIZE) {
+      // Sort all by timestamp ascending (oldest first)
+      const all = Array.from(snapshots.values()).sort((a, b) => a.timestamp - b.timestamp);
+      for (const entry of all) {
+        if (totalSize <= MAX_GLOBAL_SNAPSHOT_SIZE) break;
+        deleteSnapshot(entry.id);
+        totalSize -= entry.size;
+        deleted++;
+      }
+    }
+
+    // 4. Clean up empty task directories
+    const baseDir = getSnapshotsDir();
+    try {
+      const taskDirs = fs.readdirSync(baseDir, { withFileTypes: true })
+        .filter(d => d.isDirectory());
+      for (const d of taskDirs) {
+        const taskDir = path.join(baseDir, d.name);
+        const files = fs.readdirSync(taskDir);
+        if (files.length === 0) {
+          fs.rmdirSync(taskDir);
+        }
+      }
+    } catch { /* best-effort */ }
+
+    if (deleted > 0) {
+      console.log(`[SNAPSHOT] Cleanup: deleted ${deleted} old/excess snapshot(s)`);
+    }
+    return { deleted, reason: deleted > 0 ? `${deleted} snapshots pruned` : 'no cleanup needed' };
+  } catch (err: any) {
+    console.warn(`[SNAPSHOT] Cleanup failed: ${err.message}`);
+    return { deleted, reason: `cleanup error: ${err.message}` };
+  }
+}
+
+/**
+ * Delete a single snapshot (internal helper).
+ */
+function deleteSnapshot(id: string): void {
+  const entry = snapshots.get(id);
+  if (!entry) return;
+  try { fs.unlinkSync(entry.snapshotPath); } catch { /* */ }
+  snapshots.delete(id);
 }

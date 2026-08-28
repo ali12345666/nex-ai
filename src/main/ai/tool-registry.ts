@@ -358,4 +358,10 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   // Phase 113: git_commit — complete the git workflow
   const { GitCommitTool } = await import('./tools/git-tools');
   registerTool(new GitCommitTool());
+
+  // Phase 114: git_push + edit_file
+  const { GitPushTool } = await import('./tools/git-push-tool');
+  const { EditFileTool } = await import('./tools/edit-file-tool');
+  registerTool(new GitPushTool());
+  registerTool(new EditFileTool());
 }

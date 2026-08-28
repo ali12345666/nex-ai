@@ -4920,6 +4920,30 @@ async function setupIPC(): Promise<void> {
     return { success: ok };
   });
 
+  // ── Phase 114: Snapshot / Undo API ───────────────────────────────────────
+  ipcMain.handle('snapshot-restore', async (_event, snapshotId: string) => {
+    try {
+      const { restoreSnapshot, getSnapshotById } = await import('./agent/snapshot-service');
+      const entry = getSnapshotById(snapshotId);
+      if (!entry) {
+        return { success: false, error: 'Snapshot not found' };
+      }
+      const result = restoreSnapshot(snapshotId);
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('snapshot-list', async (_event, taskId: string) => {
+    try {
+      const { listSnapshots } = await import('./agent/snapshot-service');
+      return { success: true, snapshots: listSnapshots(taskId) };
+    } catch (err: any) {
+      return { success: false, error: err.message, snapshots: [] };
+    }
+  });
+
   ipcMain.handle('agent-get-task', async (_event, taskId: string) => {
     return getTask(taskId);
   });
