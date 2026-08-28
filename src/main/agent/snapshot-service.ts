@@ -1,5 +1,5 @@
 /**
- * NEX AI — File Snapshot Service (Phase 113/114)
+ * NEX AI — File Snapshot Service (Phase 113/114/115)
  *
  * Persistent snapshot system for agent file modifications.
  * Before write_file/edit_file overwrites a file, the original content is
@@ -9,6 +9,47 @@
  *   - Retention policy: 7-day max age, 100/task max count, 500MB global max
  *   - Startup cleanup: old/excess snapshots pruned automatically
  *   - getSnapshotById: for restore API
+ *
+ * Phase 115 additions:
+ *   - loadSnapshotIndex() + cleanupOldSnapshots() are now CALLED on startup
+ *     (previously exported but never invoked — undo was broken after restart)
+ *   - Periodic cleanup interval (every 24h) as a safety net
+ *   - Lifecycle documented below
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * SNAPSHOT LIFECYCLE (Phase 115)
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ *   active task
+ *   → snapshots retained (Undo available via agent message)
+ *
+ *   task completed
+ *   → snapshots retained (Undo still available — user can click Undo
+ *     on the completed agent message)
+ *   → NOT immediately cleared (clearTaskSnapshots is NOT called on
+ *     task_completed — this is intentional to preserve Undo)
+ *
+ *   Undo window expires (7-day retention)
+ *   → cleanupOldSnapshots() prunes snapshots older than 7 days
+ *   → also enforces 100/task max and 500MB global max
+ *
+ *   task failed / cancelled
+ *   → snapshots retained for recovery (7-day retention applies)
+ *
+ *   app restart
+ *   → loadSnapshotIndex() restores the in-memory Map from disk
+ *   → cleanupOldSnapshots() prunes expired snapshots
+ *   → Undo still works after restart (snapshots persist on disk)
+ *
+ *   periodic cleanup (every 24h)
+ *   → cleanupOldSnapshots() runs as a safety net
+ *
+ * This lifecycle ensures:
+ *   1. Undo is always available within the 7-day window
+ *   2. Snapshots don't accumulate indefinitely
+ *   3. Failed/cancelled tasks retain snapshots for recovery
+ *   4. Restart doesn't break Undo
+ * ════════════════════════════════════════════════════════════════════════════
  *
  * Architecture:
  *   write_file/edit_file → snapshot existing → write new content
@@ -20,10 +61,13 @@
  *   - Snapshots stored OUTSIDE the workspace (in userData)
  *   - Path traversal prevented in snapshot naming
  *   - No executable content in snapshot directory
+ *   - Renderer only sends snapshotId — never a filesystem path
+ *   - Main process validates snapshot ownership before restore
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { retryOnEpermSync } from '../security';
 
 export interface SnapshotEntry {
   id: string;
@@ -58,7 +102,10 @@ function getSnapshotsDir(): string {
 }
 
 function sanitizeForFilename(input: string): string {
-  return input.replace(/[^a-zA-Z0-9_\-./]/g, '_').substring(0, 200);
+  // Phase 115: Strip '/' from the whitelist (path-injection vector).
+  // Also cap at 80 chars (was 200) to avoid Windows MAX_PATH (260) issues
+  // when combined with the userData path + taskId + timestamp prefix.
+  return input.replace(/[^a-zA-Z0-9_\-.]/g, '_').substring(0, 80);
 }
 
 /**
@@ -139,9 +186,10 @@ export function restoreSnapshot(snapshotId: string): { success: boolean; error?:
     }
 
     // Atomic restore: copy to temp then rename
+    // Phase 115: Use retryOnEpermSync for Windows AV/indexer lock resilience
     const tmpPath = entry.originalPath + '.restore-tmp';
     fs.copyFileSync(entry.snapshotPath, tmpPath);
-    fs.renameSync(tmpPath, entry.originalPath);
+    retryOnEpermSync(() => fs.renameSync(tmpPath, entry.originalPath));
 
     return { success: true, restoredPath: entry.originalPath };
   } catch (err: any) {
@@ -328,4 +376,44 @@ function deleteSnapshot(id: string): void {
   if (!entry) return;
   try { fs.unlinkSync(entry.snapshotPath); } catch { /* */ }
   snapshots.delete(id);
+}
+
+// ─── Phase 115: Periodic Cleanup ────────────────────────────────────────────
+
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+let _cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Phase 115: Start the periodic snapshot cleanup interval.
+ * Runs cleanupOldSnapshots() every 24 hours as a safety net.
+ * The timer is unref'd so it doesn't keep the process alive.
+ *
+ * Called once on app startup (from main.ts app.whenReady).
+ */
+export function startSnapshotCleanupInterval(): void {
+  if (_cleanupTimer) return; // already started
+  _cleanupTimer = setInterval(() => {
+    try {
+      const result = cleanupOldSnapshots();
+      if (result.deleted > 0) {
+        console.log(`[SNAPSHOT] Periodic cleanup: deleted ${result.deleted} snapshot(s)`);
+      }
+    } catch (err: any) {
+      console.warn(`[SNAPSHOT] Periodic cleanup failed: ${err.message}`);
+    }
+  }, CLEANUP_INTERVAL_MS);
+  // Don't keep the process alive just for this timer
+  if (_cleanupTimer.unref) _cleanupTimer.unref();
+  console.log('[SNAPSHOT] Periodic cleanup interval started (24h)');
+}
+
+/**
+ * Phase 115: Stop the periodic cleanup interval.
+ * Called on app shutdown (best-effort).
+ */
+export function stopSnapshotCleanupInterval(): void {
+  if (_cleanupTimer) {
+    clearInterval(_cleanupTimer);
+    _cleanupTimer = null;
+  }
 }

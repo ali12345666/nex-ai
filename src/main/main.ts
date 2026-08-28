@@ -5701,6 +5701,24 @@ app.whenReady().then(async () => {
   // Initialize persistence before anything else
   initPersistence(userDataPath);
 
+  // Phase 115: Load snapshot index from disk + run retention cleanup.
+  // CRITICAL: Without this, undo/restore is broken after restart (the
+  // in-memory Map is empty even though snapshot files exist on disk).
+  // The retention policy (7-day / 100-per-task / 500MB) is also unenforced
+  // without this call.
+  try {
+    const { loadSnapshotIndex, cleanupOldSnapshots, startSnapshotCleanupInterval } = await import('./agent/snapshot-service');
+    loadSnapshotIndex();
+    const cleanup = cleanupOldSnapshots();
+    if (cleanup.deleted > 0) {
+      console.log(`[NEX AI] Snapshot cleanup: ${cleanup.deleted} old snapshot(s) pruned`);
+    }
+    // Phase 115: Start periodic cleanup (every 24h, unref'd)
+    startSnapshotCleanupInterval();
+  } catch (err: any) {
+    console.warn(`[NEX AI] Snapshot index load failed (non-blocking): ${err.message}`);
+  }
+
   // Phase 40: Initialize the Semantic Memory Store + Retrieval Engine.
   // This wires the embedding-based memory search into the agent flow.
   try {
@@ -5776,18 +5794,38 @@ app.on('window-all-closed', () => {
 // when the JS env tears down.
 let _shuttingDown = false;
 app.on('before-quit', (event) => {
+  // Phase 115: Call preventDefault FIRST, before the re-entry guard.
+  // Previously, a rapid double-quit (clicking X twice) would hit the
+  // guard and return WITHOUT preventing default, racing with the
+  // in-flight shutdownLlama() and reintroducing the SIGABRT.
+  event.preventDefault();
   if (_shuttingDown) return; // avoid re-entry
   _shuttingDown = true;
-  event.preventDefault();
   console.log('[NEX AI] Graceful shutdown: disposing local AI engine...');
-  // Phase 108: Flush semantic memory to disk before quitting.
-  // Without this, all embedded memories are lost on every restart.
+
+  // Phase 115: Cancel all active agent tasks to prevent orphaned
+  // in-flight tool calls and pending permission prompts from hanging
+  // the process during shutdown.
+  try {
+    const { cancelAllActiveTasks } = require('./agent/core');
+    cancelAllActiveTasks('Application shutting down');
+  } catch { /* best-effort */ }
+
+  // Phase 115: Stop the periodic snapshot cleanup timer.
+  try {
+    const { stopSnapshotCleanupInterval } = require('./agent/snapshot-service');
+    stopSnapshotCleanupInterval();
+  } catch { /* best-effort */ }
+
+  // Phase 108/115: Dispose semantic memory (flush + clear timer).
+  // Previously called flush() only, leaving the 30s setInterval alive.
+  // dispose() is double-call safe and clears the timer properly.
   try {
     const { getMemoryRetrievalEngine } = require('./memory/memory-retrieval-engine');
     const engine = getMemoryRetrievalEngine();
     if (engine?.semanticStore) {
-      engine.semanticStore.flush();
-      console.log('[NEX AI] Semantic memory flushed to disk');
+      engine.semanticStore.dispose();
+      console.log('[NEX AI] Semantic memory disposed (flushed + timer cleared)');
     }
   } catch { /* best-effort */ }
   shutdownLlama()

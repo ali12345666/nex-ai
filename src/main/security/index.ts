@@ -21,11 +21,19 @@ import * as fs from 'fs';
  * NOTE: This is intentionally strict. If a target legitimately needs to be
  * outside the project root (e.g. user opens a file from anywhere on disk),
  * the caller must pass an explicit allow-list of additional roots.
+ *
+ * Phase 115: On Windows, the filesystem is case-insensitive. We normalize
+ * both paths to lowercase before comparison to avoid spurious "Access denied"
+ * errors when the agent uses a different case than the root (e.g. the user
+ * opened `C:\Users\Foo\project` but the agent writes to `c:\users\foo\project`).
  */
 export function isPathInside(target: string, root: string): boolean {
   const t = path.resolve(target);
   const r = path.resolve(root);
-  if (t === r) return true;
+  // Phase 115: Case-insensitive comparison on Windows
+  const compareT = process.platform === 'win32' ? t.toLowerCase() : t;
+  const compareR = process.platform === 'win32' ? r.toLowerCase() : r;
+  if (compareT === compareR) return true;
   const rel = path.relative(r, t);
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
@@ -107,6 +115,66 @@ export function isSensitivePath(target: string): string | null {
 // NOTE: HTML sanitization is done in the RENDERER (src/renderer/lib/sanitize.ts)
 // because it relies on DOMParser / DOM APIs that only exist in the browser.
 // The main process never injects HTML anywhere — it only returns text.
+
+// ─── Phase 115: Windows Atomic Rename Helper ─────────────────────────────────
+
+/**
+ * Retry an atomic rename operation on Windows when it fails with EPERM.
+ *
+ * Windows Defender, the Search Indexer, and other file-system filters can
+ * briefly lock a file (10-100ms) causing `fs.renameSync(tmp, target)` to
+ * fail with EPERM even though the operation is valid. This is a known
+ * Node.js issue on Windows (nodejs/node#19077).
+ *
+ * This helper retries up to 3 times with 50ms backoff. On non-Windows
+ * platforms, it's a direct passthrough (no retry needed).
+ *
+ * Usage:
+ *   await retryOnEperm(() => { fs.renameSync(tmpPath, finalPath); });
+ */
+export async function retryOnEperm<T>(fn: () => T, retries = 3, delayMs = 50): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return fn();
+    } catch (err: any) {
+      lastErr = err;
+      // Only retry on EPERM/EBUSY/EACCES on Windows
+      const isWindowsLock = process.platform === 'win32' &&
+        (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES');
+      if (!isWindowsLock || attempt === retries) {
+        throw err;
+      }
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Synchronous version of retryOnEperm for use in sync code paths.
+ * Uses a busy-wait (acceptable for the short 50-150ms retry window).
+ */
+export function retryOnEpermSync<T>(fn: () => T, retries = 3, delayMs = 50): T {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return fn();
+    } catch (err: any) {
+      lastErr = err;
+      const isWindowsLock = process.platform === 'win32' &&
+        (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES');
+      if (!isWindowsLock || attempt === retries) {
+        throw err;
+      }
+      // Busy-wait (short, acceptable for sync path)
+      const start = Date.now();
+      while (Date.now() - start < delayMs * (attempt + 1)) { /* spin */ }
+    }
+  }
+  throw lastErr;
+}
 
 // ─── CSP ────────────────────────────────────────────────────────────────────
 

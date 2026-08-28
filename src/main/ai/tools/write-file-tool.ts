@@ -22,7 +22,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { assertPathInside } from '../../security';
+import { assertPathInside, retryOnEpermSync } from '../../security';
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../tool-registry';
 
 const MAX_CONTENT_SIZE = 2 * 1024 * 1024; // 2MB
@@ -146,11 +146,15 @@ export class WriteFileTool implements Tool {
     }
 
     // ── Write the file ──
+    // Phase 115: Hoist tmpPath to outer scope so the catch block can
+    // clean up the EXACT temp file that was created (previously it
+    // recomputed Date.now() → different filename → orphan temp files).
+    const tmpPath = safePath + '.nex-tmp-' + Date.now();
     try {
       // Atomic write: write to temp file then rename
-      const tmpPath = safePath + '.nex-tmp-' + Date.now();
       fs.writeFileSync(tmpPath, content, { encoding: 'utf-8' });
-      fs.renameSync(tmpPath, safePath);
+      // Phase 115: Use retryOnEpermSync for Windows AV/indexer lock resilience
+      retryOnEpermSync(() => fs.renameSync(tmpPath, safePath));
 
       const sizeStr = contentBytes < 1024
         ? `${contentBytes} B`
@@ -176,9 +180,8 @@ export class WriteFileTool implements Tool {
         durationMs: Date.now() - started,
       };
     } catch (err: any) {
-      // Clean up temp file if it exists
+      // Clean up temp file if it exists (uses the hoisted tmpPath)
       try {
-        const tmpPath = safePath + '.nex-tmp-' + Date.now();
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       } catch { /* best-effort */ }
       return { success: false, error: `Failed to write file: ${err.message}` };

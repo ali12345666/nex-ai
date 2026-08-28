@@ -698,20 +698,25 @@ contextBridge.exposeInMainWorld('nexAPI', {
   dialogOpenFiles: () => ipcRenderer.invoke('dialog-open-files'),
   dialogOpenFolder: () => ipcRenderer.invoke('dialog-open-folder'),
   onAgentEvent: (callback: (event: any) => void) => {
-    ipcRenderer.on('agent-event', (_event, ev) => callback(ev));
-    return () => ipcRenderer.removeAllListeners('agent-event');
+    // Phase 115: Use removeListener instead of removeAllListeners to avoid
+    // wiping other components' listeners when this component re-registers.
+    const handler = (_event: any, ev: any) => callback(ev);
+    ipcRenderer.on('agent-event', handler);
+    return () => ipcRenderer.removeListener('agent-event', handler);
   },
   onPermissionRequest: (callback: (request: any) => void) => {
-    ipcRenderer.on('permission-request', (_event, req) => callback(req));
-    return () => ipcRenderer.removeAllListeners('permission-request');
+    const handler = (_event: any, req: any) => callback(req);
+    ipcRenderer.on('permission-request', handler);
+    return () => ipcRenderer.removeListener('permission-request', handler);
   },
 
   // ── File Watcher ──
   fsWatch: (dirPath: string) => ipcRenderer.invoke('fs-watch', dirPath),
   fsUnwatch: () => ipcRenderer.invoke('fs-unwatch'),
   onFsChange: (callback: (change: { event: string; path: string }) => void) => {
-    ipcRenderer.on('fs-change', (_event, change) => callback(change));
-    return () => ipcRenderer.removeAllListeners('fs-change');
+    const handler = (_event: any, change: any) => callback(change);
+    ipcRenderer.on('fs-change', handler);
+    return () => ipcRenderer.removeListener('fs-change', handler);
   },
 
   // ── Git ──
@@ -724,16 +729,19 @@ contextBridge.exposeInMainWorld('nexAPI', {
 
   // ── Events ──
   onNewTerminal: (callback: () => void) => {
-    ipcRenderer.on('new-terminal', callback);
-    return () => ipcRenderer.removeAllListeners('new-terminal');
+    const handler = () => callback();
+    ipcRenderer.on('new-terminal', handler);
+    return () => ipcRenderer.removeListener('new-terminal', handler);
   },
   onKillTerminal: (callback: () => void) => {
-    ipcRenderer.on('kill-terminal', callback);
-    return () => ipcRenderer.removeAllListeners('kill-terminal');
+    const handler = () => callback();
+    ipcRenderer.on('kill-terminal', handler);
+    return () => ipcRenderer.removeListener('kill-terminal', handler);
   },
   onOpenSettings: (callback: () => void) => {
-    ipcRenderer.on('open-settings', callback);
-    return () => ipcRenderer.removeAllListeners('open-settings');
+    const handler = () => callback();
+    ipcRenderer.on('open-settings', handler);
+    return () => ipcRenderer.removeListener('open-settings', handler);
   },
 });
 

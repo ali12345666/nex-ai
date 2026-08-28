@@ -385,10 +385,30 @@ export default function NexChatPanel() {
             break;
           case 'step_completed':
           case 'tool_result':
-            next[next.length - 1] = {
-              ...last,
-              content: `🧠 Agent is working...\n\n✅ ${event.toolName || 'Step'} completed.`,
-            };
+            // Phase 115: Capture snapshotId from tool_call_completed for Undo UI.
+            // The snapshotId is only present for file-modifying tools (write_file,
+            // edit_file). We store it in the message metadata so MessageBubble
+            // can show an Undo button.
+            {
+              const snapId = event?.data?.snapshotId;
+              const fileLabel = event?.data?.fileLabel;
+              if (snapId) {
+                next[next.length - 1] = {
+                  ...last,
+                  content: `🧠 Agent is working...\n\n✅ ${event.toolName || event.data?.toolName || 'Step'} completed.`,
+                  metadata: {
+                    ...last.metadata,
+                    snapshotId: snapId,
+                    fileLabel: fileLabel,
+                  },
+                };
+              } else {
+                next[next.length - 1] = {
+                  ...last,
+                  content: `🧠 Agent is working...\n\n✅ ${event.toolName || 'Step'} completed.`,
+                };
+              }
+            }
             break;
           case 'verification':
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔍 Verifying results...' };
@@ -816,6 +836,49 @@ export default function NexChatPanel() {
     }
   }, []);
 
+  // Phase 115: Undo — restore a file from its snapshot.
+  // Called when the user clicks the Undo button on an agent message that
+  // contains a snapshotId (from write_file or edit_file).
+  //
+  // Security: the renderer only sends the snapshotId — never a filesystem
+  // path. The main process validates snapshot ownership before restoring.
+  //
+  // Double-restore prevention: undoingIdsRef tracks in-flight undo requests.
+  const undoingIdsRef = useRef<Set<string>>(new Set());
+  const handleUndo = useCallback(async (messageId: string, snapshotId: string) => {
+    // Prevent double-click / double-restore
+    if (undoingIdsRef.current.has(messageId)) return;
+    undoingIdsRef.current.add(messageId);
+
+    try {
+      const result = await window.nexAPI.snapshotRestore(snapshotId);
+      if (result.success) {
+        // Mark the message as undone — disables the Undo button
+        setMessages((prev) => prev.map((m) =>
+          m.id === messageId
+            ? { ...m, metadata: { ...m.metadata, undone: true, undoError: undefined } }
+            : m
+        ));
+      } else {
+        // On failure: keep the Undo button available (if appropriate)
+        // and show the error.
+        setMessages((prev) => prev.map((m) =>
+          m.id === messageId
+            ? { ...m, metadata: { ...m.metadata, undoError: result.error || 'Restore failed' } }
+            : m
+        ));
+      }
+    } catch (err: any) {
+      setMessages((prev) => prev.map((m) =>
+        m.id === messageId
+          ? { ...m, metadata: { ...m.metadata, undoError: err.message || 'Restore failed' } }
+          : m
+      ));
+    } finally {
+      undoingIdsRef.current.delete(messageId);
+    }
+  }, []);
+
   // Phase 88: New Chat — clear messages, reset conversation state
   const handleNewChat = useCallback(() => {
     setMessages([]);
@@ -935,7 +998,7 @@ export default function NexChatPanel() {
               </div>
             ) : (
               <>
-                <MessageBubble message={msg} />
+                <MessageBubble message={msg} onUndo={handleUndo} />
                 {/* Phase 33: Edit/Regenerate actions */}
                 {!isGenerating && msg.status === 'complete' && (
                   <div className={`flex gap-2 mt-0.5 mb-2 ${msg.role === 'user' ? 'justify-end pr-10' : 'pl-10'}`}>

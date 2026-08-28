@@ -598,7 +598,31 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     clearTimeout(timeoutTimer);
     // Clean up the cancellation token (task is done)
     _cancellationTokens.delete(taskId);
+    // Phase 115: Schedule auto-eviction of terminal tasks from _activeTasks.
+    // Without this, completed/failed tasks (with full beforeState/afterState
+    // file-content snapshots in toolCalls[]) accumulate forever → OOM.
+    // We delay 5 minutes so the UI has time to fetch the final state.
+    // The task's snapshots are NOT affected (they have their own 7-day retention).
+    scheduleTaskEviction(taskId, 5 * 60 * 1000);
   }
+}
+
+/**
+ * Phase 115: Schedule eviction of a terminal task from _activeTasks.
+ * Uses an unref'd timer so it doesn't keep the process alive.
+ * Only evicts if the task is in a terminal state (safety check).
+ */
+function scheduleTaskEviction(taskId: string, delayMs: number): void {
+  const timer = setTimeout(() => {
+    const task = _activeTasks.get(taskId);
+    if (task && (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled')) {
+      _activeTasks.delete(taskId);
+      // Note: snapshots are NOT deleted here — they have their own 7-day retention
+      // via cleanupOldSnapshots() so Undo still works after the task is evicted.
+    }
+  }, delayMs);
+  // Don't keep the process alive just for this timer
+  if (timer.unref) timer.unref();
 }
 
 // ─── Step Execution ─────────────────────────────────────────────────────────
@@ -803,7 +827,19 @@ async function executeStep(
         stepId: step.id,
         toolCallId: toolCallRecord.id,
         message: `Tool "${step.toolName}" completed in ${toolCallRecord.durationMs}ms (success: ${result.success})`,
-        data: { success: result.success, durationMs: toolCallRecord.durationMs, error: result.error },
+        data: {
+          success: result.success,
+          durationMs: toolCallRecord.durationMs,
+          error: result.error,
+          // Phase 115: Expose snapshotId + file label for the Undo UI.
+          // Only present for file-modifying tools (write_file, edit_file).
+          // The renderer uses this to show an Undo button on the message.
+          // Security: only the snapshotId + relativePath are exposed —
+          // never the absolute filesystem path.
+          snapshotId: result.data?.snapshotId,
+          fileLabel: result.data?.relativePath,
+          toolName: step.toolName,
+        },
       });
 
       // ── Phase 14 / P14-A: trust-aware verification gate ──
@@ -1249,6 +1285,30 @@ export function cancelTask(taskId: string, reason?: string): boolean {
     task.cancelReason = reason || 'cancelled by user';
   }
   return token.cancel(reason);
+}
+
+/**
+ * Phase 115: Cancel all active (non-terminal) agent tasks.
+ * Called during app shutdown to prevent orphaned in-flight tool calls
+ * and pending permission prompts from hanging the process.
+ *
+ * Returns the number of tasks that were cancelled.
+ */
+export function cancelAllActiveTasks(reason?: string): number {
+  const r = reason || 'Application shutting down';
+  let count = 0;
+  for (const [taskId, task] of _activeTasks) {
+    // Only cancel non-terminal tasks
+    if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled') {
+      if (cancelTask(taskId, r)) {
+        count++;
+      }
+    }
+  }
+  if (count > 0) {
+    console.log(`[AGENT] Cancelled ${count} active task(s) on shutdown`);
+  }
+  return count;
 }
 
 // ─── Diff Approval ───────────────────────────────────────────────────────────

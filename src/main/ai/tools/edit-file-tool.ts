@@ -13,7 +13,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { assertPathInside } from '../../security';
+import { assertPathInside, retryOnEpermSync } from '../../security';
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../tool-registry';
 
 const MAX_CONTENT_SIZE = 2 * 1024 * 1024; // 2MB
@@ -165,7 +165,8 @@ export class EditFileTool implements Tool {
     try {
       const tmpPath = safePath + '.nex-edit-tmp-' + Date.now();
       fs.writeFileSync(tmpPath, newContent, { encoding: 'utf-8' });
-      fs.renameSync(tmpPath, safePath);
+      // Phase 115: Use retryOnEpermSync for Windows AV/indexer lock resilience
+      retryOnEpermSync(() => fs.renameSync(tmpPath, safePath));
 
       return {
         success: true,

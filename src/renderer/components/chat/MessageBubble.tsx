@@ -12,10 +12,16 @@
  *   - Improved spacing (leading-relaxed, paragraph gap)
  *   - System font stack with Persian/Unicode support
  *   - Cleaner status indicators
+ *
+ * Phase 115 additions:
+ *   - Undo button for agent messages with snapshotId (write_file/edit_file)
+ *   - React.memo for performance (prevents re-rendering all messages on
+ *     every token burst — only the changed message re-renders)
+ *   - Undone state confirmation + error display
  */
 
-import React, { useMemo } from 'react';
-import { Bot, User as UserIcon, AlertCircle, Loader2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Bot, User as UserIcon, AlertCircle, Loader2, Undo, Check } from 'lucide-react';
 import type { NexMessage } from '../../lib/chat-model';
 import { splitMarkdown } from '../../lib/markdown';
 import CodeBlock from './CodeBlock';
@@ -57,12 +63,20 @@ function renderContent(content: string, isRtl: boolean): React.ReactNode[] {
 
 export interface MessageBubbleProps {
   message: NexMessage;
+  /** Phase 115: Callback to restore a snapshot (Undo). */
+  onUndo?: (messageId: string, snapshotId: string) => void;
 }
 
-export default function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubbleInner({ message, onUndo }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isRtl = useMemo(() => detectDirection(message.content) === 'rtl', [message.content]);
   const content = useMemo(() => renderContent(message.content, isRtl), [message.content, isRtl]);
+
+  // Phase 115: Undo state
+  const snapshotId = message.metadata?.snapshotId;
+  const isUndone = message.metadata?.undone;
+  const undoError = message.metadata?.undoError;
+  const canUndo = !!snapshotId && !isUndone && message.status === 'complete' && !!onUndo;
 
   return (
     <div
@@ -132,7 +146,62 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
             {message.metadata.provider && <span>via {message.metadata.provider}</span>}
           </div>
         )}
+
+        {/* Phase 115: Undo action for agent file modifications */}
+        {canUndo && (
+          <div
+            className="flex items-center gap-2 mt-2 pt-1.5 text-[10px]"
+            style={{ borderTop: '1px solid var(--nex-glass-border)' }}
+          >
+            <button
+              onClick={() => onUndo!(message.id, snapshotId!)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium nex-click shrink-0"
+              style={{
+                background: 'rgba(245, 158, 11, 0.12)',
+                color: 'rgb(245, 158, 11)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+              }}
+              title={message.metadata?.fileLabel ? `Undo: ${message.metadata.fileLabel}` : 'Undo this change'}
+              aria-label="Undo file modification"
+            >
+              <Undo size={10} />
+              <span>Undo</span>
+            </button>
+            {message.metadata?.fileLabel && (
+              <span className="truncate" style={{ color: 'var(--nex-text-muted)' }} title={message.metadata.fileLabel}>
+                {message.metadata.fileLabel}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Phase 115: Undone confirmation */}
+        {isUndone && (
+          <div
+            className="flex items-center gap-1.5 mt-2 pt-1.5 text-[10px]"
+            style={{ borderTop: '1px solid var(--nex-glass-border)', color: 'rgb(74, 222, 128)' }}
+          >
+            <Check size={11} />
+            <span>Change undone — file restored.</span>
+          </div>
+        )}
+
+        {/* Phase 115: Undo error (button stays available for retry) */}
+        {undoError && !isUndone && (
+          <div
+            className="flex items-center gap-1.5 mt-1 text-[10px]"
+            style={{ color: 'rgb(248, 113, 113)' }}
+          >
+            <AlertCircle size={10} />
+            <span>{undoError}</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+// Phase 115: React.memo prevents re-rendering all messages on every token
+// burst — only the message whose `message` prop changed re-renders.
+const MessageBubble = React.memo(MessageBubbleInner);
+export default MessageBubble;

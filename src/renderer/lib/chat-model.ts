@@ -39,6 +39,11 @@ export interface NexMessage {
     failed?: boolean;
     cancelled?: boolean;
     agentTokensStarted?: boolean;
+    // Phase 115: Undo support — snapshotId from write_file/edit_file
+    snapshotId?: string;
+    fileLabel?: string;
+    undone?: boolean;
+    undoError?: string;
   };
 }
 
