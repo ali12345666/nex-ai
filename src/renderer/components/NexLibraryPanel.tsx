@@ -1,146 +1,95 @@
 /**
- * NEX AI — Unified Library Center (Phase 68 rewrite)
+ * NEX AI — Unified Library Panel (Professional Redesign)
  *
- * Download state lives in useDownloadStore (Zustand) — NOT in component state.
- * This means downloads survive tab switches, panel unmounts, and navigation.
+ * A single unified Library page with 6 tabs:
+ *   1. Models — browse + download all available models
+ *   2. Installed — manage installed models (activate/remove)
+ *   3. Downloads — download manager with progress + controls
+ *   4. Extensions — voice components + tools
+ *   5. Knowledge Base — knowledge packs
+ *   6. System Recommendations — hardware-aware suggestions
  *
- * Architecture:
- *   Main Process → IPC events → useDownloadStore → Components
- *
- * The Library panel reads from the store; it does not own download state.
+ * Visual design: VS Code + AI Model Hub aesthetic
+ *   - Glassmorphism cards
+ *   - Professional badges + status indicators
+ *   - Storage panel in header
+ *   - Smooth animations
+ *   - Lazy loading for model lists
  */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Library, RefreshCw, Star, Brain, Mic, Cpu, BookOpen, CheckCircle2,
-  Download, AlertCircle, Loader2, Package, Globe, Zap, Trash2,
-  Pause, RotateCw, X, ShieldCheck,
+  Brain, CheckCircle2, Download, Puzzle, BookOpen, Cpu,
+  Search, RefreshCw, HardDrive, Star, X, Loader2,
 } from 'lucide-react';
-import { useDownloadStore, isDownloading, type DownloadEntry } from '../store/download-store';
+import ModelCard, { type ModelCardData, type ModelType } from './library/ModelCard';
+import DownloadCard, { type DownloadCardData } from './library/DownloadCard';
+import StoragePanel, { type StorageData } from './library/StoragePanel';
+import EmptyState from './library/EmptyState';
+import { useDownloadStore } from '../store/download-store';
 
-type Tab = 'models' | 'installed' | 'recommended' | 'downloads' | 'voice' | 'tools' | 'knowledge';
+type Tab = 'models' | 'installed' | 'downloads' | 'extensions' | 'knowledge' | 'recommendations';
 
-// Phase 89: Short English labels for compact tab bar (no horizontal scroll)
-const TABS: Array<[Tab, string, React.ReactNode]> = [
-  ['recommended', 'Recommended', <Star size={11} />],
-  ['models', 'Models', <Brain size={11} />],
-  ['installed', 'Installed', <CheckCircle2 size={11} />],
-  ['downloads', 'Downloads', <Download size={11} />],
-  ['voice', 'Voice', <Mic size={11} />],
-  ['tools', 'Runtime', <Cpu size={11} />],
-  ['knowledge', 'Knowledge', <BookOpen size={11} />],
+const TABS: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
+  { id: 'models', label: 'Models', icon: <Brain size={13} /> },
+  { id: 'installed', label: 'Installed', icon: <CheckCircle2 size={13} /> },
+  { id: 'downloads', label: 'Downloads', icon: <Download size={13} /> },
+  { id: 'extensions', label: 'Extensions', icon: <Puzzle size={13} /> },
+  { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={13} /> },
+  { id: 'recommendations', label: 'Recommended', icon: <Star size={13} /> },
 ];
 
-function formatBytes(n: number): string {
-  if (!n) return '0 B';
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-function formatSpeed(bps: number): string {
-  if (!bps) return '—';
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
-}
-
 export default function NexLibraryPanel() {
-  // ── Tab state (local — just which tab is visible) ──
-  const [tab, setTab] = useState<Tab>('recommended');
-
-  // ── Catalog/installed state (local — read-only data) ──
+  const [tab, setTab] = useState<Tab>('models');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<'all' | ModelType>('all');
   const [catalog, setCatalog] = useState<any[]>([]);
   const [installed, setInstalled] = useState<any[]>([]);
   const [status, setStatus] = useState<any>(null);
-  const [permissionInput, setPermissionInput] = useState('');
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null);
-  // ── Phase 72: Test Connection state ──
-  const [connectionTest, setConnectionTest] = useState<any | null>(null);
-  const [testingConnection, setTestingConnection] = useState(false);
-  // ── Phase 72: Unified Model Download Manager state ──
-  const [downloadableModels, setDownloadableModels] = useState<any[]>([]);
-  const [unifiedDownloads, setUnifiedDownloads] = useState<Map<string, any>>(new Map());
-  const [showImportDialog, setShowImportDialog] = useState(false);
-  // ── Phase 76: Unified Voice Components state ──
+  const [storageInfo, setStorageInfo] = useState<StorageData | null>(null);
   const [voiceComponents, setVoiceComponents] = useState<any[]>([]);
-  const [voiceInstallProgress, setVoiceInstallProgress] = useState<Map<string, any>>(new Map());
-  const [voiceRuntimeStatus, setVoiceRuntimeStatus] = useState<any | null>(null);
-  // ── Phase 77: Model Details modal + improved permission + copy confirmation ──
-  const [selectedModel, setSelectedModel] = useState<any | null>(null);
-  const [selectedComponent, setSelectedComponent] = useState<any | null>(null);
-  const [selectedSource, setSelectedSource] = useState<string>('automatic');
-  const [copyConfirm, setCopyConfirm] = useState<string | null>(null);
-  const [pendingDownload, setPendingDownload] = useState<any | null>(null);
-  // ── Phase 81: AI Storage assets ──
-  const [storageAssets, setStorageAssets] = useState<any[]>([]);
-  // ── Phase 82: Model activation ──
+  const [unifiedDownloads, setUnifiedDownloads] = useState<Map<string, any>>(new Map());
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<any | null>(null);
-  const [activating, setActivating] = useState(false);
-  // ── Phase 89: Search + Filter ──
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
-  // ── Phase 89: Storage info ──
-  const [storageInfo, setStorageInfo] = useState<any | null>(null);
 
-  // ── Download state (ZUSTAND STORE — survives component unmount) ──
-  const downloads = useDownloadStore((s) => s.downloads);
-  const history = useDownloadStore((s) => s.history);
-  const pendingPermission = useDownloadStore((s) => s.pendingPermission);
-  const startDownload = useDownloadStore((s) => s.startDownload);
-  const updateProgress = useDownloadStore((s) => s.updateProgress);
-  const completeDownload = useDownloadStore((s) => s.completeDownload);
-  const failDownload = useDownloadStore((s) => s.failDownload);
-  const setPendingPermission = useDownloadStore((s) => s.setPendingPermission);
-  const addToHistory = useDownloadStore((s) => s.addToHistory);
-  const syncFromMain = useDownloadStore((s) => s.syncFromMain);
+  // Download store
+  const { downloads, history } = useDownloadStore();
 
-  // ── Refresh catalog/installed ──
+  // ── Data loading ────────────────────────────────────────────────────────
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [catRes, installedRes, statusRes, dlModelsRes, voiceRes, voiceBinRes, storageRes, storageInfoRes] = await Promise.all([
-        window.nexAPI.ecosystemCatalog(),
-        window.nexAPI.localRuntimeListModels(),
-        window.nexAPI.interactionStatus(),
-        window.nexAPI.modelDownloadList(),
-        window.nexAPI.componentUnifiedVoiceList(),
-        window.nexAPI.voiceFindBinaries().catch(() => ({ success: false })),
-        window.nexAPI.aiStorageList().catch(() => ({ success: false })),
-        window.nexAPI.aiStorageInfo().catch(() => ({ success: false })),
+      const [catRes, instRes, statRes, storageRes, voiceRes] = await Promise.all([
+        window.nexAPI.ecosystemCatalog().catch(() => ({ success: false, catalog: [] })),
+        window.nexAPI.modelList().catch(() => []),
+        window.nexAPI.localRuntimeStatus().catch(() => null),
+        window.nexAPI.aiStorageInfo().catch(() => null),
+        window.nexAPI.componentUnifiedVoiceList().catch(() => ({ success: false, components: [] })),
       ]);
-      if (catRes.success) setCatalog(catRes.catalog || []);
-      if (installedRes.success) setInstalled(installedRes.models || []);
-      if (statusRes.success) setStatus(statusRes.status);
-      if (dlModelsRes.success) setDownloadableModels(dlModelsRes.models || []);
-      if (voiceRes.success) setVoiceComponents(voiceRes.components || []);
-      if (voiceBinRes.success) setVoiceRuntimeStatus(voiceBinRes);
-      if (storageRes.success && (storageRes as any).assets) setStorageAssets((storageRes as any).assets || []);
-      if (storageInfoRes.success) setStorageInfo(storageInfoRes);
+      const cat = (catRes as any)?.catalog || (catRes as any) || [];
+      const voice = (voiceRes as any)?.components || (voiceRes as any) || [];
+      setCatalog(Array.isArray(cat) ? cat : []);
+      setInstalled(Array.isArray(instRes) ? instRes : []);
+      setStatus(statRes);
+      setVoiceComponents(Array.isArray(voice) ? voice : []);
 
-      // Phase 82: Fetch active model + runtime status (with error logging)
-      try {
-        const activeRes = await window.nexAPI.localRuntimeGetActiveModel();
-        if (activeRes.success) {
-          setActiveModelId(activeRes.activeModelId || null);
-        } else {
-          console.log('[PHASE82] getActiveModel failed:', (activeRes as any).error);
-        }
-      } catch (err: any) {
-        console.log('[PHASE82] getActiveModel error:', err?.message);
+      // Build storage data
+      if (storageRes) {
+        const usedBytes = (instRes || []).reduce((sum: number, m: any) => sum + (m.sizeBytes || 0), 0);
+        const totalBytes = (storageRes as any).totalSize || (storageRes as any).totalBytes || 200 * 1024 * 1024 * 1024;
+        setStorageInfo({
+          usedBytes,
+          totalBytes,
+          modelCount: (instRes || []).length,
+          llmBytes: usedBytes,
+        });
       }
-      try {
-        const statusRes2 = await window.nexAPI.localRuntimeDetailedStatus();
-        if (statusRes2.success) {
-          setRuntimeStatus(statusRes2);
-        } else {
-          console.log('[PHASE82] detailedStatus failed:', (statusRes2 as any).error);
-        }
-      } catch (err: any) {
-        console.log('[PHASE82] detailedStatus error:', err?.message);
-      }
-    } catch (err: any) {
-      setError(err?.message);
+
+      // Get active model
+      const active = await window.nexAPI.localRuntimeGetActiveModel().catch(() => null);
+      setActiveModelId((active as any)?.activeModelId || (active as any)?.modelId || null);
+    } catch (err) {
+      console.error('[Library] refresh error:', err);
     } finally {
       setLoading(false);
     }
@@ -148,1428 +97,525 @@ export default function NexLibraryPanel() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // ── On mount: sync download state from main process ──
+  // Subscribe to download progress
   useEffect(() => {
-    // Fetch active downloads from main process
-    window.nexAPI.downloadGetActive().then((res) => {
-      if (res.success && res.downloads) {
-        syncFromMain(res.downloads);
-      }
-    });
-
-    // Subscribe to download state events
-    const unsubState = window.nexAPI.onDownloadState((state) => {
-      // Update store from main process events
-      const existing = useDownloadStore.getState().downloads.find((d) => d.id === state.id);
-      if (existing) {
-        updateProgress(state.id, state);
-      } else {
-        // New download — add to store
-        useDownloadStore.setState((s) => ({
-          downloads: [...s.downloads, state],
-          activeDownloadId: state.id,
-        }));
-      }
-    });
-
-    const unsubCompleted = window.nexAPI.onDownloadCompleted((ev) => {
-      completeDownload(ev.id, ev.result);
-      addToHistory(ev.result);
-      if (ev.result?.success) {
-        setToast({ kind: 'ok', msg: `مدل نصب شد: ${ev.result.modelName}` });
-        refresh(); // Refresh installed list
-      }
-    });
-
-    const unsubError = window.nexAPI.onDownloadError((ev) => {
-      // Phase 71/72: Pass detailed error info (code/stage/host/expected/classification/cdnHost) to store
-      failDownload(ev.id, ev.error, {
-        code: ev.result?.errorCode || ev.code,
-        stage: ev.result?.errorStage || ev.stage,
-        host: ev.result?.errorHost || ev.host,
-        bytesExpected: ev.result?.bytesExpected || ev.bytesExpected,
-        classification: ev.result?.errorClassification,
-        cdnHost: ev.result?.cdnHost,
-        hasAlternativeSource: ev.result?.hasAlternativeSource,
-      });
-      const code = ev.result?.errorCode || ev.code || 'UNKNOWN';
-      const stage = ev.result?.errorStage || ev.stage || 'unknown';
-      const host = ev.result?.errorHost || ev.host || 'unknown';
-      const received = ev.result?.bytesDownloaded || ev.bytesDownloaded || 0;
-      const expected = ev.result?.bytesExpected || ev.bytesExpected || 0;
-      const classification = ev.result?.errorClassification;
-      console.log('[INSTALL:ERROR] Download failed — code:', code, 'stage:', stage, 'host:', host, 'received:', received, 'expected:', expected, 'classification:', classification);
-      // Phase 72: CDN-specific toast message
-      if (classification === 'cdn-connection-failure') {
-        setToast({ kind: 'err', msg: `CDN هاگینگ‌فیس مسدود است — از منبع جایگزین استفاده کنید` });
-      } else {
-        setToast({ kind: 'err', msg: `دانلود ناموفق: ${code} @ ${stage}` });
-      }
-    });
-
-    // Subscribe to permission requests
-    const unsubPerm = window.nexAPI.onModelDeploymentPermissionRequest((req: any) => {
-      setPendingPermission(req);
-      setPermissionInput('');
-    });
-
-    // ── Phase 72: Unified Model Download Manager progress ──
-    const unsubUnified = window.nexAPI.onModelDownloadProgress((progress) => {
+    const offProgress = window.nexAPI?.onModelDownloadProgress?.((ev: any) => {
       setUnifiedDownloads((prev) => {
         const next = new Map(prev);
-        next.set(progress.downloadId, progress);
+        next.set(ev.modelId, ev);
         return next;
       });
-      // Refresh installed list when completed
-      if (progress.state === 'completed') {
-        setToast({ kind: 'ok', msg: `مدل نصب شد: ${progress.modelName}` });
-        refresh();
-      }
-      // Show error toast on failure
-      if (progress.state === 'download-failed' && progress.failure) {
-        const f = progress.failure;
-        if (f.classification === 'CDN_UNREACHABLE') {
-          setToast({ kind: 'err', msg: `CDN مسدود است — منبع جایگزین امتحان شد` });
-        } else {
-          setToast({ kind: 'err', msg: `دانلود ناموفق: ${f.classification}` });
-        }
-      }
     });
-
-    // ── Phase 76: Subscribe to component install progress ──
-    const unsubComponent = window.nexAPI.onComponentInstallProgress((progress) => {
-      setVoiceInstallProgress((prev) => {
-        const next = new Map(prev);
-        next.set(progress.componentId, progress);
-        return next;
-      });
-      if (progress.state === 'completed') {
-        setToast({ kind: 'ok', msg: `${progress.componentName} نصب شد` });
-        refresh();
-      }
-      if (progress.state === 'download-failed') {
-        setToast({ kind: 'err', msg: `نصب ناموفق: ${progress.componentName}` });
-      }
-    });
-
+    const offComplete = window.nexAPI?.onDownloadCompleted?.(() => { refresh(); });
+    const offError = window.nexAPI?.onDownloadError?.(() => { refresh(); });
     return () => {
-      unsubState();
-      unsubCompleted();
-      unsubError();
-      unsubPerm();
-      unsubUnified();
-      unsubComponent();
+      if (offProgress) offProgress();
+      if (offComplete) offComplete();
+      if (offError) offError();
     };
-  }, []);
+  }, [refresh]);
 
-  const showToast = (kind: 'ok' | 'err', msg: string) => {
-    setToast({ kind, msg });
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  // ── Install actions ──
-  // Phase 70: These IPC calls now BLOCK until the permission dialog is
-  // resolved. The "Download started" toast ONLY appears after the main
-  // process returns {success:true, downloadId} — which only happens AFTER
-  // the user explicitly approved the permission.
-  //
-  // If the user denies (Cancel), the IPC returns {status:'permission-denied'}
-  // and NO toast is shown.
-
-  const handleInstallModel = async (url: string, name?: string) => {
-    setError(null);
-    console.log('[INSTALL:01] CLICK — handleInstallModel — url:', url, 'name:', name);
-    try {
-      const res = await window.nexAPI.downloadStart({ url, name });
-      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
-      if (res.success && res.downloadId) {
-        // Permission was APPROVED + downloadId was created + download started.
-        // The download store entry will be created by the download:state event.
-        showToast('ok', 'دانلود شروع شد');
-      } else if (res.status === 'permission-denied') {
-        // User cancelled — no toast, no error. Silent.
-        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
-      } else if (res.status === 'invalid-url') {
-        setError(res.error || 'آدرس نامعتبر است');
-      } else {
-        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
-        setError(res.error || 'شروع دانلود ناموفق بود');
-      }
-    } catch (err: any) {
-      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
-      console.log('[INSTALL:ERROR] stack:', err?.stack);
-      setError(err?.message);
-    }
-  };
-
-  const handleInstallRecommended = async () => {
-    setError(null);
-    console.log('[INSTALL:01] CLICK — handleInstallRecommended');
-    try {
-      const res = await window.nexAPI.downloadStartRecommended();
-      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
-      if (res.success && res.downloadId) {
-        showToast('ok', 'دانلود مدل پیشنهادی شروع شد');
-      } else if (res.status === 'permission-denied') {
-        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
-      } else {
-        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
-        setError(res.error || 'شروع دانلود ناموفق بود');
-      }
-    } catch (err: any) {
-      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
-      console.log('[INSTALL:ERROR] stack:', err?.stack);
-      setError(err?.message);
-    }
-  };
-
-  // ── Phase 72: Test Connection — tests HuggingFace + CDN + ModelScope ──
-  const handleTestConnection = async () => {
-    setTestingConnection(true);
-    setConnectionTest(null);
-    try {
-      console.log('[TEST_CONNECTION] Testing 3 hosts...');
-      const res = await window.nexAPI.downloadTestConnection();
-      if (res.success && res.results) {
-        setConnectionTest(res.results);
-        console.log('[TEST_CONNECTION] Results:', res.results);
-        if (res.results.recommendation.includes('CDN blocked')) {
-          showToast('err', 'CDN هاگینگ‌فیس مسدود است — از منبع جایگزین استفاده کنید');
-        } else if (res.results.recommendation.includes('All hosts reachable')) {
-          showToast('ok', 'تمام میزبان‌ها در دسترس هستند');
-        } else {
-          showToast('ok', 'تست اتصال انجام شد');
-        }
-      } else {
-        setError(res.error || 'تست اتصال ناموفق بود');
-      }
-    } catch (err: any) {
-      console.log('[TEST_CONNECTION] Error:', err?.message);
-      setError(err?.message);
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
-  // ── Phase 72: Install from alternative source (ModelScope) ──
-  const handleInstallAlternative = async () => {
-    setError(null);
-    console.log('[INSTALL:01] CLICK — handleInstallAlternative (ModelScope)');
-    try {
-      const res = await window.nexAPI.downloadStartAlternative();
-      console.log('[INSTALL:RESPONSE] success:', res.success, 'status:', res.status, 'downloadId:', res.downloadId);
-      if (res.success && res.downloadId) {
-        showToast('ok', 'دانلود از منبع جایگزین (ModelScope) شروع شد');
-      } else if (res.status === 'permission-denied') {
-        console.log('[INSTALL:CANCELLED] User denied permission — no download started');
-      } else {
-        console.log('[INSTALL:ERROR] stage:ipc — error:', res.error);
-        setError(res.error || 'شروع دانلود ناموفق بود');
-      }
-    } catch (err: any) {
-      console.log('[INSTALL:ERROR] stage:renderer-catch — error:', err?.message);
-      setError(err?.message);
-    }
-  };
-
-  // ── Phase 72: Unified Model Download Manager handlers ──
-  const handleUnifiedDownload = async (modelId: string) => {
-    setError(null);
-    console.log('[MODEL_DOWNLOAD:01] CLICK — model:', modelId);
-    try {
-      const res = await window.nexAPI.modelDownloadStart(modelId);
-      if (res.success && res.downloadId) {
-        showToast('ok', 'دانلود شروع شد (چند منبعی)');
-      } else if (res.status === 'permission-denied') {
-        console.log('[MODEL_DOWNLOAD:CANCELLED] Permission denied');
-      } else {
-        setError(res.error || 'شروع دانلود ناموفق بود');
-      }
-    } catch (err: any) {
-      setError(err?.message);
-    }
-  };
-
-  const handleCancelUnifiedDownload = async (downloadId: string) => {
-    try {
-      await window.nexAPI.modelDownloadCancel(downloadId);
-      showToast('ok', 'دانلود لغو شد');
-    } catch (err: any) {
-      setError(err?.message);
-    }
-  };
-
-  const handleTestSources = async (modelId: string) => {
-    setTestingConnection(true);
-    try {
-      const res = await window.nexAPI.modelDownloadTestSources(modelId);
-      if (res.success && res.results) {
-        setConnectionTest({ sources: res.results });
-      }
-    } catch (err: any) {
-      setError(err?.message);
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
-  const handleImportLocalModel = async () => {
-    // Use Electron's native file dialog via IPC
-    try {
-      // We'll use the showOpenDialog IPC if available, otherwise prompt
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.gguf';
-      input.onchange = async (e: any) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const filePath = (file as any).path; // Electron exposes .path on File objects
-        if (!filePath) {
-          setError('Cannot get file path — use drag & drop or Electron dialog');
-          return;
-        }
-        console.log('[MODEL_IMPORT] Importing:', filePath);
-        const res = await window.nexAPI.modelDownloadImportLocal(filePath, {
-          filename: file.name,
-          name: file.name.replace(/\.gguf$/i, ''),
-        });
-        if (res.success) {
-          showToast('ok', `مدل ایمپورت شد: ${file.name}`);
-          refresh();
-        } else {
-          setError(res.error || 'ایمپورت ناموفق بود');
-        }
+  // ── Model catalog → ModelCardData mapping ───────────────────────────────
+  const allModels: ModelCardData[] = React.useMemo(() => {
+    const installedIds = new Set((installed || []).map((m: any) => m.id));
+    return (catalog || []).map((entry: any): ModelCardData => {
+      const isInstalled = installedIds.has(entry.id);
+      const dl = unifiedDownloads.get(entry.id);
+      const isActive = entry.id === activeModelId;
+      return {
+        id: entry.id,
+        name: entry.name,
+        nameFa: entry.displayNameFa || entry.nameFa,
+        provider: entry.provider || 'unknown',
+        type: (entry.type === 'voice-stt' ? 'voice-stt' : entry.type === 'voice-tts' ? 'voice-tts' : entry.type === 'vision' ? 'vision' : entry.type === 'embedding' ? 'embedding' : 'llm') as ModelType,
+        sizeBytes: (entry.sizeGB || 0) * 1024 * 1024 * 1024,
+        quantization: entry.quantization,
+        parameterCount: entry.parameterCount,
+        architecture: entry.architecture,
+        contextSize: entry.contextSize,
+        requiredRAM: entry.requiredRAM ? entry.requiredRAM * 1024 * 1024 * 1024 : undefined,
+        requiredVRAM: entry.requiredVRAM ? entry.requiredVRAM * 1024 * 1024 * 1024 : undefined,
+        recommendedRAM: entry.recommendedRAM,
+        recommendedVRAM: entry.recommendedVRAM,
+        speedScore: entry.speedScore,
+        qualityScore: entry.qualityScore,
+        codingScore: entry.codingScore,
+        reasoningScore: entry.reasoningScore,
+        persianSupport: entry.persianSupport,
+        multilingual: entry.multilingual,
+        status: dl ? 'downloading' : isInstalled ? 'installed' : entry.recommendedTier === 'low' ? 'recommended' : 'available',
+        isActive,
+        downloadProgress: dl?.percentage || undefined,
+        downloadSpeed: dl?.speed || undefined,
+        downloadEta: dl?.eta || undefined,
       };
-      input.click();
-    } catch (err: any) {
-      setError(err?.message);
-    }
-  };
+    });
+  }, [catalog, installed, unifiedDownloads, activeModelId]);
 
-  // ── Phase 76: Unified Voice Component Install ──
-  const handleInstallVoiceComponent = async (componentId: string, componentName: string) => {
-    setError(null);
-    console.log('[VOICE_INSTALL] Starting:', componentId, componentName);
-    try {
-      const res = await window.nexAPI.componentUnifiedInstall(componentId);
-      if (res.success) {
-        showToast('ok', `${componentName} نصب شد`);
-        refresh();
-      } else if ((res as any).status === 'permission-denied') {
-        console.log('[VOICE_INSTALL] Permission denied');
-      } else {
-        console.log('[VOICE_INSTALL] Failed:', res.error);
-        setError(res.error || 'نصب ناموفق بود');
-      }
-    } catch (err: any) {
-      console.log('[VOICE_INSTALL] Error:', err?.message);
-      setError(err?.message);
-    }
-  };
-
-  // ── Phase 82: Activate model — set as default + load into runtime ──
-  const handleActivateModel = async (modelId: string, modelName: string) => {
-    setActivating(true);
-    try {
-      console.log('[MODEL_ACTIVATE] Activating:', modelId);
-      const res = await window.nexAPI.localRuntimeActivateModel(modelId);
-      if (res.success) {
-        setActiveModelId(modelId);
-        showToast('ok', `مدل فعال شد: ${modelName}`);
-        // Refresh runtime status
-        const statusRes = await window.nexAPI.localRuntimeDetailedStatus();
-        if (statusRes.success) setRuntimeStatus(statusRes);
-      } else {
-        setError(res.error || 'فعال‌سازی ناموفق بود');
-      }
-    } catch (err: any) {
-      setError(err?.message);
-    } finally {
-      setActivating(false);
-    }
-  };
-
-  // ── Phase 82b: Activate AI Storage asset (register + activate) ──
-  const handleActivateStorageAsset = async (asset: any) => {
-    setActivating(true);
-    try {
-      console.log('[MODEL_ACTIVATE] Activating storage asset:', asset.name, asset.path);
-
-      // Step 1: Register the model in the model registry (if not already)
-      let modelId = asset.id;
-      try {
-        const regRes = await window.nexAPI.modelDeployImport(asset.path, {
-          name: asset.name,
-          category: asset.type === 'coder' ? 'coding' : 'general',
-          quantization: asset.quantization,
-          parameterCount: asset.parameterCount,
-          architecture: undefined,
-        });
-        if (regRes.success && (regRes as any).result?.model) {
-          modelId = (regRes as any).result.model.id;
-          console.log('[MODEL_ACTIVATE] Registered in model registry:', modelId);
-        } else if (regRes.success && (regRes as any).result?.modelId) {
-          modelId = (regRes as any).result.modelId;
-          console.log('[MODEL_ACTIVATE] Registered in model registry:', modelId);
-        }
-      } catch (regErr: any) {
-        // May already be registered — try to find it by path
-        console.log('[MODEL_ACTIVATE] Registration skipped:', regErr?.message);
-      }
-
-      // Step 2: Activate via the model ID
-      const res = await window.nexAPI.localRuntimeActivateModel(modelId);
-      if (res.success) {
-        setActiveModelId(modelId);
-        showToast('ok', `مدل فعال شد: ${asset.name}`);
-        const statusRes = await window.nexAPI.localRuntimeDetailedStatus();
-        if (statusRes.success) setRuntimeStatus(statusRes);
-        await refresh();
-      } else {
-        setError(res.error || 'فعال‌سازی ناموفق بود');
-      }
-    } catch (err: any) {
-      setError(err?.message);
-    } finally {
-      setActivating(false);
-    }
-  };
-
-  // ── Phase 76: Import voice component from local file ──
-  const handleImportVoiceComponent = async (componentId: string) => {
-    try {
-      const input = document.createElement('input');
-      input.type = 'file';
-      // Accept appropriate extensions based on component
-      const component = voiceComponents.find(c => c.id === componentId);
-      const acceptExt = component?.filename?.toLowerCase().endsWith('.gguf') ? '.gguf'
-        : component?.filename?.toLowerCase().endsWith('.bin') ? '.bin'
-        : component?.filename?.toLowerCase().endsWith('.onnx') ? '.onnx'
-        : '.gguf,.bin,.onnx';
-      input.accept = acceptExt;
-      input.onchange = async (e: any) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const filePath = (file as any).path;
-        if (!filePath) {
-          setError('Cannot get file path');
-          return;
-        }
-        console.log('[VOICE_IMPORT] Importing:', filePath, 'as', componentId);
-        const res = await window.nexAPI.componentUnifiedImportLocal(filePath, componentId);
-        if (res.success) {
-          showToast('ok', `${file.name} ایمپورت شد`);
-          refresh();
-        } else {
-          setError(res.error || 'ایمپورت ناموفق بود');
-        }
-      };
-      input.click();
-    } catch (err: any) {
-      setError(err?.message);
-    }
-  };
-
-  // ── Phase 77: Model Details modal handlers ──
-  const handleOpenModelDetails = (model: any) => {
-    console.log('[MODEL_DETAILS] Opening:', model.name || model.id);
-    setSelectedModel(model);
-    setSelectedSource('automatic');
-  };
-
-  const handleCloseModelDetails = () => {
-    setSelectedModel(null);
-    setSelectedComponent(null);
-    setPendingDownload(null);
-  };
-
-  // ── Phase 77: Copy download URL to clipboard ──
-  const handleCopyUrl = async (url: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopyConfirm(`${label} کپی شد`);
-      setTimeout(() => setCopyConfirm(null), 2000);
-      console.log('[COPY_URL] Copied:', label, url.slice(0, 60) + '...');
-    } catch (err: any) {
-      // Fallback for older Electron
-      const textArea = document.createElement('textarea');
-      textArea.value = url;
-      document.body.appendChild(textArea);
-      textArea.select();
-      try { document.execCommand('copy'); setCopyConfirm(`${label} کپی شد`); setTimeout(() => setCopyConfirm(null), 2000); } catch {}
-      document.body.removeChild(textArea);
-    }
-  };
-
-  // ── Phase 77: Open download page in browser ──
-  const handleOpenDownloadPage = async (url: string) => {
-    try {
-      if (window.nexAPI.openExternal) {
-        await window.nexAPI.openExternal(url);
-      } else {
-        window.open(url, '_blank');
-      }
-    } catch {
-      window.open(url, '_blank');
-    }
-  };
-
-  // ── Phase 77: Improved permission flow — no mandatory typing ──
-  const handleStartDownloadWithConfirm = (model: any, source?: string) => {
-    setPendingDownload({ model, source: source || 'automatic' });
-  };
-
-  const handleConfirmDownload = async () => {
-    if (!pendingDownload) return;
-    const { model, source } = pendingDownload;
-    setPendingDownload(null);
-
-    // Use the unified download pipeline
-    if (model.sources) {
-      // Downloadable model from unified catalog
-      if (source === 'modelscope' && model.sources.length > 1) {
-        // Use alternative source
-        handleInstallAlternative();
-      } else {
-        // Default: use unified model download
-        handleInstallModel(model.sources[0]?.url || model.downloadUrl, model.name);
-      }
-    } else if (model.id) {
-      // Voice component
-      handleInstallVoiceComponent(model.id, model.name);
-    }
-  };
-
-  const handleCancelDownload = () => {
-    setPendingDownload(null);
-    console.log('[PERMISSION] Download cancelled by user');
-  };
-
-  // ── Phase 77: Old respondPermission now auto-confirms for button-based flow ──
-  // The old typed-confirmation flow is preserved for HIGH_RISK actions,
-  // but for model downloads we use the button-based confirmation above.
-  const handleRemoveModel = async (modelId: string, name: string) => {
-    try {
-      const res = await window.nexAPI.modelDeployRemove(modelId, true);
-      if (res.success) {
-        showToast('ok', `حذف شد: ${name}`);
-        await refresh();
-      } else {
-        setError(res.error || 'حذف ناموفق بود');
-      }
-    } catch (err: any) {
-      setError(err?.message);
-    }
-  };
-
-  const respondPermission = async (response: string) => {
-    await window.nexAPI.modelDeployRespondPermission(response);
-    setPendingPermission(null);
-    setPermissionInput('');
-  };
-
-  // ── Derived state ──
-  const installedNames = new Set(installed.map((m: any) => m.name.toLowerCase()));
-  const recommended = catalog.filter((m: any) => m.recommendedTier === 'low' && m.isEssential).slice(0, 5);
-  const activeDownloads = downloads.filter((d: DownloadEntry) =>
-    !['deployed', 'download-failed', 'rolled-back', 'permission-denied'].includes(d.status)
-  );
-  const completedDownloads = downloads.filter((d: DownloadEntry) =>
-    ['deployed', 'download-failed', 'rolled-back', 'permission-denied'].includes(d.status)
-  );
-
-  // Phase 89: Filtered models for Models tab (search + type filter)
-  const allModels = useMemo(() => {
-    return [
-      ...catalog.filter((m: any) => m.type === 'llm'),
-      ...downloadableModels,
-    ];
-  }, [catalog, downloadableModels]);
-
-  const filteredModels = useMemo(() => {
+  // Filter models
+  const filteredModels = React.useMemo(() => {
     let result = allModels;
-    // Type filter
     if (filterType !== 'all') {
-      result = result.filter((m: any) => {
-        const type = m.type || 'llm';
-        if (filterType === 'llm') return type === 'llm' || !m.sources;
-        if (filterType === 'voice') return m.type === 'voice-stt' || m.type === 'voice-tts';
-        if (filterType === 'vision') return m.type === 'vision';
-        return true;
-      });
+      result = result.filter((m) => m.type === filterType);
     }
-    // Search filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      result = result.filter((m: any) => {
-        const name = (m.name || m.displayNameFa || '').toLowerCase();
-        const provider = (m.provider || '').toLowerCase();
-        const quant = (m.quantization || '').toLowerCase();
-        const params = (m.parameterCount || '').toLowerCase();
-        return name.includes(q) || provider.includes(q) || quant.includes(q) || params.includes(q);
-      });
+      result = result.filter((m) =>
+        m.name.toLowerCase().includes(q) ||
+        m.provider.toLowerCase().includes(q) ||
+        (m.parameterCount || '').toLowerCase().includes(q)
+      );
     }
     return result;
   }, [allModels, filterType, searchQuery]);
 
+  // ── Installed models ────────────────────────────────────────────────────
+  const installedModels: ModelCardData[] = React.useMemo(() => {
+    return (installed || []).map((m: any): ModelCardData => ({
+      id: m.id,
+      name: m.name,
+      provider: m.architecture || 'local',
+      type: (m.category === 'vision' ? 'vision' : m.category === 'embedding' ? 'embedding' : 'llm') as ModelType,
+      sizeBytes: m.sizeBytes || 0,
+      quantization: m.quantization,
+      parameterCount: m.parameterCount,
+      contextSize: m.contextSize,
+      status: 'installed',
+      isActive: m.id === activeModelId,
+      installedPath: m.path,
+    }));
+  }, [installed, activeModelId]);
+
+  // ── Download cards ──────────────────────────────────────────────────────
+  const downloadCards: DownloadCardData[] = React.useMemo(() => {
+    // From unified downloads
+    const cards: DownloadCardData[] = [];
+    unifiedDownloads.forEach((dl: any, modelId: string) => {
+      const entry = catalog.find((c: any) => c.id === modelId);
+      cards.push({
+        id: dl.downloadId || modelId,
+        modelName: entry?.name || dl.modelName || modelId,
+        state: dl.state || 'downloading',
+        progress: dl.percentage || 0,
+        receivedBytes: dl.receivedBytes || 0,
+        totalBytes: dl.totalBytes || 0,
+        speed: dl.speed || 0,
+        eta: dl.eta || -1,
+        stageMessage: dl.stageMessage,
+        stageMessageFa: dl.stageMessageFa,
+        attempt: dl.attempt,
+        maxAttempts: dl.maxAttempts,
+        failure: dl.failure?.message,
+        source: dl.currentSource?.label,
+      });
+    });
+    // Also from download store
+    (downloads || []).forEach((dl: any) => {
+      if (!cards.find((c) => c.id === dl.id)) {
+        cards.push({
+          id: dl.id,
+          modelName: dl.modelName,
+          state: dl.status?.toLowerCase() || 'downloading',
+          progress: dl.progress || 0,
+          receivedBytes: dl.downloadedBytes || 0,
+          totalBytes: dl.totalBytes || 0,
+          speed: dl.speedBytesPerSec || 0,
+          eta: dl.etaSeconds ? dl.etaSeconds * 1000 : -1,
+          stageMessage: dl.stageMessage,
+          stageMessageFa: dl.stageMessageFa,
+          failure: dl.error,
+        });
+      }
+    });
+    return cards;
+  }, [unifiedDownloads, downloads, catalog]);
+
+  const activeDownloads = downloadCards.filter((d) => !['completed', 'cancelled', 'download-failed'].includes(d.state));
+  const completedDownloads = downloadCards.filter((d) => d.state === 'completed');
+
+  // ── Action handlers ─────────────────────────────────────────────────────
+  const handleDownload = useCallback(async (modelId: string) => {
+    try { await window.nexAPI.modelDownloadStart(modelId); } catch (err) { console.error('Download failed:', err); }
+  }, []);
+  const handleLoad = useCallback(async (modelId: string) => {
+    try { await window.nexAPI.localRuntimeActivateModel(modelId); await refresh(); } catch (err) { console.error('Load failed:', err); }
+  }, [refresh]);
+  const handleRemove = useCallback(async (modelId: string) => {
+    try { await window.nexAPI.modelRemove(modelId); await refresh(); } catch (err) { console.error('Remove failed:', err); }
+  }, [refresh]);
+  const handleInstall = useCallback(async () => {
+    try { const r = await window.nexAPI.modelPickFile(); if (r?.path) { await window.nexAPI.modelAdd(r.path); await refresh(); } } catch (err) { console.error('Install failed:', err); }
+  }, [refresh]);
+  const handleCancelDownload = useCallback(async (downloadId: string) => {
+    try { await window.nexAPI.modelDownloadCancel(downloadId); } catch (err) { console.error('Cancel failed:', err); }
+  }, []);
+  const handleInstallVoiceComponent = useCallback(async (componentId: string) => {
+    try { await window.nexAPI.componentUnifiedInstall(componentId); } catch (err) { console.error('Voice install failed:', err); }
+  }, []);
+
+  // ── Filter pills ────────────────────────────────────────────────────────
+  const FILTER_PILLS: Array<{ id: 'all' | ModelType; label: string }> = [
+    { id: 'all', label: 'All' },
+    { id: 'llm', label: 'LLM' },
+    { id: 'voice-stt', label: 'STT' },
+    { id: 'voice-tts', label: 'TTS' },
+    { id: 'vision', label: 'Vision' },
+  ];
+
   return (
-    <div className="flex flex-col h-full relative overflow-hidden">
-      {/* Header with Storage Summary */}
-      <div className="flex items-center justify-between px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
-        <div className="flex items-center gap-2 min-w-0">
-          <Library size={14} style={{ color: 'var(--nex-accent)' }} />
-          <span className="text-[11px] font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>LIBRARY</span>
-          {status?.modelReady && <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}><CheckCircle2 size={8} /> Ready</span>}
-          {activeDownloads.length > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: '#06b6d4' }} />}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {storageInfo && (
-            <span className="text-[8px] px-1.5 py-0.5 rounded" style={{ background: 'var(--nex-bg)', color: 'var(--nex-text-muted)' }} title={storageInfo.path}>
-              {formatBytes(storageInfo.totalSize || 0)} • {storageInfo.modelCount || 0} models
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+        <div className="flex items-center gap-2">
+          <Brain size={16} style={{ color: 'var(--nex-accent)' }} />
+          <span className="text-xs font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>LIBRARY</span>
+          {status?.modelReady && (
+            <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>
+              <CheckCircle2 size={8} /> Ready
             </span>
           )}
-          <button onClick={refresh} disabled={loading} className="p-1 rounded transition-colors hover:bg-white/[0.06] disabled:opacity-50" style={{ color: 'var(--nex-text-muted)' }}>
+          {activeDownloads.length > 0 && (
+            <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>
+              <Loader2 size={8} className="animate-spin" /> {activeDownloads.length} active
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {storageInfo && (
+            <span className="text-[9px] px-2 py-1 rounded-full" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text-muted)' }}>
+              <HardDrive size={9} className="inline mr-1" />
+              {(storageInfo.usedBytes / (1024 * 1024 * 1024)).toFixed(1)} GB • {storageInfo.modelCount} models
+            </span>
+          )}
+          <button onClick={refresh} disabled={loading} className="p-1 rounded transition-colors hover:bg-white/[0.06] disabled:opacity-50" style={{ color: 'var(--nex-text-muted)' }} title="Refresh">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
 
-      {/* Phase 89: Tab Bar — flex nowrap, no horizontal scroll */}
-      <div className="flex gap-0.5 px-2 py-1.5 shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
-        {TABS.map(([id, label, icon]) => (
+      {/* Tab bar */}
+      <div className="flex items-center gap-0.5 px-3 py-2 shrink-0 overflow-x-auto nex-scroll" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
+        {TABS.map(({ id, label, icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="nex-click nex-focus flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-medium transition-all shrink-0"
-            style={{
-              background: tab === id ? 'var(--nex-accent-dim)' : 'transparent',
-              color: tab === id ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)',
-              border: tab === id ? '1px solid var(--nex-accent-glow)' : '1px solid transparent',
-              whiteSpace: 'nowrap',
-            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all whitespace-nowrap nex-click"
+            style={
+              tab === id
+                ? { background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }
+                : { background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid transparent' }
+            }
           >
             {icon}
-            <span>{label}</span>
+            {label}
             {id === 'downloads' && activeDownloads.length > 0 && (
-              <span className="text-[7px] px-1 rounded shrink-0" style={{ background: '#06b6d4', color: '#fff' }}>{activeDownloads.length}</span>
+              <span className="ml-0.5 text-[8px] px-1 py-0.5 rounded-full" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>
+                {activeDownloads.length}
+              </span>
             )}
           </button>
         ))}
       </div>
 
-      {/* Phase 89: Search + Filter Bar (only on Models tab) */}
-      {tab === 'models' && (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)' }}>
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search models..."
-            className="flex-1 px-2 py-1 rounded-md text-[10px] outline-none min-w-0"
-            style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)' }}
-          />
-          <div className="flex gap-0.5 shrink-0">
-            {['all', 'llm', 'voice', 'vision'].map(ft => (
-              <button
-                key={ft}
-                onClick={() => setFilterType(ft)}
-                className="px-1.5 py-1 rounded-md text-[8px] font-medium capitalize nex-click"
-                style={{
-                  background: filterType === ft ? 'var(--nex-accent-dim)' : 'transparent',
-                  color: filterType === ft ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)',
-                  border: filterType === ft ? '1px solid var(--nex-accent-glow)' : '1px solid var(--nex-panel-border)',
-                }}
-              >
-                {ft}
-              </button>
-            ))}
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto nex-scroll p-4">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <Loader2 className="animate-spin" size={24} style={{ color: 'var(--nex-accent)' }} />
           </div>
-        </div>
-      )}
-
-      {/* Body — all tabs kept mounted with display:none for persistence */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden nex-scroll" style={{ minHeight: 0 }}>
-        {error && (
-          <div className="flex items-start gap-2 p-2 rounded-lg text-[11px] mx-3 mt-3" style={{ background: 'rgba(239,68,68,0.1)', color: '#fca5a5' }}>
-            <AlertCircle size={12} className="mt-0.5 shrink-0" /><span>{error}</span>
-            <button onClick={() => setError(null)} className="ml-auto"><X size={10} /></button>
-          </div>
-        )}
-
-        {/* ═══ Recommended ═══ */}
-        <div style={{ display: tab === 'recommended' ? 'block' : 'none' }} className="p-3 space-y-2">
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>Recommended for your system</div>
-          {recommended.length === 0 && downloadableModels.length === 0 && (
-            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
-              <Star size={24} className="mx-auto mb-2 opacity-50" />
-              <div className="text-[11px]">No recommendations available</div>
-              <div className="text-[9px] mt-1">Models will appear here after scanning</div>
-            </div>
-          )}
-          {recommended.map((m: any) => (
-            <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: '1px solid rgba(34,197,94,0.2)' }}>
-              <div className="flex items-center gap-2 mb-1">
-                <Star size={12} style={{ color: 'var(--nex-success)' }} className="shrink-0" />
-                <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.displayNameFa || m.name}</span>
-                {installedNames.has(m.name.toLowerCase()) ? (
-                  <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>
-                ) : (
-                  <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                <span>{m.sizeGB?.toFixed(1)}GB</span>
-                {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
-                {m.persianSupport && <><span>•</span><span style={{ color: '#86efac' }}>Persian ✓</span></>}
-              </div>
-            </div>
-          ))}
-          {/* Also show downloadable models as recommended */}
-          {downloadableModels.filter(m => !recommended.find((r: any) => r.id === m.id)).map((m: any) => {
-            const isInstalled = installedNames.has((m.name || '').toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
-            return (
-              <div key={m.id} onClick={() => handleOpenModelDetails(m)} className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer" style={{ border: `1px solid ${isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}>
-                <div className="flex items-center gap-2 mb-1">
-                  <Brain size={12} style={{ color: 'var(--nex-accent)' }} className="shrink-0" />
-                  <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
-                  {isInstalled ? (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>
-                  ) : (
-                    <span className="text-[7px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                  {m.parameterCount && <span>{m.parameterCount}</span>}
-                  {m.quantization && <><span>•</span><span>{m.quantization}</span></>}
-                  {m.expectedSize && <><span>•</span><span>{formatBytes(m.expectedSize)}</span></>}
-                  <><span>•</span><span>GGUF</span></>
-                  {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
-                </div>
-              </div>
-            );
-          })}
-          {!status?.modelReady && (
-            <button onClick={handleInstallRecommended} className="nex-click nex-focus w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[11px] font-bold" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
-              {activeDownloads.length > 0 ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Quick Install (Qwen 0.5B)
-            </button>
-          )}
-        </div>
-
-        {/* ═══ AI Models (Phase 89: Redesigned with search + filter) ═══ */}
-        <div style={{ display: tab === 'models' ? 'block' : 'none' }} className="p-3 space-y-2">
-          {filteredModels.length === 0 ? (
-            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
-              <Brain size={24} className="mx-auto mb-2 opacity-50" />
-              <div className="text-[11px]">No models found</div>
-              <div className="text-[9px] mt-1">Try a different search or filter</div>
-            </div>
-          ) : (
-            filteredModels.map((m: any) => {
-              const isInstalled = installedNames.has((m.name || '').toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
-              const isActiveModel = activeModelId === m.id;
-              const activeDl = Array.from(unifiedDownloads.values()).find((d: any) => d.modelId === m.id && !['completed', 'download-failed', 'cancelled'].includes(d.state));
-              return (
-                <div
-                  key={m.id}
-                  onClick={() => handleOpenModelDetails(m)}
-                  className="p-2.5 rounded-lg nex-glass nex-click cursor-pointer"
-                  style={{ border: `1px solid ${isActiveModel ? 'rgba(6,182,212,0.3)' : isInstalled ? 'rgba(34,197,94,0.15)' : 'var(--nex-panel-border)'}` }}
-                >
-                  {/* Row 1: Icon + Name + Badges */}
-                  <div className="flex items-center gap-2 mb-1">
-                    <Brain size={12} style={{ color: 'var(--nex-accent)' }} className="shrink-0" />
-                    <span className="text-[11px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>
-                      {m.displayNameFa || m.nameFa || m.name}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {isActiveModel && <span className="text-[7px] px-1 py-0.5 rounded font-bold" style={{ background: 'rgba(6,182,212,0.2)', color: '#67e8f9' }}>ACTIVE</span>}
-                      {isInstalled && !isActiveModel && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>INSTALLED</span>}
-                      {activeDl && <span className="text-[7px] px-1 py-0.5 rounded animate-pulse" style={{ background: 'rgba(6,182,212,0.2)', color: '#67e8f9' }}>DL</span>}
-                      {!isInstalled && !activeDl && m.sources?.length > 1 && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>AVAILABLE</span>}
-                    </div>
+        ) : (
+          <>
+            {/* ── Models Tab ── */}
+            {tab === 'models' && (
+              <div className="space-y-3">
+                {/* Search + filter */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="relative flex-1 min-w-[200px]">
+                    <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--nex-text-muted)' }} />
+                    <input
+                      type="text"
+                      placeholder="Search models..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2 rounded-lg text-[11px] nex-focus"
+                      style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)' }}
+                    />
                   </div>
-                  {/* Row 2: Metadata */}
-                  <div className="flex items-center gap-1.5 text-[8px] flex-wrap" style={{ color: 'var(--nex-text-muted)' }}>
-                    {m.parameterCount && <span>{m.parameterCount}</span>}
-                    {m.parameterCount && (m.quantization || m.sizeGB || m.expectedSize) && <span>•</span>}
-                    {m.quantization && <span>{m.quantization}</span>}
-                    {m.quantization && (m.sizeGB || m.expectedSize) && <span>•</span>}
-                    {m.sizeGB && <span>{m.sizeGB.toFixed(1)}GB</span>}
-                    {m.expectedSize && !m.sizeGB && <span>{formatBytes(m.expectedSize)}</span>}
-                    {(m.sizeGB || m.expectedSize) && <span>•</span>}
-                    <span>GGUF</span>
-                    {m.requiredRAM && <><span>•</span><span>RAM {m.requiredRAM}GB</span></>}
-                  </div>
-                  {/* Row 3: Download progress (if active) */}
-                  {activeDl && activeDl.percentage !== null && (
-                    <div className="mt-1.5">
-                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
-                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, activeDl.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
-                      </div>
-                      <div className="flex justify-between mt-0.5 text-[7px]" style={{ color: 'var(--nex-text-muted)' }}>
-                        <span>{activeDl.percentage.toFixed(0)}%</span>
-                        <span>{formatBytes(activeDl.receivedBytes)} / {activeDl.totalBytes > 0 ? formatBytes(activeDl.totalBytes) : '?'}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* ═══ Voice (Phase 76: Unified Component Installer) ═══ */}
-        <div style={{ display: tab === 'voice' ? 'block' : 'none' }} className="p-3 space-y-2">
-          {/* Voice Runtime Status */}
-          {voiceRuntimeStatus && (
-            <div className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-              <div className="flex items-center gap-1.5 mb-1">
-                <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
-                <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>وضعیت رانتایم صوت</span>
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-[8px]">
-                <div style={{ color: voiceRuntimeStatus.whisperReady ? '#86efac' : '#fca5a5' }}>
-                  Whisper: {voiceRuntimeStatus.whisperReady ? 'آماده ✓' : 'ناقص ✗'}
-                </div>
-                <div style={{ color: voiceRuntimeStatus.piperReady ? '#86efac' : '#fca5a5' }}>
-                  Piper: {voiceRuntimeStatus.piperReady ? 'آماده ✓' : 'ناقص ✗'}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Speech Recognition (STT) Section */}
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>تشخیص گفتار (Speech Recognition)</div>
-          {voiceComponents.filter(c => c.type === 'voice-stt-binary' || c.type === 'voice-stt').map((c: any) => {
-            const progress = voiceInstallProgress.get(c.id);
-            const isActive = progress && !['completed', 'download-failed', 'cancelled', 'permission-denied'].includes(progress.state);
-            const isInstalled = voiceRuntimeStatus && (
-              (c.id === 'whisper-cli-binary' && voiceRuntimeStatus.whisper) ||
-              (c.id === 'whisper-base-en' && voiceRuntimeStatus.whisperModels?.length > 0) ||
-              (c.id === 'whisper-medium-q5' && voiceRuntimeStatus.whisperModels?.length > 0)
-            );
-            return (
-              <div key={c.id} className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-                <div className="flex items-center gap-1.5 mb-1">
-                  {c.type === 'voice-stt-binary' ? <Cpu size={10} style={{ color: 'var(--nex-accent)' }} /> : <Mic size={10} style={{ color: 'var(--nex-accent)' }} />}
-                  <span className="text-[10px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{c.name}</span>
-                  {c.type === 'voice-stt-binary' && <span className="text-[7px] px-1 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>رانتایم</span>}
-                  {isInstalled ? (
-                    <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
-                  ) : isActive ? (
-                    <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
-                  ) : (
-                    <button onClick={() => handleInstallVoiceComponent(c.id, c.name)} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>نصب</button>
-                  )}
-                </div>
-                <div className="text-[8px] ml-4 mb-1" style={{ color: 'var(--nex-text-muted)' }}>{c.purposeFa}</div>
-                {/* Source display */}
-                <div className="text-[8px] ml-4 mb-1">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>منبع: </span>
-                  {c.sources.map((s: any, i: number) => (
-                    <span key={i} className="ml-1 px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
-                  ))}
-                </div>
-                {/* Progress */}
-                {isActive && progress && (
-                  <div className="mt-1">
-                    <div className="text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
-                      {progress.stageMessageFa} {progress.currentSource ? `• ${progress.currentSource}` : ''} {progress.attempt ? `• تلاش ${progress.attempt}/${progress.maxAttempts}` : ''}
-                    </div>
-                    {progress.percentage !== null && (
-                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
-                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, progress.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
-                      </div>
-                    )}
-                  </div>
-                )}
-                {/* Import button for models (not binaries) */}
-                {!isInstalled && !isActive && c.type !== 'voice-stt-binary' && (
-                  <button onClick={() => handleImportVoiceComponent(c.id)} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>ایمپورت فایل محلی</button>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Text To Speech (TTS) Section */}
-          <div className="text-[10px] font-medium mt-3" style={{ color: 'var(--nex-text-muted)' }}>تولید گفتار (Text To Speech)</div>
-          {voiceComponents.filter(c => c.type === 'voice-tts-binary' || c.type === 'voice-tts').map((c: any) => {
-            const progress = voiceInstallProgress.get(c.id);
-            const isActive = progress && !['completed', 'download-failed', 'cancelled', 'permission-denied'].includes(progress.state);
-            const isInstalled = voiceRuntimeStatus && (
-              (c.id === 'piper-binary' && voiceRuntimeStatus.piper) ||
-              (c.id === 'piper-en-us-lessac-medium' && voiceRuntimeStatus.piperVoices?.length > 0)
-            );
-            return (
-              <div key={c.id} className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-                <div className="flex items-center gap-1.5 mb-1">
-                  {c.type === 'voice-tts-binary' ? <Cpu size={10} style={{ color: 'var(--nex-accent)' }} /> : <Mic size={10} style={{ color: 'var(--nex-accent)' }} />}
-                  <span className="text-[10px] font-medium flex-1" style={{ color: 'var(--nex-text)' }}>{c.name}</span>
-                  {c.type === 'voice-tts-binary' && <span className="text-[7px] px-1 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>رانتایم</span>}
-                  {isInstalled ? (
-                    <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
-                  ) : isActive ? (
-                    <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
-                  ) : (
-                    <button onClick={() => handleInstallVoiceComponent(c.id, c.name)} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>نصب</button>
-                  )}
-                </div>
-                <div className="text-[8px] ml-4 mb-1" style={{ color: 'var(--nex-text-muted)' }}>{c.purposeFa}</div>
-                <div className="text-[8px] ml-4 mb-1">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>منبع: </span>
-                  {c.sources.map((s: any, i: number) => (
-                    <span key={i} className="ml-1 px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
-                  ))}
-                </div>
-                {isActive && progress && (
-                  <div className="mt-1">
-                    <div className="text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
-                      {progress.stageMessageFa} {progress.currentSource ? `• ${progress.currentSource}` : ''}
-                    </div>
-                    {progress.percentage !== null && (
-                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
-                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, progress.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
-                      </div>
-                    )}
-                  </div>
-                )}
-                {!isInstalled && !isActive && c.type !== 'voice-tts-binary' && (
-                  <button onClick={() => handleImportVoiceComponent(c.id)} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>ایمپورت فایل محلی</button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* ═══ Tools ═══ */}
-        <div style={{ display: tab === 'tools' ? 'block' : 'none' }} className="p-3 space-y-2">
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>ابزارهای رانتایم</div>
-          <div className="p-2 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-            <div className="flex items-center gap-1.5"><Cpu size={11} style={{ color: 'var(--nex-accent)' }} /><span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>llama.cpp (node-llama-cpp)</span><CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} /></div>
-            <div className="text-[8px] ml-4" style={{ color: 'var(--nex-text-muted)' }}>موتور استنتاج GGUF — نصب شده به‌صورت بومی</div>
-          </div>
-        </div>
-
-        {/* ═══ Knowledge ═══ */}
-        <div style={{ display: tab === 'knowledge' ? 'block' : 'none' }} className="p-3 space-y-1.5">
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>بسته‌های دانش</div>
-          <div className="p-2 rounded-lg nex-glass text-[10px]" style={{ border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text-muted)' }}>
-            مدیریت بسته‌های دانش به‌زودی در این پنل統一 خواهد شد.
-          </div>
-        </div>
-
-        {/* ═══ Installed ═══ */}
-        <div style={{ display: tab === 'installed' ? 'block' : 'none' }} className="p-3 space-y-1.5">
-          {/* Phase 82b: Runtime Status Card — ALWAYS visible */}
-          <div className="p-2.5 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${runtimeStatus?.loaded ? 'rgba(34,197,94,0.2)' : 'var(--nex-panel-border)'}` }}>
-            <div className="flex items-center gap-1.5 mb-1">
-              <Zap size={11} style={{ color: runtimeStatus?.loaded ? 'var(--nex-success)' : 'var(--nex-text-muted)' }} />
-              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Status</span>
-              {runtimeStatus?.loaded ? (
-                <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Loaded ✓</span>
-              ) : (
-                <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Not Loaded</span>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
-              <div>Model: {runtimeStatus?.loadedModel || 'N/A'}</div>
-              <div>Backend: {runtimeStatus?.backend || 'node-llama-cpp'}</div>
-              <div>Context: {runtimeStatus?.contextSize || 0} tok</div>
-              <div>GPU Layers: {runtimeStatus?.gpuLayers ?? -1}</div>
-              {runtimeStatus?.vramUsage ? <div>VRAM: {formatBytes(runtimeStatus.vramUsage)}</div> : null}
-              {runtimeStatus?.tokensPerSecond ? <div>Speed: {runtimeStatus.tokensPerSecond.toFixed(1)} tok/s</div> : null}
-            </div>
-            {!runtimeStatus?.loaded && (
-              <div className="text-[8px] mt-1" style={{ color: 'var(--nex-text-muted)' }}>Click "Activate" on a model below to load it.</div>
-            )}
-          </div>
-
-          <div className="text-[10px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>Installed Models ({installed.length})</div>
-          {installed.length === 0 && storageAssets.length === 0 ? (
-            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
-              <CheckCircle2 size={24} className="mx-auto mb-2 opacity-50" />
-              <div className="text-[11px]">No installed models</div>
-              <div className="text-[9px] mt-1">Download a model to start using NEX AI offline</div>
-              <button onClick={() => setTab('recommended')} className="mt-3 px-3 py-1.5 rounded-lg text-[10px] font-medium nex-click" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
-                Browse Models
-              </button>
-            </div>
-          ) : (
-            installed.map((m: any, i: number) => {
-              const isActive = activeModelId === m.id;
-              return (
-                <div key={i} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${isActive ? 'rgba(6,182,212,0.3)' : 'var(--nex-panel-border)'}` }}>
-                  <CheckCircle2 size={11} style={{ color: 'var(--nex-success)' }} />
-                  <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.name}</span>
-                  <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{formatBytes(m.sizeBytes)}</span>
-                  {isActive && <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>Active ✓</span>}
-                  {!isActive && (
-                    <button onClick={() => handleActivateModel(m.id, m.name)} disabled={activating} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
-                      {activating ? <Loader2 size={8} className="animate-spin" /> : <Zap size={8} />} Activate
-                    </button>
-                  )}
-                  <button onClick={() => handleRemoveModel(m.id, m.name)} className="nex-click nex-focus p-0.5 rounded" style={{ color: '#fca5a5' }}><Trash2 size={9} /></button>
-                </div>
-              );
-            })
-          )}
-
-          {/* Phase 81/82b: AI Storage Assets — with Activate buttons for LLM types */}
-          {storageAssets.length > 0 && (
-            <>
-              <div className="text-[10px] font-medium mt-3" style={{ color: 'var(--nex-text-muted)' }}>AI Storage ({storageAssets.length})</div>
-              {storageAssets.map((asset: any, i: number) => {
-                const isLlmAsset = asset.format === 'gguf' && ['llm', 'coder', 'vision-llm'].includes(asset.type);
-                const isAssetActive = activeModelId === asset.id;
-                return (
-                  <div key={asset.id || i} className="p-2 rounded-lg" style={{ background: 'var(--nex-bg)', border: `1px solid ${isAssetActive ? 'rgba(6,182,212,0.3)' : 'var(--nex-panel-border)'}` }}>
-                    <div className="flex items-center gap-2">
-                      {asset.type === 'llm' || asset.type === 'coder' ? (
-                        <Brain size={11} style={{ color: 'var(--nex-accent)' }} />
-                      ) : asset.type === 'voice-stt' || asset.type === 'voice-tts' ? (
-                        <Mic size={11} style={{ color: 'var(--nex-accent)' }} />
-                      ) : asset.type === 'document' ? (
-                        <BookOpen size={11} style={{ color: 'var(--nex-accent)' }} />
-                      ) : (
-                        <Package size={11} style={{ color: 'var(--nex-accent)' }} />
-                      )}
-                      <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{asset.name}</span>
-                      <span className="text-[8px] px-1 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{asset.type}</span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5 ml-4 flex-wrap">
-                      {asset.provider && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.provider}</span>}
-                      {asset.parameterCount && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.parameterCount}</span></>}
-                      {asset.quantization && <><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>•</span><span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{asset.quantization}</span></>}
-                      <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>• {formatBytes(asset.size)}</span>
-                      {asset.fileExists ? (
-                        <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac' }}>Ready</span>
-                      ) : (
-                        <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5' }}>Missing</span>
-                      )}
-                      {/* Phase 82b: Activate button for LLM assets */}
-                      {isLlmAsset && asset.fileExists && (
-                        isAssetActive ? (
-                          <span className="text-[7px] px-1 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>Active ✓</span>
-                        ) : (
-                          <button onClick={() => handleActivateStorageAsset(asset)} disabled={activating} className="nex-click nex-focus px-1.5 py-0.5 rounded text-[8px] font-medium disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
-                            {activating ? <Loader2 size={8} className="animate-spin" /> : <Zap size={8} />} Activate
-                          </button>
-                        )
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </div>
-
-        {/* ═══ Downloads ═══ */}
-        <div style={{ display: tab === 'downloads' ? 'block' : 'none' }} className="p-3 space-y-2">
-          {/* Phase 72: Unified Model Download Manager — Multi-source + Import */}
-          <div className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid rgba(6,182,212,0.2)' }}>
-            <div className="flex items-center gap-1.5 mb-2">
-              <Package size={11} style={{ color: 'var(--nex-accent)' }} />
-              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>مدیریت دانلود مدل (چند منبعی)</span>
-            </div>
-            {/* Downloadable models with multi-source */}
-            {downloadableModels.map((m: any) => {
-              const isInstalled = installedNames.has(m.name.toLowerCase()) || installed.some((i: any) => i.name?.includes(m.name));
-              const activeDl = Array.from(unifiedDownloads.values()).find((d: any) => d.modelId === m.id && !['completed', 'download-failed', 'cancelled'].includes(d.state));
-              return (
-                <div key={m.id} className="p-2 rounded-lg mb-2" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Brain size={10} style={{ color: 'var(--nex-accent)' }} />
-                    <span className="text-[10px] font-medium flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{m.nameFa || m.name}</span>
-                    {isInstalled ? (
-                      <CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} />
-                    ) : activeDl ? (
-                      <Loader2 size={10} className="animate-spin" style={{ color: '#06b6d4' }} />
-                    ) : (
-                      <button onClick={() => handleUnifiedDownload(m.id)} className="nex-click nex-focus flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-medium" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
-                        <Download size={7} /> نصب
+                  <div className="flex items-center gap-1">
+                    {FILTER_PILLS.map((pill) => (
+                      <button
+                        key={pill.id}
+                        onClick={() => setFilterType(pill.id)}
+                        className="px-2.5 py-1 rounded-lg text-[9px] font-medium transition-all nex-click"
+                        style={
+                          filterType === pill.id
+                            ? { background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }
+                            : { background: 'rgba(255,255,255,0.03)', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }
+                        }
+                      >
+                        {pill.label}
                       </button>
-                    )}
-                  </div>
-                  {/* Sources list */}
-                  <div className="ml-4 mb-1 space-y-0.5">
-                    {m.sources?.map((s: any, i: number) => (
-                      <div key={i} className="flex items-center gap-1 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
-                        <span className="px-1 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9' }}>{s.label}</span>
-                        <span>اولویت: {s.priority}</span>
-                      </div>
                     ))}
                   </div>
-                  {/* Active download progress */}
-                  {activeDl && (
-                    <div className="mt-1">
-                      <div className="flex items-center gap-1 text-[8px] mb-0.5" style={{ color: 'var(--nex-text-muted)' }}>
-                        <span>وضعیت: {activeDl.state}</span>
-                        {activeDl.currentSource && <span>• منبع: {activeDl.currentSource.label}</span>}
-                        {activeDl.attempt && <span>• تلاش: {activeDl.attempt}/{activeDl.maxAttempts}</span>}
-                      </div>
-                      {activeDl.percentage !== null && (
-                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--nex-bg)' }}>
-                          <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, activeDl.percentage)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between mt-0.5 text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>
-                        <span>{formatBytes(activeDl.receivedBytes)} / {activeDl.totalBytes > 0 ? formatBytes(activeDl.totalBytes) : '?'}</span>
-                        <button onClick={() => handleCancelUnifiedDownload(activeDl.downloadId)} className="nex-click text-[8px]" style={{ color: '#fca5a5' }}>لغو</button>
-                      </div>
-                    </div>
-                  )}
-                  {/* Test sources button */}
-                  {!isInstalled && !activeDl && (
-                    <button onClick={() => handleTestSources(m.id)} disabled={testingConnection} className="nex-click nex-focus ml-4 text-[8px] px-1.5 py-0.5 rounded disabled:opacity-50" style={{ color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>
-                      تست منابع
-                    </button>
-                  )}
                 </div>
-              );
-            })}
-            {/* Manual import button */}
-            <button onClick={handleImportLocalModel} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium mt-2" style={{ background: 'rgba(34,197,94,0.1)', color: '#86efac', border: '1px solid rgba(34,197,94,0.2)' }}>
-              <Package size={11} /> ایمپورت فایل GGUF محلی
-            </button>
-          </div>
 
-          {/* Phase 72: Test Connection + Alternative Source */}
-          <div className="p-2.5 rounded-lg nex-glass" style={{ border: '1px solid var(--nex-panel-border)' }}>
-            <div className="flex items-center gap-1.5 mb-2">
-              <Globe size={11} style={{ color: 'var(--nex-accent)' }} />
-              <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>تست اتصال شبکه</span>
-            </div>
-            <button onClick={handleTestConnection} disabled={testingConnection} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium mb-2 disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
-              {testingConnection ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
-              {testingConnection ? 'در حال تست...' : 'تست اتصال به HuggingFace و CDN'}
-            </button>
-            {connectionTest && (
-              <div className="space-y-1 text-[9px]">
-                <div className="flex items-center gap-1.5">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>huggingface.co:</span>
-                  {connectionTest.huggingface?.reachable ? (
-                    <span style={{ color: '#86efac' }}>✓ {connectionTest.huggingface.statusCode} ({connectionTest.huggingface.latencyMs}ms)</span>
-                  ) : (
-                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.huggingface?.error || 'ناموفق'}</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>us.aws.cdn.hf.co:</span>
-                  {connectionTest.cdn?.reachable ? (
-                    <span style={{ color: '#86efac' }}>✓ {connectionTest.cdn.statusCode} ({connectionTest.cdn.latencyMs}ms)</span>
-                  ) : (
-                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.cdn?.error || 'ناموفق'}</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>modelscope.cn:</span>
-                  {connectionTest.alternative?.reachable ? (
-                    <span style={{ color: '#86efac' }}>✓ {connectionTest.alternative.statusCode} ({connectionTest.alternative.latencyMs}ms)</span>
-                  ) : (
-                    <span style={{ color: '#fca5a5' }}>✗ {connectionTest.alternative?.error || 'ناموفق'}</span>
-                  )}
-                </div>
-                {connectionTest.recommendation && (
-                  <div className="mt-1 p-1.5 rounded text-[9px]" style={{ background: connectionTest.recommendation.includes('CDN blocked') ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.06)', color: connectionTest.recommendation.includes('CDN blocked') ? '#fca5a5' : '#86efac' }}>
-                    {connectionTest.recommendation}
+                {/* Model grid */}
+                {filteredModels.length === 0 ? (
+                  <EmptyState
+                    variant="models"
+                    title="No models found"
+                    description="Try adjusting your search or filter. Browse the catalog to find models for your system."
+                    actionLabel="Browse All Models"
+                    onAction={() => { setSearchQuery(''); setFilterType('all'); }}
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {filteredModels.map((model) => (
+                      <ModelCard
+                        key={model.id}
+                        model={model}
+                        onDownload={handleDownload}
+                        onInstall={handleInstall}
+                        onLoad={handleLoad}
+                        onRemove={handleRemove}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
             )}
-            {/* Alternative source button — shown when CDN is blocked */}
-            {connectionTest?.recommendation?.includes('CDN blocked') && (
-              <button onClick={handleInstallAlternative} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold mt-2" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}>
-                <Download size={11} /> دانلود از منبع جایگزین (ModelScope)
-              </button>
-            )}
-          </div>
 
-          {/* Active downloads */}
-          {activeDownloads.length === 0 && completedDownloads.length === 0 ? (
-            <div className="text-center py-8" style={{ color: 'var(--nex-text-muted)' }}>
-              <Download size={24} className="mx-auto mb-2 opacity-50" />
-              <div className="text-[11px]">No active downloads</div>
-              <div className="text-[9px] mt-1">Download a model from the Models tab</div>
-            </div>
-          ) : (
-            <>
-              {activeDownloads.map((dl: DownloadEntry) => (
-                <div key={dl.id} className="p-3 rounded-lg nex-glass-strong" style={{ border: '1px solid rgba(6,182,212,0.3)' }}>
-                  <div className="flex items-center gap-2 mb-2">
-                    {dl.status === 'downloading' || dl.status === 'requesting-permission' ? (
-                      <Loader2 size={14} className="animate-spin" style={{ color: '#06b6d4' }} />
-                    ) : null}
-                    <span className="text-[11px] font-medium" style={{ color: 'var(--nex-text)' }}>{dl.modelName}</span>
-                    <span className="ml-auto text-sm font-bold" style={{ color: '#06b6d4' }}>{(dl.progress ?? 0).toFixed(0)}%</span>
-                  </div>
-                  <div className="h-2 rounded-full overflow-hidden mb-2" style={{ background: 'var(--nex-bg)' }}>
-                    <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, dl.progress ?? 0)}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-[9px]" style={{ color: 'var(--nex-text-muted)' }}>
-                    <div>دانلود شده: {formatBytes(dl.downloadedBytes ?? 0)}</div>
-                    <div>سرعت: {formatSpeed(dl.speedBytesPerSec ?? 0)}</div>
-                    {dl.totalBytes > 0 && <div>کل: {formatBytes(dl.totalBytes)}</div>}
-                    <div>وضعیت: {dl.stageMessageFa || dl.status}</div>
-                  </div>
-                </div>
-              ))}
-
-              {/* Completed/failed downloads */}
-              {completedDownloads.map((dl: DownloadEntry) => (
-                <div key={dl.id} className="p-2.5 rounded-lg nex-glass" style={{ border: `1px solid ${dl.status === 'deployed' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}` }}>
-                  <div className="flex items-center gap-1.5 mb-1">
-                    {dl.status === 'deployed' ? <CheckCircle2 size={12} style={{ color: 'var(--nex-success)' }} /> : <AlertCircle size={12} style={{ color: '#fca5a5' }} />}
-                    <span className="text-[10px] font-medium" style={{ color: 'var(--nex-text)' }}>{dl.modelName}</span>
-                    <span className="ml-auto text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>{dl.status}</span>
-                  </div>
-                  {dl.error && <div className="text-[9px] mb-1" style={{ color: '#fca5a5' }}>{dl.error}</div>}
-                  {/* Phase 71: Detailed error info */}
-                  {dl.status === 'download-failed' && (dl.errorCode || dl.errorStage || dl.errorHost) && (
-                    <div className="text-[8px] mt-1 p-1.5 rounded font-mono space-y-0.5" style={{ background: 'rgba(239,68,68,0.06)', color: 'var(--nex-text-muted)', border: '1px solid rgba(239,68,68,0.1)' }}>
-                      {dl.errorCode && <div>Error: <span style={{ color: '#fca5a5' }}>{dl.errorCode}</span></div>}
-                      {dl.errorStage && <div>Stage: <span style={{ color: '#fca5a5' }}>{dl.errorStage}</span></div>}
-                      {dl.errorHost && <div>Host: <span style={{ color: '#fca5a5' }}>{dl.errorHost}</span></div>}
-                      <div>Received: {formatBytes(dl.downloadedBytes || 0)}{dl.bytesExpected ? ` / ${formatBytes(dl.bytesExpected)}` : ''}</div>
+            {/* ── Installed Tab ── */}
+            {tab === 'installed' && (
+              <div className="space-y-3">
+                {/* Runtime status card */}
+                {status && (
+                  <div className="nex-glass rounded-xl p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Cpu size={14} style={{ color: 'var(--nex-accent)' }} />
+                      <span className="text-[11px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Status</span>
                     </div>
-                  )}
-                  {/* Phase 72: CDN failure — show alternative source button */}
-                  {dl.status === 'download-failed' && dl.errorClassification === 'cdn-connection-failure' && dl.hasAlternativeSource && (
-                    <div className="mt-2 p-1.5 rounded text-[9px]" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                      <div className="mb-1" style={{ color: '#fca5a5' }}>⚠ CDN هاگینگ‌فیس مسدود است</div>
-                      <div className="mb-1.5" style={{ color: 'var(--nex-text-muted)' }}>سرور مدل در دسترس است، اما اتصال به CDN دانلود مسدود می‌شود.</div>
-                      <button onClick={handleInstallAlternative} className="nex-click nex-focus w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] font-bold" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}>
-                        <Download size={9} /> دانلود از ModelScope (منبع جایگزین)
-                      </button>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[10px]">
+                      <div>
+                        <span style={{ color: 'var(--nex-text-muted)' }}>Loaded:</span>
+                        <span className="ml-1" style={{ color: 'var(--nex-text)' }}>{status.loadedModelName || 'none'}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--nex-text-muted)' }}>Backend:</span>
+                        <span className="ml-1" style={{ color: 'var(--nex-text)' }}>{status.gpuBackend || 'cpu'}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--nex-text-muted)' }}>Models:</span>
+                        <span className="ml-1" style={{ color: 'var(--nex-text)' }}>{status.installedModels || 0}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: 'var(--nex-text-muted)' }}>Health:</span>
+                        <span className="ml-1" style={{ color: status.healthy ? '#86efac' : '#fca5a5' }}>{status.healthy ? 'Healthy' : 'Issues'}</span>
+                      </div>
                     </div>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
+                  </div>
+                )}
 
-          {/* History */}
-          {history.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-[9px] font-medium" style={{ color: 'var(--nex-text-muted)' }}>تاریخچه</div>
-              {history.map((h: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 p-1.5 rounded text-[9px]" style={{ background: 'var(--nex-bg)' }}>
-                  {h.success ? <CheckCircle2 size={9} style={{ color: 'var(--nex-success)' }} /> : <X size={9} style={{ color: '#fca5a5' }} />}
-                  <span className="flex-1 truncate" style={{ color: 'var(--nex-text)' }}>{h.modelName || 'نامشخص'}</span>
-                  {h.error && <span style={{ color: '#fca5a5' }}>{h.error.slice(0, 30)}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                {/* Storage panel */}
+                {storageInfo && <StoragePanel storage={storageInfo} />}
 
-        {/* Security note */}
-        <div className="p-2 mx-3 mb-3 rounded-lg text-[9px] flex items-start gap-1.5" style={{ background: 'rgba(34,197,94,0.06)', color: 'var(--nex-text-muted)' }}>
-          <ShieldCheck size={10} className="mt-0.5 shrink-0" style={{ color: 'var(--nex-success)' }} />
-          <span>All downloads require explicit permission. HTTPS only. Checksum verified. All inference is local and offline.</span>
-        </div>
-      </div>
-
-      {/* Phase 77: Improved Permission Dialog — button-based, no mandatory typing */}
-      {pendingDownload && (
-        <div className="absolute inset-0 flex items-center justify-center p-4" style={{ zIndex: 30, background: 'rgba(0,0,0,0.5)' }} onClick={handleCancelDownload}>
-          <div className="nex-glass-strong w-full max-w-md p-4 rounded-xl" style={{ border: '1px solid var(--nex-accent-glow)' }} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center gap-1.5 mb-3">
-              <Download size={14} style={{ color: 'var(--nex-accent)' }} />
-              <span className="text-[12px] font-medium" style={{ color: 'var(--nex-accent-text)' }}>دانلود مدل</span>
-            </div>
-            <div className="space-y-2 mb-3">
-              <div className="text-[13px] font-medium" style={{ color: 'var(--nex-text)' }}>{pendingDownload.model.name}</div>
-              {pendingDownload.model.nameFa && <div className="text-[11px]" style={{ color: 'var(--nex-text-muted)' }}>{pendingDownload.model.nameFa}</div>}
-              {pendingDownload.model.expectedSize && (
-                <div className="flex justify-between text-[11px]">
-                  <span style={{ color: 'var(--nex-text-muted)' }}>حجم:</span>
-                  <span style={{ color: 'var(--nex-text)' }}>{formatBytes(pendingDownload.model.expectedSize)}</span>
-                </div>
-              )}
-              <div className="flex justify-between text-[11px]">
-                <span style={{ color: 'var(--nex-text-muted)' }}>منبع:</span>
-                <span style={{ color: 'var(--nex-text)' }}>
-                  {pendingDownload.source === 'modelscope' ? 'ModelScope' :
-                   pendingDownload.source === 'huggingface' ? 'HuggingFace' :
-                   pendingDownload.model.sources?.[0]?.label || 'Automatic'}
-                </span>
-              </div>
-              <div className="flex justify-between text-[11px]">
-                <span style={{ color: 'var(--nex-text-muted)' }}>مقصد:</span>
-                <span style={{ color: 'var(--nex-text)' }}>پوشه مدل‌های NEX AI</span>
-              </div>
-              <div className="text-[10px] p-1.5 rounded" style={{ background: 'rgba(6,182,212,0.08)', color: 'var(--nex-text-muted)' }}>
-                این دانلود از اینترنت استفاده می‌کند. فایل پس از دانلود بررسی و نصب می‌شود.
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={handleCancelDownload} className="nex-click nex-focus flex-1 px-3 py-2 rounded-lg text-[11px] font-medium" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>
-                لغو
-              </button>
-              <button onClick={handleConfirmDownload} className="nex-click nex-focus flex-1 px-3 py-2 rounded-lg text-[11px] font-bold" style={{ background: 'var(--nex-accent)', color: '#fff' }}>
-                تأیید و شروع دانلود
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Phase 77: Model Details Modal */}
-      {selectedModel && (
-        <div className="absolute inset-0 flex items-center justify-center p-4" style={{ zIndex: 30, background: 'rgba(0,0,0,0.5)' }} onClick={handleCloseModelDetails}>
-          <div className="nex-glass-strong w-full max-w-lg max-h-[80vh] overflow-y-auto nex-scroll p-4 rounded-xl" style={{ border: '1px solid var(--nex-accent-glow)' }} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-1.5">
-                <Brain size={14} style={{ color: 'var(--nex-accent)' }} />
-                <span className="text-[12px] font-medium" style={{ color: 'var(--nex-accent-text)' }}>جزئیات مدل</span>
-              </div>
-              <button onClick={handleCloseModelDetails} className="nex-click p-1 rounded"><X size={12} style={{ color: 'var(--nex-text-muted)' }} /></button>
-            </div>
-
-            {/* Model name */}
-            <div className="text-[14px] font-bold mb-1" style={{ color: 'var(--nex-text)' }}>{selectedModel.name}</div>
-            {selectedModel.nameFa && <div className="text-[11px] mb-2" style={{ color: 'var(--nex-text-muted)' }}>{selectedModel.nameFa}</div>}
-
-            {/* Description */}
-            {(selectedModel.description || selectedModel.purpose) && (
-              <div className="text-[11px] mb-3 p-2 rounded" style={{ background: 'var(--nex-bg)', color: 'var(--nex-text)' }}>
-                {selectedModel.description || selectedModel.purpose}
-              </div>
-            )}
-
-            {/* Metadata grid */}
-            <div className="grid grid-cols-2 gap-2 mb-3 text-[10px]">
-              {selectedModel.expectedSize && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>حجم: </span><span style={{ color: 'var(--nex-text)' }}>{formatBytes(selectedModel.expectedSize)}</span></div>
-              )}
-              {selectedModel.quantization && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>کوانتیزه: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.quantization}</span></div>
-              )}
-              {selectedModel.architecture && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>معماری: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.architecture}</span></div>
-              )}
-              {selectedModel.parameterCount && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>پارامتر: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.parameterCount}</span></div>
-              )}
-              {selectedModel.filename && (
-                <div className="col-span-2 truncate"><span style={{ color: 'var(--nex-text-muted)' }}>فایل: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.filename}</span></div>
-              )}
-              {selectedModel.format && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>فرمت: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.format}</span></div>
-              )}
-              {selectedModel.contextSize && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>کانتکست: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.contextSize}</span></div>
-              )}
-              {selectedModel.requiredRAM && (
-                <div><span style={{ color: 'var(--nex-text-muted)' }}>RAM لازم: </span><span style={{ color: 'var(--nex-text)' }}>{selectedModel.requiredRAM}GB</span></div>
-              )}
-            </div>
-
-            {/* Sources — Phase 78: show FULL URL (not truncated) */}
-            {selectedModel.sources && selectedModel.sources.length > 0 && (
-              <div className="mb-3">
-                <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--nex-text-muted)' }}>منابع دانلود:</div>
-                {selectedModel.sources.map((s: any, i: number) => (
-                  <div key={i} className="p-2 rounded mb-1.5" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)' }}>
-                    {/* Source label */}
-                    <div className="flex items-center gap-1 mb-1">
-                      <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-medium" style={{ background: 'rgba(6,182,212,0.15)', color: '#67e8f9' }}>{s.label}</span>
-                      {s.priority && <span className="text-[8px]" style={{ color: 'var(--nex-text-muted)' }}>اولویت: {s.priority}</span>}
-                    </div>
-                    {/* Full URL — visible, selectable, not truncated */}
-                    <div className="flex items-center gap-1">
-                      <input
-                        readOnly
-                        value={s.url}
-                        onClick={(e) => (e.target as HTMLInputElement).select()}
-                        className="flex-1 px-1.5 py-1 rounded text-[9px] font-mono"
-                        style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                        title={s.url}
+                {/* Installed models */}
+                {installedModels.length === 0 ? (
+                  <EmptyState
+                    variant="installed"
+                    title="No models installed"
+                    description="Install your first model to start using NEX AI locally. Browse the catalog or import a .gguf file."
+                    actionLabel="Browse Models"
+                    onAction={() => setTab('models')}
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {installedModels.map((model) => (
+                      <ModelCard
+                        key={model.id}
+                        model={model}
+                        onLoad={handleLoad}
+                        onRemove={handleRemove}
                       />
-                      <button onClick={() => handleOpenDownloadPage(s.url)} className="nex-click p-1 rounded shrink-0" style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-panel-border)' }} title="باز کردن در مرورگر">
-                        <Globe size={11} />
-                      </button>
-                      <button onClick={() => handleCopyUrl(s.url, s.label)} className="nex-click p-1 rounded shrink-0" style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-panel-border)' }} title="کپی لینک">
-                        <Package size={11} />
-                      </button>
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            {/* Installation status */}
-            {selectedModel.sources && (
-              <div className="mb-3 p-2 rounded text-[10px]" style={{ background: installedNames.has(selectedModel.name?.toLowerCase()) ? 'rgba(34,197,94,0.08)' : 'var(--nex-bg)' }}>
-                <div className="flex items-center gap-1">
-                  {installedNames.has(selectedModel.name?.toLowerCase()) ? (
-                    <><CheckCircle2 size={10} style={{ color: 'var(--nex-success)' }} /><span style={{ color: '#86efac' }}>نصب‌شده ✓</span></>
-                  ) : (
-                    <><Download size={10} style={{ color: 'var(--nex-accent)' }} /><span style={{ color: 'var(--nex-text-muted)' }}>نصب نشده</span></>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex flex-col gap-2">
-              {!installedNames.has(selectedModel.name?.toLowerCase()) && (
-                <button onClick={() => { handleStartDownloadWithConfirm(selectedModel, selectedSource); handleCloseModelDetails(); }} className="nex-click nex-focus w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold" style={{ background: 'var(--nex-accent)', color: '#fff' }}>
-                  <Download size={12} /> دانلود و نصب
+                {/* Import button */}
+                <button
+                  onClick={handleInstall}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-medium transition-all nex-click"
+                  style={{ background: 'rgba(255,255,255,0.03)', color: 'var(--nex-text-muted)', border: '1px dashed var(--nex-panel-border)' }}
+                >
+                  <HardDrive size={12} /> Import .gguf file
                 </button>
-              )}
-              {selectedModel.sources?.length > 1 && (
-                <div className="flex gap-1">
-                  <button onClick={() => setSelectedSource('automatic')} className="nex-click flex-1 px-2 py-1 rounded text-[9px]" style={{ background: selectedSource === 'automatic' ? 'var(--nex-accent-dim)' : 'var(--nex-bg)', color: selectedSource === 'automatic' ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>Automatic</button>
-                  {selectedModel.sources.map((s: any) => (
-                    <button key={s.type} onClick={() => setSelectedSource(s.type)} className="nex-click flex-1 px-2 py-1 rounded text-[9px] truncate" style={{ background: selectedSource === s.type ? 'var(--nex-accent-dim)' : 'var(--nex-bg)', color: selectedSource === s.type ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>{s.label}</button>
-                  ))}
+              </div>
+            )}
+
+            {/* ── Downloads Tab ── */}
+            {tab === 'downloads' && (
+              <div className="space-y-3">
+                {activeDownloads.length === 0 && completedDownloads.length === 0 && history.length === 0 ? (
+                  <EmptyState
+                    variant="downloads"
+                    title="No downloads"
+                    description="Browse the Models tab to find and download models. Active downloads will appear here."
+                    actionLabel="Browse Models"
+                    onAction={() => setTab('models')}
+                  />
+                ) : (
+                  <>
+                    {/* Active downloads */}
+                    {activeDownloads.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--nex-text-muted)' }}>
+                          Active ({activeDownloads.length})
+                        </h3>
+                        {activeDownloads.map((dl) => (
+                          <DownloadCard key={dl.id} download={dl} onCancel={handleCancelDownload} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Completed */}
+                    {completedDownloads.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--nex-text-muted)' }}>
+                          Completed ({completedDownloads.length})
+                        </h3>
+                        {completedDownloads.map((dl) => (
+                          <DownloadCard key={dl.id} download={dl} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* History */}
+                    {history.length > 0 && (
+                      <div className="space-y-2">
+                        <h3 className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--nex-text-muted)' }}>
+                          History (last {history.length})
+                        </h3>
+                        {history.slice(0, 10).map((h: any, i: number) => (
+                          <div key={i} className="nex-glass rounded-lg p-2.5 flex items-center gap-2 text-[10px]">
+                            <span style={{ color: h.status === 'download-complete' ? '#86efac' : '#fca5a5' }}>
+                              {h.status === 'download-complete' ? <CheckCircle2 size={11} /> : <X size={11} />}
+                            </span>
+                            <span style={{ color: 'var(--nex-text)' }}>{h.modelName}</span>
+                            <span className="ml-auto" style={{ color: 'var(--nex-text-muted)' }}>
+                              {h.completedAt ? new Date(h.completedAt).toLocaleString() : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Extensions Tab ── */}
+            {tab === 'extensions' && (
+              <div className="space-y-3">
+                <h3 className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--nex-text-muted)' }}>
+                  Voice Components
+                </h3>
+                {voiceComponents.length === 0 ? (
+                  <EmptyState
+                    variant="generic"
+                    title="No extensions available"
+                    description="Voice components (Whisper STT, Piper TTS) will appear here when available for installation."
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {voiceComponents.map((comp: any) => (
+                      <ModelCard
+                        key={comp.id}
+                        model={{
+                          id: comp.id,
+                          name: comp.name,
+                          nameFa: comp.nameFa,
+                          provider: comp.type,
+                          type: comp.type === 'voice-stt' ? 'voice-stt' : comp.type === 'voice-tts' ? 'voice-tts' : 'llm',
+                          sizeBytes: comp.expectedSize || 0,
+                          quantization: comp.quantization,
+                          status: 'available',
+                        }}
+                        onDownload={handleInstallVoiceComponent}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {/* Runtime tools */}
+                <div className="nex-glass rounded-xl p-4 mt-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Cpu size={14} style={{ color: 'var(--nex-accent)' }} />
+                    <span className="text-[11px] font-medium" style={{ color: 'var(--nex-text)' }}>Runtime Tools</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>
+                    <CheckCircle2 size={11} style={{ color: '#86efac' }} />
+                    <span>llama.cpp (node-llama-cpp) — Built-in</span>
+                  </div>
                 </div>
-              )}
-              {selectedModel.sources?.[0] && (
-                <div className="flex gap-1">
-                  <button onClick={() => handleOpenDownloadPage(selectedModel.sources[0].url)} className="nex-click flex-1 px-2 py-1.5 rounded-lg text-[10px]" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>باز کردن صفحه دانلود</button>
-                  <button onClick={() => handleCopyUrl(selectedModel.sources[0].url, 'لینک دانلود')} className="nex-click flex-1 px-2 py-1.5 rounded-lg text-[10px]" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>کپی لینک</button>
+              </div>
+            )}
+
+            {/* ── Knowledge Tab ── */}
+            {tab === 'knowledge' && (
+              <div className="space-y-3">
+                <EmptyState
+                  variant="generic"
+                  icon={<BookOpen size={32} />}
+                  title="Knowledge Base"
+                  description="Manage knowledge packs, documents, and project-specific knowledge. Import files or scan your project to build a local knowledge base."
+                />
+              </div>
+            )}
+
+            {/* ── Recommendations Tab ── */}
+            {tab === 'recommendations' && (
+              <div className="space-y-3">
+                {/* Hardware-aware recommendations */}
+                <div className="nex-glass rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Star size={14} style={{ color: 'var(--nex-accent)' }} />
+                    <span className="text-[11px] font-medium" style={{ color: 'var(--nex-text)' }}>Best Models for Your System</span>
+                  </div>
+                  <p className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>
+                    Recommendations are based on your hardware profile (RAM, GPU, VRAM, CPU).
+                  </p>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Copy confirmation toast */}
-      {copyConfirm && (
-        <div className="absolute bottom-3 left-3 right-3 p-2 rounded-lg text-[11px] pointer-events-none" style={{ background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)', zIndex: 35 }}>{copyConfirm}</div>
-      )}
-
-      {/* Old permission dialog (for HIGH_RISK actions only — Phase 77 keeps button-based for model downloads) */}
-      {pendingPermission && !pendingDownload && (
-        <div className="absolute inset-0 flex items-end p-3 pointer-events-none" style={{ zIndex: 20 }}>
-          <div className="nex-glass-strong w-full p-3 rounded-xl pointer-events-auto" style={{ border: '1px solid var(--nex-accent-glow)' }}>
-            <div className="flex items-center gap-1.5 mb-2">
-              <ShieldCheck size={13} style={{ color: 'var(--nex-accent)' }} />
-              <span className="text-[11px] font-medium" style={{ color: 'var(--nex-accent-text)' }}>درخواست اجازه</span>
-            </div>
-            <p className="text-[11px] mb-2" style={{ color: 'var(--nex-text)' }}>{pendingPermission.action?.description}</p>
-            <p className="text-[10px] mb-2" style={{ color: 'var(--nex-text-muted)' }}>عبارت: <span style={{ color: 'var(--nex-accent-text)' }}>{pendingPermission.requiredPhrase}</span></p>
-            <div className="flex gap-1.5">
-              <input value={permissionInput} onChange={e => setPermissionInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && permissionInput.trim()) respondPermission(permissionInput); }}
-                placeholder="عبارت تأیید..." className="flex-1 px-2 py-1 rounded-lg text-[11px] nex-focus" style={{ background: 'var(--nex-bg)', border: '1px solid var(--nex-panel-border)', color: 'var(--nex-text)' }} autoFocus />
-              <button onClick={() => respondPermission(permissionInput || 'نه')} disabled={!permissionInput.trim()} className="nex-click nex-focus px-2.5 py-1 rounded-lg text-[10px] font-medium disabled:opacity-50" style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>ارسال</button>
-              <button onClick={() => respondPermission('نه')} className="nex-click nex-focus px-2.5 py-1 rounded-lg text-[10px] font-medium" style={{ background: 'transparent', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}>رد</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <div className="absolute bottom-3 left-3 right-3 p-2 rounded-lg text-[11px] nex-animate-in pointer-events-none" style={{
-          background: toast.kind === 'ok' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
-          color: toast.kind === 'ok' ? '#86efac' : '#fca5a5',
-          border: `1px solid ${toast.kind === 'ok' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, zIndex: 25,
-        }}>{toast.msg}</div>
-      )}
+                {/* Recommended models */}
+                {allModels.filter((m) => m.status === 'recommended').length === 0 ? (
+                  <EmptyState
+                    variant="generic"
+                    icon={<Star size={32} />}
+                    title="No recommendations yet"
+                    description="Install a model to get personalized recommendations based on your hardware."
+                    actionLabel="Browse Models"
+                    onAction={() => setTab('models')}
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {allModels
+                      .filter((m) => m.status === 'recommended')
+                      .map((model) => (
+                        <ModelCard
+                          key={model.id}
+                          model={model}
+                          onDownload={handleDownload}
+                          onInstall={handleInstall}
+                          onLoad={handleLoad}
+                        />
+                      ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
