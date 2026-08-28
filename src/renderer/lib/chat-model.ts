@@ -37,6 +37,8 @@ export interface NexMessage {
     route?: string;
     completed?: boolean;
     failed?: boolean;
+    cancelled?: boolean;
+    agentTokensStarted?: boolean;
   };
 }
 

@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('nexAPI', {
 
   // Phase 104: Unified Brain Router — single entry point for all user messages
   brainRoute: (request: any) => ipcRenderer.invoke('brain-route', request),
+  // Phase 110: agentCancelTask already exists below in the Agent Core section
   aiDefaultConfig: (provider: string) =>
     ipcRenderer.invoke('ai-default-config', provider),
 

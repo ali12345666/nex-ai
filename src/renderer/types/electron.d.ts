@@ -72,6 +72,8 @@ export interface NexAPI {
   // Phase 104: Unified Brain Router
   brainRoute: (request: { message: string; history?: any[]; forceRoute?: 'chat' | 'agent'; projectPath?: string; sessionId?: string; modelId?: string; inAgentTask?: boolean }) =>
     Promise<{ success: boolean; route: 'chat' | 'agent'; taskId?: string; reason?: string; error?: string }>;
+  // Phase 110: Agent task cancellation from renderer
+  agentCancelTask: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
   aiDefaultConfig: (provider: string) => Promise<any>;
 
   // Local Model Management (Phase 3-4)

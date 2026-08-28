@@ -332,6 +332,9 @@ export default function NexChatPanel() {
     return () => window.removeEventListener('nex:voice-transcript', handler);
   }, []);
 
+  // Phase 110: Track active agent task for session stickiness
+  const activeAgentTaskRef = useRef<string | null>(null);
+
   // ── Phase 30: Voice thinking state (tell Orb when AI is processing) ──
   useEffect(() => {
     voiceController.setThinking(isGenerating);
@@ -357,7 +360,7 @@ export default function NexChatPanel() {
     return off;
   }, []);
 
-  // ── Phase 109: Agent event listener — updates chat UI with agent progress ──
+  // ── Phase 109/110: Agent event listener — updates chat UI with agent progress ──
   useEffect(() => {
     const off = window.nexAPI?.onAgentEvent?.((event: any) => {
       const eventType = event?.type || event?.event;
@@ -368,7 +371,6 @@ export default function NexChatPanel() {
         const last = next[next.length - 1];
         if (!last || last.metadata?.agentTaskId !== taskId) return prev;
 
-        // Map agent events to user-visible status messages
         switch (eventType) {
           case 'planning_completed':
           case 'plan_created':
@@ -394,29 +396,77 @@ export default function NexChatPanel() {
           case 'replanning':
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔄 Re-planning based on results...' };
             break;
+          case 'agent_token':
+            // Phase 110: Agent final answer — emitted by core.ts when ReAct
+            // decides 'complete' with a finalAnswer. This is the actual
+            // response text that should replace the placeholder.
+            {
+              const tokenText = event?.data?.content || event?.data?.text || '';
+              if (tokenText) {
+                // Accumulate agent tokens (like chat streaming)
+                const currentContent = last.content || '';
+                // If this is the first token, replace the placeholder
+                const isFirstToken = !last.metadata?.agentTokensStarted;
+                next[next.length - 1] = {
+                  ...last,
+                  content: isFirstToken ? tokenText : currentContent + tokenText,
+                  status: 'streaming',
+                  metadata: { ...last.metadata, agentTokensStarted: true },
+                };
+              }
+            }
+            break;
           case 'task_completed':
           case 'completed':
-            // Agent finished — replace placeholder with actual response
-            const finalText = event.result || event.response || event.message || '✅ Task completed.';
-            next[next.length - 1] = {
-              ...last,
-              content: typeof finalText === 'string' ? finalText : JSON.stringify(finalText),
-              status: 'complete',
-              metadata: { ...last.metadata, completed: true },
-            };
+            // Agent finished — use the final answer from agent_token if accumulated,
+            // otherwise use event.result/response/message.
+            {
+              const finalText = last.metadata?.agentTokensStarted
+                ? last.content // Already has the streamed final answer
+                : (event.result || event.response || event.message || event.data?.content || '✅ Task completed.');
+              next[next.length - 1] = {
+                ...last,
+                content: typeof finalText === 'string' ? finalText : '✅ Task completed.',
+                status: 'complete',
+                metadata: { ...last.metadata, completed: true },
+              };
+            }
+            // Phase 110: Clear active agent task + reset UI state
+            activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
+            streamBufRef.current = '';
+            setTimeout(() => saveConversation(), 100);
             break;
           case 'task_failed':
           case 'failed':
             next[next.length - 1] = {
               ...last,
-              content: `❌ Agent task failed: ${event.error || event.message || 'Unknown error'}`,
+              content: `❌ Agent task failed: ${event.error || event.message || event.data?.error || 'Unknown error'}`,
               status: 'error',
-              metadata: { ...last.metadata, failed: true, error: event.error },
+              metadata: { ...last.metadata, failed: true, error: event.error || event.message },
             };
+            activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
+            streamBufRef.current = '';
+            setTimeout(() => saveConversation(), 100);
+            break;
+          case 'task_cancelled':
+          case 'cancelled':
+            next[next.length - 1] = {
+              ...last,
+              content: last.metadata?.agentTokensStarted
+                ? last.content + '\n\n⚠️ Task was cancelled.'
+                : '⚠️ Task was cancelled by user.',
+              status: 'complete',
+              metadata: { ...last.metadata, cancelled: true },
+            };
+            activeAgentTaskRef.current = null;
+            setIsGenerating(false);
+            setChatStreaming(false);
+            streamBufRef.current = '';
+            setTimeout(() => saveConversation(), 100);
             break;
           case 'permission_request':
             next[next.length - 1] = {
@@ -425,14 +475,13 @@ export default function NexChatPanel() {
             };
             break;
           default:
-            // Unknown event — don't update the message
             break;
         }
         return next;
       });
     });
     return () => { if (off) off(); };
-  }, []);
+  }, [saveConversation]);
 
   // Scroll follow
   useEffect(() => {
@@ -633,15 +682,16 @@ export default function NexChatPanel() {
         })),
         projectPath: projectPath || undefined,
         forceRoute: undefined, // let the router decide
-        inAgentTask: false, // TODO: track active agent task state
+        inAgentTask: !!activeAgentTaskRef.current, // Phase 110: session stickiness
       });
 
       if (routeResult.success && routeResult.route === 'agent' && routeResult.taskId) {
+        // Phase 110: Track active agent task for session stickiness
+        activeAgentTaskRef.current = routeResult.taskId;
+
         // Agent mode — the agent is running asynchronously.
         // Agent events (planning, tool_call, verification, completion)
         // arrive via the agent-event IPC listener (added below).
-        // Show "Agent is working..." status — the listener will update
-        // the message as events arrive.
         setMessages((prev) => {
           const next = [...prev];
           const last = next[next.length - 1];
@@ -655,9 +705,12 @@ export default function NexChatPanel() {
           }
           return next;
         });
-        // Keep isGenerating=true — the agent event listener (useEffect below)
-        // will set it to false when the agent completes or fails.
-        // Don't call aiChatStream — agent runs via its own path.
+        // Phase 110: Don't let the finally block reset isGenerating —
+        // the agent event listener handles that on task_completed/failed/cancelled.
+        // Return early WITHOUT hitting the finally block.
+        // We handle cleanup (saveConversation, setChatStreaming) in the
+        // agent event listener when the task completes.
+        setChatStreaming(false); // agent doesn't use chat-token streaming
         return;
       }
 
@@ -755,7 +808,12 @@ export default function NexChatPanel() {
   }, [input, messages, attachments, isGenerating, settings, aiMode, activeLocalModel, saveConversation]);
 
   const handleStop = useCallback(() => {
+    // Cancel chat streaming
     window.nexAPI.aiChatStreamCancel().catch(() => {});
+    // Phase 110: Also cancel active agent task if any
+    if (activeAgentTaskRef.current) {
+      window.nexAPI.agentCancelTask?.(activeAgentTaskRef.current, 'User cancelled').catch(() => {});
+    }
   }, []);
 
   // Phase 88: New Chat — clear messages, reset conversation state
