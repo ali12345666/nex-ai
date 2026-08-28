@@ -133,40 +133,58 @@ export default function ModelCard({
         opacity: isNotCompatible ? 0.55 : 1,
       }}
     >
-      {/* ── Header: icon + name + badges ── */}
-      <div className="flex items-start gap-3 mb-3">
+      {/* ── Header: icon + name (with tooltip) + provider ── */}
+      <div className="flex items-start gap-3 mb-2.5">
         <div
           className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center"
           style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}
         >
           {TYPE_ICONS[model.type]}
         </div>
+        {/* Model info: takes all available space, truncates name */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--nex-text)' }}>
-              {model.name}
-            </h3>
-            {model.isActive && (
-              <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full shrink-0"
-                style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
-                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--nex-accent)' }} />
-                ACTIVE
-              </span>
-            )}
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0" style={{ background: badge.bg, color: badge.color }}>
-              {badge.label}
-            </span>
-            {model.persianSupport && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.08)', color: '#86efac' }}>
-                فارسی
-              </span>
-            )}
-          </div>
-          {/* Provider — smaller, muted */}
-          <p className="text-xs mt-1 truncate" style={{ color: 'var(--nex-text-muted)', opacity: 0.7 }}>
-            {model.provider}{model.parameterCount ? ` · ${model.parameterCount}` : ''}{model.quantization ? ` · ${model.quantization}` : ''}
+          {/* Name row: name takes full width, truncates with tooltip */}
+          <h3
+            className="text-sm font-semibold leading-tight overflow-hidden text-ellipsis whitespace-nowrap"
+            style={{ color: 'var(--nex-text)' }}
+            title={model.name}
+          >
+            {model.name}
+          </h3>
+          {/* Provider row: separate line, small + muted */}
+          <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--nex-text-muted)', opacity: 0.7 }}>
+            {model.provider}
           </p>
         </div>
+      </div>
+
+      {/* ── Badge row: separate from header, wraps cleanly ── */}
+      <div className="flex items-center gap-1.5 flex-wrap mb-3">
+        {model.isActive && (
+          <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full shrink-0"
+            style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--nex-accent)' }} />
+            ACTIVE
+          </span>
+        )}
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0" style={{ background: badge.bg, color: badge.color }}>
+          {badge.label}
+        </span>
+        {model.persianSupport && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.08)', color: '#86efac' }}>
+            فارسی
+          </span>
+        )}
+        {model.parameterCount && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--nex-text-muted)' }}>
+            {model.parameterCount}
+          </span>
+        )}
+        {model.quantization && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--nex-text-muted)' }}>
+            {model.quantization}
+          </span>
+        )}
       </div>
 
       {/* ── Download progress (if downloading) ── */}
@@ -185,40 +203,40 @@ export default function ModelCard({
         </div>
       )}
 
-      {/* ── Body: Metadata grid ── */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-3 text-[11px]">
-        <div className="flex items-center gap-1.5">
-          <HardDrive size={11} style={{ color: 'var(--nex-text-muted)' }} />
-          <span style={{ color: 'var(--nex-text-muted)' }}>Size</span>
-          <span className="ml-auto font-medium" style={{ color: 'var(--nex-text)' }}>{fmtSize(model.sizeBytes)}</span>
+      {/* ── Body: Metadata grid (fixed 2-col, no overflow) ── */}
+      <div className="grid mb-3 text-[11px]" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.5rem 1rem' }}>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <HardDrive size={11} className="shrink-0" style={{ color: 'var(--nex-text-muted)' }} />
+          <span className="shrink-0" style={{ color: 'var(--nex-text-muted)' }}>Size</span>
+          <span className="ml-auto font-medium truncate" style={{ color: 'var(--nex-text)' }}>{fmtSize(model.sizeBytes)}</span>
         </div>
         {model.contextSize ? (
-          <div className="flex items-center gap-1.5">
-            <Gauge size={11} style={{ color: 'var(--nex-text-muted)' }} />
-            <span style={{ color: 'var(--nex-text-muted)' }}>Context</span>
-            <span className="ml-auto font-medium" style={{ color: 'var(--nex-text)' }}>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Gauge size={11} className="shrink-0" style={{ color: 'var(--nex-text-muted)' }} />
+            <span className="shrink-0" style={{ color: 'var(--nex-text-muted)' }}>Ctx</span>
+            <span className="ml-auto font-medium truncate" style={{ color: 'var(--nex-text)' }}>
               {model.contextSize >= 1024 ? `${(model.contextSize / 1024).toFixed(0)}K` : model.contextSize}
             </span>
           </div>
         ) : <div />}
         {model.requiredRAM ? (
-          <div className="flex items-center gap-1.5">
-            <Cpu size={11} style={{ color: 'var(--nex-text-muted)' }} />
-            <span style={{ color: 'var(--nex-text-muted)' }}>RAM</span>
-            <span className="ml-auto font-medium" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredRAM)}</span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Cpu size={11} className="shrink-0" style={{ color: 'var(--nex-text-muted)' }} />
+            <span className="shrink-0" style={{ color: 'var(--nex-text-muted)' }}>RAM</span>
+            <span className="ml-auto font-medium truncate" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredRAM)}</span>
           </div>
         ) : <div />}
         {model.requiredVRAM ? (
-          <div className="flex items-center gap-1.5">
-            <Zap size={11} style={{ color: 'var(--nex-text-muted)' }} />
-            <span style={{ color: 'var(--nex-text-muted)' }}>VRAM</span>
-            <span className="ml-auto font-medium" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredVRAM)}</span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Zap size={11} className="shrink-0" style={{ color: 'var(--nex-text-muted)' }} />
+            <span className="shrink-0" style={{ color: 'var(--nex-text-muted)' }}>VRAM</span>
+            <span className="ml-auto font-medium truncate" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredVRAM)}</span>
           </div>
         ) : <div />}
       </div>
 
-      {/* ── Footer: Action buttons ── */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* ── Footer: Action buttons (flex, space-between, no overflow) ── */}
+      <div className="flex items-center gap-2 flex-wrap justify-between">
         {/* NOT INSTALLED: Download */}
         {!isInstalled && !isDownloading && (
           <button
@@ -274,7 +292,7 @@ export default function ModelCard({
               <button
                 onClick={() => handleAction('remove', onRemove)}
                 disabled={btnLoading('remove') || model.isActive}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click disabled:opacity-40 ml-auto"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click disabled:opacity-40"
                 style={{ background: 'rgba(239,68,68,0.08)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.15)' }}
               >
                 {btnLoading('remove') ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
