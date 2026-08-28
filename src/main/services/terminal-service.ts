@@ -449,10 +449,38 @@ export class TerminalService {
         session.childProcess.kill(signal);
         return true;
       }
-      // node-pty: kill() with a signal is not portable; emulate by killing.
+      // node-pty: try to pass the signal to the PTY process.
+      // node-pty's kill() accepts a signal name on some platforms.
+      // On Windows, kill() always terminates the process (no signal support),
+      // but on POSIX we can try to send the specific signal.
       if (session.ptyProcess) {
-        session.ptyProcess.kill();
-        return true;
+        if (process.platform !== 'win32') {
+          // POSIX: try to send the specific signal
+          try {
+            session.ptyProcess.kill(signal);
+            return true;
+          } catch {
+            // Fallback: if kill(signal) fails, use default kill()
+            session.ptyProcess.kill();
+            return true;
+          }
+        } else {
+          // Windows: kill() doesn't support signals — always force-kills.
+          // For SIGINT, write Ctrl+C character to the PTY input instead.
+          if (signal === 'SIGINT') {
+            try {
+              session.ptyProcess.write('\x03'); // Ctrl+C
+              return true;
+            } catch {
+              // Fallback to kill
+              session.ptyProcess.kill();
+              return true;
+            }
+          } else {
+            session.ptyProcess.kill();
+            return true;
+          }
+        }
       }
     } catch { /* already dead */ }
     return false;

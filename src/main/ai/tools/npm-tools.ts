@@ -41,13 +41,17 @@ export class NpmBuildTool extends NpmToolBase {
   async execute(params: Record<string, any>, context: ToolContext): Promise<ToolResult> {
     const cwd = params.cwd || context.projectPath || process.cwd();
     const script = params.script || 'build';
-    const result = await safeExecFile('npm', ['run', script], { cwd, timeout: 300000, maxBuffer: 20 * 1024 * 1024 });
-    return {
-      success: result.success,
-      output: result.stdout + (result.stderr ? `\n[stderr]\n${result.stderr}` : ''),
-      data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
-      error: result.success ? undefined : `npm run ${script} failed (exit ${result.exitCode})`,
-    };
+    try {
+      const result = await safeExecFile('npm', ['run', script], { cwd, timeout: 300000, maxBuffer: 20 * 1024 * 1024 });
+      return {
+        success: result.success,
+        output: result.stdout + (result.stderr ? `\n[stderr]\n${result.stderr}` : ''),
+        data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
+        error: result.success ? undefined : `npm run ${script} failed (exit ${result.exitCode})`,
+      };
+    } catch (err: any) {
+      return { success: false, error: `npm run ${script} failed: ${err.message}`, output: err.message };
+    }
   }
 }
 
@@ -70,12 +74,16 @@ export class NpmTestTool extends NpmToolBase {
 
   async execute(params: Record<string, any>, context: ToolContext): Promise<ToolResult> {
     const cwd = params.cwd || context.projectPath || process.cwd();
-    const result = await safeExecFile('npm', ['test'], { cwd, timeout: 300000, maxBuffer: 20 * 1024 * 1024 });
-    return {
-      success: result.success,
-      output: result.stdout + (result.stderr ? `\n[stderr]\n${result.stderr}` : ''),
-      data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
-      error: result.success ? undefined : `npm test failed (exit ${result.exitCode})`,
-    };
+    try {
+      const result = await safeExecFile('npm', ['test'], { cwd, timeout: 300000, maxBuffer: 20 * 1024 * 1024 });
+      return {
+        success: result.success,
+        output: result.stdout + (result.stderr ? `\n[stderr]\n${result.stderr}` : ''),
+        data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
+        error: result.success ? undefined : `npm test failed (exit ${result.exitCode})`,
+      };
+    } catch (err: any) {
+      return { success: false, error: `npm test failed: ${err.message}`, output: err.message };
+    }
   }
 }
