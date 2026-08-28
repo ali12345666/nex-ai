@@ -1,15 +1,13 @@
 /**
- * NEX AI — Model Card Component (Compact Redesign)
+ * NEX AI — Model Card Component (Premium Redesign)
  *
- * Professional, compact card for displaying a model with:
- *   - Header: icon + name (font-weight 600) + provider + status badge
- *   - Body: compact metadata grid (size, context, RAM, VRAM)
- *   - Footer: action buttons (smaller, icon+text, clear states)
+ * Standard-size card with optimized typography and breathing room.
+ * Visual hierarchy: model name prominent, secondary info smaller.
  *
- * Button logic:
- *   - Not installed: [Download] → after download → [Install]
- *   - Installed: [Load] [Remove] + [Update] (only if update available)
- *   - Downloading: progress bar + [Cancel]
+ * Layout:
+ *   Header: icon (36px) + model name (text-sm, font-semibold) + badges
+ *   Body:   metadata grid (size, context, RAM, VRAM) — text-[11px]
+ *   Footer: action buttons (icon + text, proper height)
  */
 
 import React, { useState } from 'react';
@@ -62,11 +60,11 @@ interface ModelCardProps {
 }
 
 const TYPE_ICONS: Record<ModelType, React.ReactNode> = {
-  llm: <Brain size={16} strokeWidth={1.5} />,
-  'voice-stt': <Mic size={16} strokeWidth={1.5} />,
-  'voice-tts': <Volume2 size={16} strokeWidth={1.5} />,
-  vision: <Eye size={16} strokeWidth={1.5} />,
-  embedding: <Cpu size={16} strokeWidth={1.5} />,
+  llm: <Brain size={20} strokeWidth={1.5} />,
+  'voice-stt': <Mic size={20} strokeWidth={1.5} />,
+  'voice-tts': <Volume2 size={20} strokeWidth={1.5} />,
+  vision: <Eye size={20} strokeWidth={1.5} />,
+  embedding: <Cpu size={20} strokeWidth={1.5} />,
 };
 
 const STATUS_BADGES: Record<ModelStatus, { label: string; color: string; bg: string }> = {
@@ -127,47 +125,45 @@ export default function ModelCard({
   const btnLoading = (action: string) => btnState[action] === 'loading';
   const btnSuccess = (action: string) => btnState[action] === 'success';
 
-  // Smaller button style
-  const btnClass = "flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium transition-all nex-click disabled:opacity-40 disabled:pointer-events-none";
-
   return (
     <div
-      className="nex-glass rounded-lg p-3 transition-all duration-200 hover:shadow-md"
+      className="nex-glass rounded-xl p-4 transition-all duration-200 hover:shadow-lg"
       style={{
         border: `1px solid ${model.isActive ? 'var(--nex-accent-glow)' : 'var(--nex-panel-border)'}`,
         opacity: isNotCompatible ? 0.55 : 1,
       }}
     >
       {/* ── Header: icon + name + badges ── */}
-      <div className="flex items-start gap-2.5 mb-2">
+      <div className="flex items-start gap-3 mb-3">
         <div
-          className="shrink-0 w-8 h-8 rounded-md flex items-center justify-center"
+          className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center"
           style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}
         >
           {TYPE_ICONS[model.type]}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
-            <h3 className="text-xs font-semibold truncate flex-1 min-w-0" style={{ color: 'var(--nex-text)', fontWeight: 600 }}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--nex-text)' }}>
               {model.name}
             </h3>
             {model.isActive && (
-              <span className="flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded shrink-0"
-                style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)' }}>
-                <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: 'var(--nex-accent)' }} />
+              <span className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full shrink-0"
+                style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}>
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--nex-accent)' }} />
                 ACTIVE
               </span>
             )}
-            <span className="text-[8px] px-1.5 py-0.5 rounded font-medium shrink-0" style={{ background: badge.bg, color: badge.color }}>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0" style={{ background: badge.bg, color: badge.color }}>
               {badge.label}
             </span>
             {model.persianSupport && (
-              <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.08)', color: '#86efac' }}>
-                FA
+              <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(34,197,94,0.08)', color: '#86efac' }}>
+                فارسی
               </span>
             )}
           </div>
-          <p className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--nex-text-muted)' }}>
+          {/* Provider — smaller, muted */}
+          <p className="text-xs mt-1 truncate" style={{ color: 'var(--nex-text-muted)', opacity: 0.7 }}>
             {model.provider}{model.parameterCount ? ` · ${model.parameterCount}` : ''}{model.quantization ? ` · ${model.quantization}` : ''}
           </p>
         </div>
@@ -175,46 +171,46 @@ export default function ModelCard({
 
       {/* ── Download progress (if downloading) ── */}
       {isDownloading && model.downloadProgress !== undefined && (
-        <div className="mb-2">
-          <div className="flex items-center justify-between text-[9px] mb-0.5">
+        <div className="mb-3">
+          <div className="flex items-center justify-between text-[10px] mb-1">
             <span style={{ color: 'var(--nex-text-muted)' }}>
               {model.downloadSpeed ? fmtSpeed(model.downloadSpeed) : 'Connecting...'}
             </span>
             <span style={{ color: '#67e8f9' }}>{Math.round(model.downloadProgress)}%</span>
           </div>
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
             <div className="h-full rounded-full transition-all duration-300"
               style={{ width: `${model.downloadProgress}%`, background: 'linear-gradient(90deg, #06b6d488, #06b6d4)' }} />
           </div>
         </div>
       )}
 
-      {/* ── Metadata grid (compact) ── */}
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 mb-2.5 text-[10px]">
-        <div className="flex items-center gap-1">
-          <HardDrive size={10} style={{ color: 'var(--nex-text-muted)' }} />
+      {/* ── Body: Metadata grid ── */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-3 text-[11px]">
+        <div className="flex items-center gap-1.5">
+          <HardDrive size={11} style={{ color: 'var(--nex-text-muted)' }} />
           <span style={{ color: 'var(--nex-text-muted)' }}>Size</span>
           <span className="ml-auto font-medium" style={{ color: 'var(--nex-text)' }}>{fmtSize(model.sizeBytes)}</span>
         </div>
         {model.contextSize ? (
-          <div className="flex items-center gap-1">
-            <Gauge size={10} style={{ color: 'var(--nex-text-muted)' }} />
-            <span style={{ color: 'var(--nex-text-muted)' }}>Ctx</span>
+          <div className="flex items-center gap-1.5">
+            <Gauge size={11} style={{ color: 'var(--nex-text-muted)' }} />
+            <span style={{ color: 'var(--nex-text-muted)' }}>Context</span>
             <span className="ml-auto font-medium" style={{ color: 'var(--nex-text)' }}>
               {model.contextSize >= 1024 ? `${(model.contextSize / 1024).toFixed(0)}K` : model.contextSize}
             </span>
           </div>
         ) : <div />}
         {model.requiredRAM ? (
-          <div className="flex items-center gap-1">
-            <Cpu size={10} style={{ color: 'var(--nex-text-muted)' }} />
+          <div className="flex items-center gap-1.5">
+            <Cpu size={11} style={{ color: 'var(--nex-text-muted)' }} />
             <span style={{ color: 'var(--nex-text-muted)' }}>RAM</span>
             <span className="ml-auto font-medium" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredRAM)}</span>
           </div>
         ) : <div />}
         {model.requiredVRAM ? (
-          <div className="flex items-center gap-1">
-            <Zap size={10} style={{ color: 'var(--nex-text-muted)' }} />
+          <div className="flex items-center gap-1.5">
+            <Zap size={11} style={{ color: 'var(--nex-text-muted)' }} />
             <span style={{ color: 'var(--nex-text-muted)' }}>VRAM</span>
             <span className="ml-auto font-medium" style={{ color: isNotCompatible ? '#fca5a5' : 'var(--nex-text)' }}>{fmtGB(model.requiredVRAM)}</span>
           </div>
@@ -222,17 +218,17 @@ export default function ModelCard({
       </div>
 
       {/* ── Footer: Action buttons ── */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        {/* NOT INSTALLED: Download + Cancel */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* NOT INSTALLED: Download */}
         {!isInstalled && !isDownloading && (
           <button
             onClick={() => handleAction('download', onDownload)}
             disabled={btnLoading('download') || isNotCompatible}
-            className={btnClass}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click disabled:opacity-40 disabled:pointer-events-none"
             style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}
           >
-            {btnLoading('download') ? <Loader2 size={10} className="animate-spin" /> : btnSuccess('download') ? <Check size={10} /> : <Download size={10} />}
-            {btnLoading('download') ? '...' : btnSuccess('download') ? '✓' : 'Download'}
+            {btnLoading('download') ? <Loader2 size={11} className="animate-spin" /> : btnSuccess('download') ? <Check size={11} /> : <Download size={11} />}
+            {btnLoading('download') ? 'Downloading...' : btnSuccess('download') ? 'Started' : 'Download'}
           </button>
         )}
 
@@ -240,37 +236,37 @@ export default function ModelCard({
         {isDownloading && onCancelDownload && (
           <button
             onClick={() => handleAction('cancel', onCancelDownload)}
-            className={btnClass}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click"
             style={{ background: 'rgba(239,68,68,0.1)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.2)' }}
           >
-            <X size={10} /> Cancel
+            <X size={11} /> Cancel
           </button>
         )}
 
-        {/* INSTALLED: Load + Remove + Update */}
+        {/* INSTALLED: Load + Update + Remove */}
         {isInstalled && (
           <>
             <button
               onClick={() => handleAction('load', onLoad)}
               disabled={btnLoading('load') || model.isActive}
-              className={btnClass}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click disabled:opacity-40"
               style={{
                 background: model.isActive ? 'rgba(34,197,94,0.12)' : 'var(--nex-accent-dim)',
                 color: model.isActive ? '#86efac' : 'var(--nex-accent-text)',
                 border: `1px solid ${model.isActive ? 'rgba(34,197,94,0.25)' : 'var(--nex-accent-glow)'}`,
               }}
             >
-              {btnLoading('load') ? <Loader2 size={10} className="animate-spin" /> : btnSuccess('load') ? <Check size={10} /> : <Play size={10} />}
-              {btnLoading('load') ? '...' : btnSuccess('load') ? '✓' : model.isActive ? 'Active' : 'Load'}
+              {btnLoading('load') ? <Loader2 size={11} className="animate-spin" /> : btnSuccess('load') ? <Check size={11} /> : <Play size={11} />}
+              {btnLoading('load') ? 'Loading...' : btnSuccess('load') ? 'Loaded' : model.isActive ? 'Active' : 'Load'}
             </button>
             {hasUpdate && onUpdate && (
               <button
                 onClick={() => handleAction('update', onUpdate)}
                 disabled={btnLoading('update')}
-                className={btnClass}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click"
                 style={{ background: 'rgba(245,158,11,0.12)', color: '#fcd34d', border: '1px solid rgba(245,158,11,0.25)' }}
               >
-                {btnLoading('update') ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                {btnLoading('update') ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
                 Update
               </button>
             )}
@@ -278,10 +274,11 @@ export default function ModelCard({
               <button
                 onClick={() => handleAction('remove', onRemove)}
                 disabled={btnLoading('remove') || model.isActive}
-                className={`${btnClass} ml-auto`}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-all nex-click disabled:opacity-40 ml-auto"
                 style={{ background: 'rgba(239,68,68,0.08)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.15)' }}
               >
-                {btnLoading('remove') ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
+                {btnLoading('remove') ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                Remove
               </button>
             )}
           </>
@@ -290,8 +287,8 @@ export default function ModelCard({
 
       {/* Not-compatible warning */}
       {isNotCompatible && (
-        <div className="flex items-center gap-1 mt-1.5 text-[9px]" style={{ color: '#fca5a5' }}>
-          <AlertCircle size={9} />
+        <div className="flex items-center gap-1.5 mt-2.5 text-[10px]" style={{ color: '#fca5a5' }}>
+          <AlertCircle size={11} />
           <span>Not compatible with your hardware</span>
         </div>
       )}
