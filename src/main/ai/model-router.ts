@@ -487,12 +487,24 @@ export class ModelRouter {
 
   /**
    * Suggest a context size based on task tier + GPU availability.
+   *
+   * Phase 116 FIX: Previously returned 1024, which was too small. With
+   * maxTokens=1024 (reserved for generation), only ~0 tokens remained for
+   * system prompt + history — causing "Failed to compress chat history"
+   * errors on the very first message.
+   *
+   * Qwen3-8B supports up to 32768 context. With Vulkan GPU offload on 8GB
+   * VRAM, 4096 is safe and gives ample room for system prompt (~180 tokens)
+   * + history + generation. The context auto-fit in inference.ts will shrink
+   * this if VRAM is insufficient.
    */
   suggestContextSize(tier: TaskTier, hasGpu: boolean): number {
     if (!hasGpu) {
-      return tier === 'simple' ? 512 : 1024;
+      // CPU-only: smaller context to keep RAM usage reasonable
+      return tier === 'simple' ? 2048 : 4096;
     }
-    return 1024; // inference.ts will auto-fallback if VRAM is insufficient
+    // GPU: 4096 is safe for 8GB+ VRAM with 8B Q4 models
+    return 4096;
   }
 
   /**

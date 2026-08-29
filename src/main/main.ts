@@ -1946,20 +1946,33 @@ async function setupIPC(): Promise<void> {
       updateState({ settings });
       console.log(`[MODEL_ACTIVATE] activeModelId persisted: ${modelId}`);
 
-      // 2. Unload the currently-loaded model
+      // Phase 116: Idempotency check — if the requested model is ALREADY
+      // loaded and not disposed, skip the unload+reload cycle. This was a
+      // major source of slow startup: clicking "Activate" on a model that
+      // was already preloaded would unload it (freeing VRAM) then reload
+      // it from disk (~5-15s for 8B models). Now we check first.
+      const mgr = getMultiModelRuntimeManager();
+      if (mgr.isModelLoaded(modelId)) {
+        console.log(`[MODEL_ACTIVATE] Model already loaded — skipping unload+reload`);
+        const status = mgr.getStatus();
+        const { getModel } = await import('./ai/model-registry');
+        return { success: true, model: getModel(modelId), status };
+      }
+
+      // 2. Unload the currently-loaded model (only if different)
       try {
-        await getMultiModelRuntimeManager().unloadModel();
+        await mgr.unloadModel();
         console.log(`[MODEL_ACTIVATE] Old model unloaded`);
       } catch {
         // Non-fatal — may not have been loaded
       }
 
       // 3. Load the new model
-      const model = await getMultiModelRuntimeManager().loadModel(modelId);
+      const model = await mgr.loadModel(modelId);
       console.log(`[MODEL_ACTIVATE] New model loaded: ${model?.name}`);
 
       // 4. Return runtime status
-      const status = getMultiModelRuntimeManager().getStatus();
+      const status = mgr.getStatus();
       return { success: true, model, status };
     } catch (err: any) {
       console.error(`[MODEL_ACTIVATE] Error:`, err);
@@ -5800,7 +5813,16 @@ app.whenReady().then(async () => {
   // Do NOT scan + auto-activate other models. The Model Router will pick the
   // best model per-request, but we preload the pinned model (if any) so the
   // first chat request is fast. This runs in the background (non-blocking).
-  setTimeout(async () => {
+  //
+  // Phase 116 FIX: Removed the 2-second setTimeout delay — preload starts
+  // immediately after window creation. The 2s delay was adding unnecessary
+  // latency to startup. The preload is non-blocking anyway (async, doesn't
+  // block window creation or IPC setup).
+  //
+  // Phase 116 FIX: contextSize=4096 (was 1024). Matches ModelRouter's
+  // suggestedContextSize so the idempotency check in inference.ts reuses
+  // the preloaded model on first chat (no reload needed).
+  (async () => {
     try {
       const { getModelRouter } = await import('./ai/model-router');
       const pinnedId = getModelRouter().getPinnedModelId();
@@ -5812,7 +5834,7 @@ app.whenReady().then(async () => {
           const { getDefaultRuntime } = await import('./ai/runtime');
           const runtime = getDefaultRuntime();
           await runtime.loadModel(model, {
-            contextSize: 1024,
+            contextSize: 4096,  // Phase 116: match ModelRouter default
             threads: 4,
             gpuLayers: -1,  // auto — Vulkan GPU offload
           });
@@ -5826,7 +5848,7 @@ app.whenReady().then(async () => {
     } catch (err: any) {
       console.warn(`[STARTUP_PRELOAD] Failed (non-blocking): ${err?.message || err}`);
     }
-  }, 2000);
+  })();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
