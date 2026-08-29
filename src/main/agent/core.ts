@@ -488,6 +488,29 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     if (task.status !== 'failed' && task.cancelled === false) {
       task.status = 'completed';
       task.completedAt = Date.now();
+
+      // Phase 116: Generate a structured artifact summary so the user (and
+      // subsequent turns) can reference the files/folders the agent created.
+      // Previously, task_completed only emitted "✅ Task completed." — the
+      // actual file paths were in task.observations/toolCalls but NEVER
+      // reached the conversation history. So when the user asked "where is
+      // it?" in the next turn, the model had no context and said "I don't
+      // have access to files."
+      //
+      // Now we emit a final agent_token with a summary of all files/folders
+      // created/modified, including their absolute paths. This becomes the
+      // assistant message content — persisted in conversation history and
+      // sent to the model in the next turn.
+      const artifactSummary = buildArtifactSummary(task);
+      if (artifactSummary) {
+        emit({
+          type: 'agent_token',
+          taskId,
+          message: 'Final artifact summary',
+          data: { content: artifactSummary, phase: 'artifact-summary' },
+        });
+      }
+
       emit({
         type: 'task_completed',
         taskId,
@@ -1523,4 +1546,103 @@ export function deleteTask(taskId: string): void {
   _activeTasks.delete(taskId);
   _cancellationTokens.delete(taskId);
   // Don't delete logs — they're audit records
+}
+
+/**
+ * Phase 116: Build a structured artifact summary from the task's tool calls.
+ *
+ * This summary is emitted as the final agent_token (becoming the assistant
+ * message content) so that:
+ *   1. The user sees which files/folders were created/modified + their paths
+ *   2. The conversation history includes the paths — so in the next turn,
+ *      when the user asks "where is it?", the model has the real paths
+ *      in context and can answer accurately
+ *
+ * Extracts: created files, created folders, modified files, executed commands
+ * from task.toolCalls (which contains result.data with path/relativePath).
+ */
+function buildArtifactSummary(task: AgentTask): string | null {
+  const createdFiles: string[] = [];
+  const createdFolders: string[] = [];
+  const modifiedFiles: string[] = [];
+  const commands: string[] = [];
+
+  for (const tc of task.toolCalls) {
+    if (!tc.result?.success) continue;
+    const data = tc.result?.data;
+    if (!data) continue;
+
+    const toolName = tc.toolName;
+
+    if (toolName === 'write_file') {
+      const p = data.path || data.relativePath;
+      if (p) {
+        if (data.created) {
+          createdFiles.push(p);
+        } else if (data.overwritten) {
+          modifiedFiles.push(p);
+        }
+      }
+    } else if (toolName === 'edit_file') {
+      const p = data.path || data.relativePath;
+      if (p) modifiedFiles.push(p);
+    } else if (toolName === 'list_directory' || toolName === 'project_structure') {
+      // These are read-only — no artifact
+    } else if (toolName === 'run_command' || toolName === 'npm_build' || toolName === 'npm_test') {
+      const cmd = data.command || tc.params?.command || toolName;
+      const exitCode = data.exitCode;
+      commands.push(`${cmd}${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`);
+    }
+
+    // mkdir / create directory — check if the tool created a folder
+    if (data.createdDir || data.directory) {
+      const d = data.directory || data.createdDir;
+      if (d) createdFolders.push(d);
+    }
+  }
+
+  // Also scan observations for modifiedFiles (write_file/edit_file populate this)
+  for (const obs of task.observations) {
+    for (const mf of obs.modifiedFiles || []) {
+      if (mf.path && !modifiedFiles.includes(mf.path) && !createdFiles.includes(mf.path)) {
+        modifiedFiles.push(mf.path);
+      }
+    }
+  }
+
+  // Build the summary text
+  const lines: string[] = [];
+
+  if (createdFiles.length > 0 || createdFolders.length > 0 || modifiedFiles.length > 0) {
+    lines.push('✅ کار انجام شد. موارد ایجاد/تغییر شده:');
+    if (createdFolders.length > 0) {
+      lines.push('');
+      lines.push('📁 پوشه‌های ساخته شده:');
+      for (const f of createdFolders) lines.push(`  • ${f}`);
+    }
+    if (createdFiles.length > 0) {
+      lines.push('');
+      lines.push('📄 فایل‌های ساخته شده:');
+      for (const f of createdFiles) lines.push(`  • ${f}`);
+    }
+    if (modifiedFiles.length > 0) {
+      lines.push('');
+      lines.push('✏️ فایل‌های تغییر یافته:');
+      for (const f of modifiedFiles) lines.push(`  • ${f}`);
+    }
+  }
+
+  if (commands.length > 0) {
+    if (lines.length === 0) lines.push('✅ کار انجام شد.');
+    lines.push('');
+    lines.push('🔧 دستورات اجرا شده:');
+    for (const c of commands) lines.push(`  • ${c}`);
+  }
+
+  if (lines.length === 0) {
+    // No artifacts — return a simple summary so the model knows what happened
+    return `✅ Task completed. ${task.toolCalls.length} tool call(s) executed, ${task.observations.length} observation(s) recorded.`;
+  }
+
+  return lines.join('\n');
 }
