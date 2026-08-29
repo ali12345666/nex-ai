@@ -502,36 +502,38 @@ export async function runTask(taskId: string): Promise<AgentTask> {
       // but the agent executed 0 tools, that's a FAILURE — not a success.
       // Previously this showed "✅ Task completed. 0 tool call(s)" which was
       // misleading. Now we emit a proper failure with the real reason.
-      if (task.toolCalls.length === 0 && task.plan.length > 0) {
-        const firstStep = task.plan[0];
-        if (firstStep.toolName) {
-          // The plan HAD tools but none were executed — something went wrong
-          task.status = 'failed';
-          task.completedAt = Date.now();
-          const errorMsg = 'Planner produced a plan but no tools were executed. Check [PLANNER_DEBUG] logs for the raw model response.';
-          task.errors.push({
-            id: `err-${Date.now()}`,
-            type: 'invalid_state',
-            message: errorMsg,
-            timestamp: Date.now(),
-          });
-          emit({
-            type: 'task_failed',
-            taskId,
-            message: errorMsg,
-            data: { error: { message: errorMsg } },
-          });
-          emit({
-            type: 'agent_token',
-            taskId,
-            message: 'Failure explanation',
-            data: {
-              content: `❌ Agent could not execute the requested operation.\n\nReason: ${errorMsg}\n\nThe planner may have produced an invalid response. Check the console logs for [PLANNER_DEBUG] entries to see what the model actually returned.`,
-              phase: 'failure-explanation',
-            },
-          });
-          return task;
-        }
+      //
+      // CRITICAL: We check task.toolCalls.length === 0 unconditionally —
+      // not just when firstStep.toolName exists. The planner's fallback plan
+      // creates a step WITHOUT a toolName, so the old check (which required
+      // firstStep.toolName) would skip this failure path — letting the task
+      // falsely succeed with 0 tools.
+      if (task.toolCalls.length === 0) {
+        task.status = 'failed';
+        task.completedAt = Date.now();
+        const errorMsg = 'Agent executed 0 tool calls. The planner may have produced an invalid or empty response. Check [PLANNER_DEBUG] logs for the raw model output.';
+        task.errors.push({
+          id: `err-${Date.now()}`,
+          type: 'invalid_state',
+          message: errorMsg,
+          timestamp: Date.now(),
+        });
+        emit({
+          type: 'task_failed',
+          taskId,
+          message: errorMsg,
+          data: { error: { message: errorMsg } },
+        });
+        emit({
+          type: 'agent_token',
+          taskId,
+          message: 'Failure explanation',
+          data: {
+            content: `❌ Agent could not execute the requested operation.\n\nReason: ${errorMsg}\n\nThe planner may have produced an invalid response. Check the console logs for [PLANNER_DEBUG] entries to see what the model actually returned.`,
+            phase: 'failure-explanation',
+          },
+        });
+        return task;
       }
 
       task.status = 'completed';

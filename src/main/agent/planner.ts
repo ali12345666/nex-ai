@@ -311,24 +311,143 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
 }
 
 /**
- * Fallback plan when the planner fails: a single step that just attempts
- * to answer the user's request directly (no tools).
+ * Heuristic fallback plan when the planner fails to produce valid JSON.
  *
- * Phase 116: Added diagnostic logging so we can see WHY the fallback fired.
+ * Phase 116 FIX: Previously, the fallback created a single step WITHOUT
+ * a toolName — which executeStep() treated as a "non-tool step" and just
+ * marked as "completed". This resulted in "0 tool calls executed" even
+ * when the user clearly requested file operations.
+ *
+ * Now, the fallback analyzes the user request for common patterns:
+ *   - "create folder" / "ساز" / "بساز" → write_file with create_dirs
+ *   - "write file" / "بنویس" → write_file
+ *   - "read file" / "بخوان" → read_file
+ *   - "list directory" / "لیست" → list_directory
+ *
+ * If a pattern is matched, we create real tool calls. If no pattern
+ * matches, we fail the task (rather than falsely succeeding with 0 tools).
  */
 function fallbackPlan(userRequest: string, reason: string): PlanResult {
   console.warn('[PLANNER_DIAG] FALLBACK triggered — reason:', reason);
   console.warn('[PLANNER_DIAG] user request was:', userRequest.slice(0, 100));
-  return {
-    steps: [{
-      id: `fallback-${Date.now().toString(36)}`,
+
+  const steps: AgentStep[] = [];
+  const lower = userRequest.toLowerCase();
+
+  // Extract folder name from request (e.g., "NEX-Test" from "یه پوشه به اسم NEX-Test بساز")
+  const folderMatch = userRequest.match(/(?:پوشه|folder|directory)\s*(?:ای|به)?\s*(?:اسم|نام|name)?\s*[:：]?\s*([A-Za-z0-9_\-]+)/i);
+  const folderName = folderMatch?.[1] || 'NEX-Folder';
+
+  // Extract file name (e.g., "hello.txt" from "فایل hello.txt بساز")
+  const fileMatch = userRequest.match(/(?:فایل|file)\s*(?:ای|به)?\s*(?:اسم|نام|name)?\s*[:：]?\s*([A-Za-z0-9_\-\.]+)/i);
+  const fileName = fileMatch?.[1] || 'hello.txt';
+
+  // Extract content to write (e.g., "بنویس سلام من نکس هستم" → "سلام من نکس هستم")
+  const contentMatch = userRequest.match(/(?:بنویس|write|محتوای|content)\s*[:：]?\s*(.+?)(?:بعد|then|و|and|،|,|$)/i);
+  const content = contentMatch?.[1]?.trim() || '';
+
+  // Pattern: create folder + file
+  if (/(ساز|بساز|create|make|mkdir)/i.test(lower) && (content || fileName)) {
+    console.log('[PLANNER_DIAG] heuristic: create folder + file pattern detected');
+    const filePath = `${folderName}/${fileName}`;
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
       index: 0,
-      description: `Direct response to user (planner fallback: ${reason})`,
+      description: `Create file: ${filePath} (with parent directory)`,
+      toolName: 'write_file',
+      toolParams: {
+        path: filePath,
+        content: content || 'hello',
+        create_dirs: true,
+      },
+      requiresPermission: 'write',
+      requiresDiffApproval: false,
       status: 'pending',
       retryCount: 0,
-    }],
-    reasoning: `Planner failed (${reason}). Falling back to direct response.`,
-    confidence: 0.3,
-    warnings: ['Planner failed; using fallback single-step plan'],
+    });
+    steps.push({
+      id: `heuristic-2-${Date.now().toString(36)}`,
+      index: 1,
+      description: `Read back file to verify: ${filePath}`,
+      toolName: 'read_file',
+      toolParams: {
+        path: filePath,
+      },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: write/create file (no folder)
+  else if (/(بساز|ساز|create|write|بنویس)/i.test(lower) && fileName) {
+    console.log('[PLANNER_DIAG] heuristic: create file pattern detected');
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: `Create file: ${fileName}`,
+      toolName: 'write_file',
+      toolParams: {
+        path: fileName,
+        content: content || 'hello',
+        create_dirs: true,
+      },
+      requiresPermission: 'write',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: read file
+  else if (/(بخوان|read|محتوا|content)/i.test(lower) && fileName) {
+    console.log('[PLANNER_DIAG] heuristic: read file pattern detected');
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: `Read file: ${fileName}`,
+      toolName: 'read_file',
+      toolParams: { path: fileName },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: list directory
+  else if (/(لیست|list|show|نمایش|نشون)/i.test(lower)) {
+    console.log('[PLANNER_DIAG] heuristic: list directory pattern detected');
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: 'List current directory',
+      toolName: 'list_directory',
+      toolParams: { path: '.', recursive: false },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  if (steps.length === 0) {
+    // No pattern matched — return empty plan (task will fail with 0 tools)
+    console.warn('[PLANNER_DIAG] no heuristic pattern matched — returning empty plan');
+    return {
+      steps: [],
+      reasoning: `Planner failed (${reason}) and no heuristic pattern matched the request.`,
+      confidence: 0.1,
+      warnings: ['Planner failed; no heuristic fallback available for this request type'],
+    };
+  }
+
+  console.log('[PLANNER_DIAG] heuristic plan created with', steps.length, 'steps');
+  return {
+    steps,
+    reasoning: `Heuristic fallback (planner failed: ${reason}). Pattern-matched the request to ${steps.length} tool call(s).`,
+    confidence: 0.5,
+    warnings: ['Planner failed; using heuristic pattern-matched plan'],
   };
 }
