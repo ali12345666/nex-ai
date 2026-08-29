@@ -249,6 +249,7 @@ function logGpuModelLoadBlock(
  */
 async function getLlamaInstance() {
   if (_llama) return _llama;
+  const llamaInitStart = Date.now();
   console.log('[NEX AI Local] Initializing llama.cpp engine...');
 
   // node-llama-cpp is ESM-only and uses top-level await, so we must
@@ -260,15 +261,17 @@ async function getLlamaInstance() {
   const dynamicImport = (0, eval)(importSrc) as (m: string) => Promise<any>;
   const mod = await dynamicImport('node-llama-cpp');
   _LlamaChatSession = mod.LlamaChatSession;
+  console.log(`[MODEL_TIMING] llama_module_import: ${Date.now() - llamaInitStart}ms`);
 
   // ── 1. Preflight: which GPU types are supported on THIS machine? ───────
+  const gpuPreflightStart = Date.now();
   let supportedGpus: string[] = [];
   try {
     supportedGpus = (await mod.getLlamaGpuTypes('supported')) as string[];
   } catch (e: any) {
     console.warn('[NEX AI Local] getLlamaGpuTypes("supported") failed:', e?.message || e);
   }
-  console.log(`[NEX AI Local] Preflight: supportedGpuTypes=[${supportedGpus.join(', ')}]`);
+  console.log(`[MODEL_TIMING] gpu_preflight: ${Date.now() - gpuPreflightStart}ms (supportedGpus=[${supportedGpus.join(', ')}])`);
 
   // ── 2. Try Vulkan explicitly (best cross-vendor option on Win/Linux) ───
   // build:"never" + skipDownload:true ⇒ NEVER builds from source or downloads.
@@ -279,6 +282,7 @@ async function getLlamaInstance() {
   let chosenReason = '';
 
   if (supportedGpus.includes('vulkan')) {
+    const vulkanInitStart = Date.now();
     try {
       console.log('[NEX AI Local] Requesting Vulkan backend (build=never, skipDownload=true)...');
       llama = await mod.getLlama({
@@ -289,13 +293,14 @@ async function getLlamaInstance() {
       const g = (llama as any).gpu;
       chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
       chosenReason = `explicit gpu:"vulkan" succeeded (llama.gpu="${g}")`;
+      console.log(`[MODEL_TIMING] vulkan_init: ${Date.now() - vulkanInitStart}ms (backend=${chosenBackend})`);
       console.log(`[NEX AI Local] Vulkan backend initialized OK`);
     } catch (e: any) {
       chosenReason = `vulkan request failed: ${(e?.message || e).toString().split('\n')[0]}`;
-      console.warn(`[NEX AI Local] Vulkan backend unavailable: ${e?.message || e}`);
+      console.warn(`[MODEL_TIMING] vulkan_init_failed: ${Date.now() - vulkanInitStart}ms — ${e?.message || e}`);
       console.warn('[NEX AI Local] → Falling back to gpu:"auto".');
-      console.warn('[NEX AI Local] → To enable Vulkan, install the binary: npx node-llama-cpp download --gpu vulkan');
     }
+
   } else {
     chosenReason = `vulkan not in supportedGpuTypes=[${supportedGpus.join(', ')}]`;
     console.log('[NEX AI Local] Vulkan not supported on this machine; using auto detection.');
@@ -303,6 +308,7 @@ async function getLlamaInstance() {
 
   // ── 3. Fallback: gpu:"auto" (CUDA → CPU) ───────────────────────────────
   if (!llama) {
+    const autoInitStart = Date.now();
     try {
       llama = await mod.getLlama({
         gpu: 'auto',
@@ -313,11 +319,10 @@ async function getLlamaInstance() {
       chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
       if (chosenReason) chosenReason += ' | ';
       chosenReason += `auto selected backend="${g}"`;
+      console.log(`[MODEL_TIMING] auto_gpu_init: ${Date.now() - autoInitStart}ms (backend=${chosenBackend})`);
     } catch (e: any) {
-      // Last resort: plain getLlama() (may build/download — but only if the
-      // above failed, which means no prebuilt binary was found at all).
-      console.warn(`[NEX AI Local] gpu:"auto" with build:"never" failed: ${e?.message || e}`);
-      console.warn('[NEX AI Local] → Final fallback: plain getLlama() (may trigger source build).');
+      console.warn(`[MODEL_TIMING] auto_gpu_init_failed: ${Date.now() - autoInitStart}ms — ${e?.message || e}`);
+      // Last resort: plain getLlama()
       llama = await mod.getLlama();
       const g = (llama as any).gpu;
       chosenBackend = (g === 'metal' || g === 'cuda' || g === 'vulkan') ? g : 'cpu';
@@ -328,6 +333,7 @@ async function getLlamaInstance() {
 
   _llama = llama;
   _gpuBackend = chosenBackend;
+  console.log(`[MODEL_TIMING] llama_engine_total: ${Date.now() - llamaInitStart}ms (backend=${chosenBackend})`);
 
   // ── 4. Collect + log the [GPU_RUNTIME] diagnostic block ────────────────
   let buildType: 'localBuild' | 'prebuilt' | 'unknown' = 'unknown';
@@ -1045,6 +1051,8 @@ export async function chatStream(
       onChunk({ content: '', done: true });
       const genMs = Date.now() - start;
       const genTokens = estimateTokens(fullResponse);
+      // Phase 116 PERF: Log TTFT (Time To First Token) + total timing
+      console.log(`[MODEL_TIMING] inference: TTFT=${firstTokenMs}ms generation=${genMs}ms tokens=${genTokens} tps=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} model=${model.name}`);
       console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 1024} firstTokenMs=${firstTokenMs} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${genMs}`);
       noteInferenceStats({
         tokensPerSecond: genTokens / Math.max(0.001, genMs / 1000),

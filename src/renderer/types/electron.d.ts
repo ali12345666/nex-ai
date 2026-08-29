@@ -584,6 +584,7 @@ export interface NexAPI {
   openExternal: (url: string) => Promise<void>;
 
   // Events
+  onAIReady: (callback: (ev: { modelId: string; modelName: string; readyAt: number; totalLoadMs: number }) => void) => () => void;
   onNewTerminal: (callback: () => void) => () => void;
   onKillTerminal: (callback: () => void) => () => void;
   onOpenSettings: (callback: () => void) => () => void;

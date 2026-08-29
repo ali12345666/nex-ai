@@ -5863,6 +5863,17 @@ app.whenReady().then(async () => {
           });
           console.log(`[STARTUP_TIMING] model-preloaded: +${Date.now() - t0}ms (load took ${Date.now() - preloadT0}ms)`);
           console.log(`[STARTUP_TIMING] AI_READY: +${Date.now() - t0}ms`);
+          // Phase 116 PERF: Send AI_READY event to renderer so UI can show
+          // the model ready state. Previously this was only logged to console
+          // — the user had no way to know when the model was ready.
+          if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+            mainWindow.webContents.send('ai-ready', {
+              modelId: pinnedId,
+              modelName: model.name,
+              readyAt: Date.now(),
+              totalLoadMs: Date.now() - preloadT0,
+            });
+          }
         } else {
           console.log(`[STARTUP_PRELOAD] Pinned model not found or file missing — skipping preload`);
         }

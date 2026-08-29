@@ -190,6 +190,11 @@ function App() {
   // ── IPC Events + File Watcher ──
   useEffect(() => {
     const cleanups: (() => void)[] = [];
+    // Phase 116 PERF: Listen for AI ready event from main process
+    cleanups.push(window.nexAPI.onAIReady?.((ev) => {
+      console.log(`[AI_READY] Model "${ev.modelName}" ready in ${ev.totalLoadMs}ms`);
+      window.dispatchEvent(new CustomEvent('nex:ai-ready', { detail: ev }));
+    }) || (() => {}));
     cleanups.push(window.nexAPI.onNewTerminal(() => useStore.getState().setTerminalVisible(true)));
     cleanups.push(window.nexAPI.onKillTerminal(() => useStore.getState().setTerminalVisible(false)));
     cleanups.push(window.nexAPI.onOpenSettings(() => {

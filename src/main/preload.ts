@@ -730,6 +730,12 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.invoke('fs-search-content', dirPath, query),
 
   // ── Events ──
+  // Phase 116 PERF: AI ready state — lets UI show model loading progress
+  onAIReady: (callback: (ev: { modelId: string; modelName: string; readyAt: number; totalLoadMs: number }) => void) => {
+    const handler = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('ai-ready', handler);
+    return () => ipcRenderer.removeListener('ai-ready', handler);
+  },
   onNewTerminal: (callback: () => void) => {
     const handler = () => callback();
     ipcRenderer.on('new-terminal', handler);
