@@ -492,9 +492,30 @@ export class TerminalService {
     if (!session) return false;
     if (session.state === 'running') {
       try {
-        if (session.ptyProcess) session.ptyProcess.kill();
-        else if (session.childProcess) session.childProcess.kill('SIGKILL');
-      } catch { /* already dead */ }
+        if (session.ptyProcess) {
+          // Phase 116 LIFECYCLE FIX: On Windows, node-pty's kill() can trigger
+          // AttachConsole failed errors during shutdown because ConPTY tries
+          // to attach to the console before killing. We wrap in try-catch and
+          // also set a state flag to prevent further operations.
+          session.state = 'killed';
+          session.ptyProcess.kill();
+        }
+        else if (session.childProcess) {
+          session.state = 'killed';
+          session.childProcess.kill('SIGKILL');
+        }
+      } catch (err: any) {
+        // Phase 116: Swallow AttachConsole errors during shutdown.
+        // These are expected on Windows when the process is already dead
+        // or the console is being torn down. The process IS killed —
+        // the error is just node-pty's internal cleanup failing.
+        const msg = err?.message || '';
+        if (/AttachConsole|conpty|already.*dead|not.*running/i.test(msg)) {
+          console.warn(`[TERMINAL] killSession(${sessionId}): expected error during shutdown — ${msg}`);
+        } else {
+          console.warn(`[TERMINAL] killSession(${sessionId}): unexpected error — ${msg}`);
+        }
+      }
     }
     this.cleanupSession(sessionId);
     return true;
@@ -551,9 +572,24 @@ export class TerminalService {
 
   /** Kill ALL sessions (app exit / workspace switch). */
   killAll(): void {
-    for (const [id] of this.sessions) {
-      this.killSession(id);
+    // Phase 116 LIFECYCLE FIX: Kill all sessions safely.
+    // Copy the session IDs first to avoid mutation during iteration.
+    const sessionIds = Array.from(this.sessions.keys());
+    for (const id of sessionIds) {
+      try {
+        this.killSession(id);
+      } catch (err: any) {
+        // Swallow ALL errors during killAll — we're shutting down and
+        // cannot afford to crash. Each killSession already has internal
+        // error handling, but this is a safety net.
+        console.warn(`[TERMINAL] killAll: error killing session ${id}: ${err?.message || err}`);
+      }
     }
+    // Clear all sessions regardless of kill success
+    this.sessions.clear();
+    this.outputHandlers.clear();
+    this.exitHandlers.clear();
+    this.resizeHandlers.clear();
   }
 
   /** Current tracked cwd. */

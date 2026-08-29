@@ -69,43 +69,41 @@ export interface PlanResult {
 
 const PLANNER_SYSTEM_PROMPT = `You are the NEX AI Planner. Your job is to break down a user request into concrete, executable steps.
 
-Each step must be one of:
-- A tool call: {"tool": "<tool_name>", "params": {...}}
-- A reasoning/observation step: {"action": "observe", "description": "..."}
-- A verification step: {"action": "verify", "description": "..."}
+CRITICAL RULE: You MUST output a JSON object with a "steps" array. You MUST NOT output {"action":"ask"} or any other format. Even if the request is unclear, produce steps that use tools to investigate (list_directory, search_files, read_file).
 
 Output STRICT JSON only — no markdown, no explanation outside JSON.
 
-Format:
+Required format:
 {
   "reasoning": "Why you chose this plan",
   "confidence": 0.0-1.0,
-  "warnings": ["..."],
+  "warnings": [],
   "steps": [
     {
       "description": "What this step does",
       "tool": "tool_name",
       "params": {"param": "value"}
-    },
-    {
-      "description": "Analyze the result",
-      "action": "observe"
-    },
-    {
-      "description": "Verify build passes",
-      "action": "verify",
-      "tool": "npm_build"
     }
   ]
 }
 
+Each step MUST have either:
+- "tool" and "params" (to call a tool), OR
+- "action": "observe" (to analyze results), OR
+- "action": "verify" (to verify)
+
+NEVER output {"action":"ask"}. NEVER output a JSON without "steps" array.
+
 Rules:
-- Start with reconnaissance (list_directory, read_file) before making changes
-- For multi-file changes, group related changes together
-- ALWAYS include a verification step at the end (run tests, build, etc.)
-- For destructive operations, mark them as needing permission: {"requiresPermission": "write"}
+- For file read requests: use list_directory or search_files to find the file, then read_file
+- For file creation: use write_file with create_dirs=true
+- For file editing: use read_file first, then edit_file
+- For commands: use run_command, npm_build, or npm_test
+- Start with reconnaissance (list_directory, search_files) before making changes
+- ALWAYS include a final step to show/verify the result to the user
 - Maximum 15 steps per plan
-- If the task is simple (e.g. "what is 2+2"), the plan can have 1 step
+- If the task is simple, 1-2 steps is fine
+- When user says "باز کن" (open) or "نشون بده" (show) or "محتویات" (contents), they want to READ a file — use read_file or search_files + read_file
 
 Available tools:`;
 
@@ -148,7 +146,12 @@ export async function generatePlan(
   try {
     const started = Date.now();
     const chatOpts = {
-      contextSize: model.contextSize,
+      // Phase 116 FIX: Use 4096 (matching the chat path + preload) instead
+      // of model.contextSize (which may be 2048 from registry default).
+      // The model is actually loaded with 4096 context — using 2048 here
+      // would cause the idempotency check to think the context is too
+      // small and trigger an unnecessary reload.
+      contextSize: 4096,
       temperature: 0.3,  // Low temperature for structured output
       // Phase 116 FIX: maxTokens was 1500, but Qwen3-8B produces thinking
       // tokens BEFORE the actual JSON output. The thinking section can
@@ -400,12 +403,26 @@ function fallbackPlan(userRequest: string, reason: string): PlanResult {
     });
   }
 
-  // Pattern: read file
-  else if (/(بخوان|read|محتوا|content)/i.test(lower) && fileName) {
-    console.log('[PLANNER_DIAG] heuristic: read file pattern detected');
+  // Pattern: read/open/show file (including "باز کن", "نشون بده", "محتویات")
+  // Phase 116 FIX: "باز کن" (open) and "نشون بده" (show) are READ intents,
+  // not LIST intents. Previously "نشون" matched the list_directory pattern,
+  // causing the agent to just list files instead of reading the specific file.
+  if (/(بخوان|read|محتوا|content|باز\s*کن|بازش|نشون\s*بده|نشونم|show\s+content|open\s+file)/i.test(lower) && fileName) {
+    console.log('[PLANNER_DIAG] heuristic: read/open file pattern detected');
     steps.push({
       id: `heuristic-1-${Date.now().toString(36)}`,
       index: 0,
+      description: `Search for file: ${fileName}`,
+      toolName: 'search_files',
+      toolParams: { query: fileName, dir: '.', maxResults: 10 },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+    steps.push({
+      id: `heuristic-2-${Date.now().toString(36)}`,
+      index: 1,
       description: `Read file: ${fileName}`,
       toolName: 'read_file',
       toolParams: { path: fileName },
@@ -416,8 +433,36 @@ function fallbackPlan(userRequest: string, reason: string): PlanResult {
     });
   }
 
-  // Pattern: list directory
-  else if (/(لیست|list|show|نمایش|نشون)/i.test(lower)) {
+  // Pattern: read/open/show with folder context (e.g., "فایلی که در NEX folder ساختی")
+  else if (/(بخوان|read|محتوا|content|باز\s*کن|بازش|نشون\s*بده|نشونم|show|open)/i.test(lower) && folderName) {
+    console.log('[PLANNER_DIAG] heuristic: read file in folder pattern detected');
+    const filePath = `${folderName}/${fileName}`;
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: `List directory to find file: ${folderName}`,
+      toolName: 'list_directory',
+      toolParams: { path: folderName, recursive: false },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+    steps.push({
+      id: `heuristic-2-${Date.now().toString(36)}`,
+      index: 1,
+      description: `Read file: ${filePath}`,
+      toolName: 'read_file',
+      toolParams: { path: filePath },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: list directory (ONLY when no file read intent is detected)
+  else if (/(لیست|list\s+dir|show\s+files|نمایش\s+فایل‌ها)/i.test(lower)) {
     console.log('[PLANNER_DIAG] heuristic: list directory pattern detected');
     steps.push({
       id: `heuristic-1-${Date.now().toString(36)}`,
