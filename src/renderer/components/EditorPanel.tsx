@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useEffect } from 'react';
+import React, { useCallback, useRef, useEffect, useMemo } from 'react';
 import Editor from '@monaco-editor/react';
 import { useStore } from '../store/useStore';
 import {
@@ -162,6 +162,62 @@ export default function EditorPanel() {
     return () => window.removeEventListener('nex:fs-change', handler);
   }, []);
 
+  // Phase 116 PERF: Memoize Monaco options to avoid creating a new object
+  // on every render. The options object is large (30+ keys) and Monaco
+  // does a deep comparison — creating a new reference every render causes
+  // unnecessary re-initialization of editor settings.
+  const monacoOptions = useMemo(() => ({
+    fontSize: settings.fontSize,
+    fontFamily: settings.fontFamily,
+    tabSize: settings.tabSize,
+    minimap: { enabled: true, maxColumn: 80 },
+    scrollBeyondLastLine: false,
+    renderWhitespace: 'selection' as const,
+    bracketPairColorization: { enabled: true },
+    cursorBlinking: 'smooth' as const,
+    cursorSmoothCaretAnimation: 'on' as const,
+    smoothScrolling: true,
+    padding: { top: 12, bottom: 12 },
+    lineNumbers: 'on' as const,
+    folding: true,
+    automaticLayout: true,
+    wordWrap: 'off' as const,
+    renderLineHighlight: 'all' as const,
+    guides: {
+      bracketPairs: true,
+      indentation: true,
+    },
+    suggest: {
+      showMethods: true,
+      showFunctions: true,
+      showConstructors: true,
+      showFields: true,
+      showVariables: true,
+      showClasses: true,
+      showStructs: true,
+      showInterfaces: true,
+      showModules: true,
+      showProperties: true,
+      showEvents: true,
+      showOperators: true,
+      showUnits: true,
+      showValues: true,
+      showConstants: true,
+      showEnums: true,
+      showEnumMembers: true,
+      showKeywords: true,
+      showWords: true,
+      showColors: true,
+      showFiles: true,
+      showReferences: true,
+      showFolders: true,
+      showTypeParameters: true,
+      showSnippets: true,
+    },
+    formatOnPaste: true,
+    formatOnType: true,
+  }), [settings.fontSize, settings.fontFamily, settings.tabSize]);
+
   if (openFiles.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-[var(--nex-text-muted)]">
@@ -224,57 +280,7 @@ export default function EditorPanel() {
             onChange={handleChange}
             onMount={handleEditorMount}
             theme="vs-dark"
-            options={{
-              fontSize: settings.fontSize,
-              fontFamily: settings.fontFamily,
-              tabSize: settings.tabSize,
-              minimap: { enabled: true, maxColumn: 80 },
-              scrollBeyondLastLine: false,
-              renderWhitespace: 'selection',
-              bracketPairColorization: { enabled: true },
-              cursorBlinking: 'smooth',
-              cursorSmoothCaretAnimation: 'on',
-              smoothScrolling: true,
-              padding: { top: 12, bottom: 12 },
-              lineNumbers: 'on',
-              folding: true,
-              automaticLayout: true,
-              wordWrap: 'off',
-              renderLineHighlight: 'all',
-              guides: {
-                bracketPairs: true,
-                indentation: true,
-              },
-              suggest: {
-                showMethods: true,
-                showFunctions: true,
-                showConstructors: true,
-                showFields: true,
-                showVariables: true,
-                showClasses: true,
-                showStructs: true,
-                showInterfaces: true,
-                showModules: true,
-                showProperties: true,
-                showEvents: true,
-                showOperators: true,
-                showUnits: true,
-                showValues: true,
-                showConstants: true,
-                showEnums: true,
-                showEnumMembers: true,
-                showKeywords: true,
-                showWords: true,
-                showColors: true,
-                showFiles: true,
-                showReferences: true,
-                showFolders: true,
-                showTypeParameters: true,
-                showSnippets: true,
-              },
-              formatOnPaste: true,
-              formatOnType: true,
-            }}
+            options={monacoOptions}
           />
         </div>
       )}

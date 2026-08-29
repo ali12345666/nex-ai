@@ -5798,19 +5798,23 @@ app.whenReady().then(async () => {
   initPersistence(userDataPath);
   console.log(`[STARTUP_TIMING] persistence-init: +${Date.now() - t0}ms`);
 
-  // Phase 115: Load snapshot index from disk + run retention cleanup.
-  try {
-    const { loadSnapshotIndex, cleanupOldSnapshots, startSnapshotCleanupInterval } = await import('./agent/snapshot-service');
-    loadSnapshotIndex();
-    const cleanup = cleanupOldSnapshots();
-    if (cleanup.deleted > 0) {
-      console.log(`[NEX AI] Snapshot cleanup: ${cleanup.deleted} old snapshot(s) pruned`);
+  // Phase 116 PERF: Move snapshot init to background — was blocking createWindow.
+  // loadSnapshotIndex uses synchronous fs ops (readdirSync, readFileSync, statSync)
+  // that can take 50ms-2s on large snapshot directories. Now runs in background.
+  (async () => {
+    try {
+      const { loadSnapshotIndex, cleanupOldSnapshots, startSnapshotCleanupInterval } = await import('./agent/snapshot-service');
+      loadSnapshotIndex();
+      const cleanup = cleanupOldSnapshots();
+      if (cleanup.deleted > 0) {
+        console.log(`[NEX AI] Snapshot cleanup: ${cleanup.deleted} old snapshot(s) pruned`);
+      }
+      startSnapshotCleanupInterval();
+      console.log(`[STARTUP_TIMING] snapshot-init (background): +${Date.now() - t0}ms`);
+    } catch (err: any) {
+      console.warn(`[NEX AI] Snapshot index load failed (non-blocking): ${err.message}`);
     }
-    startSnapshotCleanupInterval();
-  } catch (err: any) {
-    console.warn(`[NEX AI] Snapshot index load failed (non-blocking): ${err.message}`);
-  }
-  console.log(`[STARTUP_TIMING] snapshot-init: +${Date.now() - t0}ms`);
+  })();
 
   // Phase 116 FIX: Semantic Memory Engine init moved to BACKGROUND (non-blocking).
   // Previously this ran BEFORE createWindow(), blocking window creation. If

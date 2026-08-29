@@ -505,7 +505,10 @@ export default function NexChatPanel() {
 
   // Scroll follow
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Phase 116 PERF: Use 'auto' during streaming to avoid smooth-scroll
+    // animation pile-up. Each token triggers this — 'smooth' causes layout
+    // thrashing with 20-100 calls/sec.
+    messagesEndRef.current?.scrollIntoView({ behavior: isGenerating ? 'auto' : 'smooth' });
   }, [messages]);
 
   // ── File attachment ──
