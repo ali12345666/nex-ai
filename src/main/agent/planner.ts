@@ -150,9 +150,22 @@ export async function generatePlan(
     const chatOpts = {
       contextSize: model.contextSize,
       temperature: 0.3,  // Low temperature for structured output
-      maxTokens: 1500,
+      // Phase 116 FIX: maxTokens was 1500, but Qwen3-8B produces thinking
+      // tokens BEFORE the actual JSON output. The thinking section can
+      // easily consume 1000+ tokens, leaving only ~500 for the JSON —
+      // which gets truncated, causing JSON parse failure and fallback to
+      // a no-tool plan. Now 3072 gives ample room for thinking + JSON.
+      maxTokens: 3072,
       systemPrompt,
     };
+
+    console.log('[PLANNER_DEBUG] generating plan...', {
+      toolCount: request.tools.length,
+      contextSize: chatOpts.contextSize,
+      maxTokens: chatOpts.maxTokens,
+      temperature: chatOpts.temperature,
+      userRequest: request.userRequest.slice(0, 100),
+    });
 
     // Phase 8 / P8-E-1: stream when a token callback is provided.
     let result;
@@ -165,6 +178,16 @@ export async function generatePlan(
       result = await runtime.chat(context.messages, chatOpts);
     }
 
+    // Phase 116: Log the raw planner response for diagnosis
+    console.log('[PLANNER_DEBUG] raw response length:', result.content?.length || 0);
+    console.log('[PLANNER_DEBUG] raw response (first 1000 chars):', (result.content || '').slice(0, 1000));
+    console.log('[PLANNER_DEBUG] raw response (last 200 chars):', (result.content || '').slice(-200));
+
+    if (!result.content || result.content.trim().length === 0) {
+      console.error('[PLANNER_ERROR] Empty response from model!');
+      return fallbackPlan(request.userRequest, 'Planner produced empty response');
+    }
+
     const plan = parsePlanResponse(result.content, request);
     plan.usage = {
       promptTokens: result.promptTokens,
@@ -172,8 +195,15 @@ export async function generatePlan(
       tokensGenerated: result.tokensGenerated,
       durationMs: Date.now() - started,
     };
+    console.log('[PLANNER_DEBUG] plan created:', {
+      stepCount: plan.steps.length,
+      confidence: plan.confidence,
+      tools: plan.steps.map(s => s.toolName || '(none)').join(', '),
+    });
     return plan;
   } catch (err: any) {
+    console.error('[PLANNER_ERROR] Planner threw:', err.message);
+    console.error('[PLANNER_ERROR] stack:', err.stack?.split('\n').slice(0, 5).join('\n'));
     AgentLogger.error(`Planner failed: ${err.message}`);
     return fallbackPlan(request.userRequest, err.message);
   }
