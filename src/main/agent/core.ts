@@ -315,29 +315,61 @@ export async function runTask(taskId: string): Promise<AgentTask> {
 
     // Ensure the model is loaded into the runtime before planning.
     // For the online backend `model` is a synthetic descriptor (no GGUF).
-    // gpuLayers: always -1 (auto) for local — the old check returned 0 for
-    // online (harmless, no GGUF) but could leak into local paths. -1 is safe
-    // for both since online ignores it.
     //
-    // Phase 116 FIX: contextSize was capped at 1024, but the planner system
-    // prompt + 28 tool descriptions + user request easily exceeds 1024 tokens.
-    // This caused the planner response to be truncated or fail with "context
-    // shift" errors — resulting in 0 tool calls and "Task completed" with
-    // no actual work done.
+    // Phase 116 FIX: The Agent was calling runtime.loadModel() with
+    // contextSize=4096 even when the model was ALREADY loaded from the
+    // chat path. The idempotency check in inference.ts SHOULD reuse the
+    // existing model — but if the context was disposed (e.g. by a prior
+    // chatStream that errored), the reload would fail with
+    // "context size of 256 is too large for the available VRAM"
+    // because the old model was still occupying VRAM but the context
+    // was gone.
     //
-    // Now using 4096 (matching the chat path) which gives ample room for:
-    //   - system prompt (~200 tokens)
-    //   - tool list (~600 tokens)
-    //   - user request (~100 tokens)
-    //   - planner output (up to 1500 tokens)
-    //   - generation headroom
+    // FIX: Use the SAME context size as the chat path (4096) and the
+    // SAME gpuLayers (-1, auto). This maximizes the chance the
+    // idempotency check succeeds (same context size → reuse, no reload).
+    // If the model IS disposed, inference.ts will reload it with proper
+    // VRAM-aware fallback (auto-fit context + flash attention).
+    //
+    // CRITICAL: Do NOT set a different contextSize than the chat path.
+    // If chat uses 4096 and agent uses 2048, the idempotency check
+    // (4096 >= 2048) still passes → reuse. But if agent uses 8192,
+    // (4096 >= 8192) fails → reload → VRAM error.
+    const agentContextSize = 4096;  // MUST match chat path + preload
+    const agentGpuLayers = -1;      // auto (same as chat path + preload)
+
+    console.log('[AGENT_MODEL]', {
+      id: model.id,
+      name: model.name,
+      path: model.path,
+      backend: task.backend,
+      contextSize: agentContextSize,
+      gpuLayers: agentGpuLayers,
+      modelContextSize: model.contextSize,
+    });
+
     await runtime.loadModel(model, {
-      contextSize: 4096,
+      contextSize: agentContextSize,
       threads: 4,
-      gpuLayers: -1,
+      gpuLayers: agentGpuLayers,
       temperature: 0.3,  // Low temperature for structured JSON output
       maxTokens: 2048,   // Enough for a detailed plan with multiple steps
     });
+
+    // Log VRAM state after model load for diagnosis
+    try {
+      const { getGpuBackend, getGpuRuntimeDiagnostics } = await import('../ai/inference');
+      const backend = getGpuBackend();
+      const diag = getGpuRuntimeDiagnostics();
+      console.log('[AGENT_VRAM]', {
+        gpuBackend: backend,
+        vramBeforeModelLoad: diag?.vramBeforeModelLoad,
+        vramAfterModelLoad: diag?.vramAfterModelLoad,
+        llamaMemoryUsage: diag?.llamaMemoryUsage,
+        supportsGpuOffloading: diag?.supportsGpuOffloading,
+        gpuDeviceNames: diag?.gpuDeviceNames,
+      });
+    } catch { /* non-blocking */ }
 
     const tools = listToolDefinitions();
 

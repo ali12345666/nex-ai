@@ -663,7 +663,58 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   }
 
   if (lastContextError) {
-    throw lastContextError;
+    // Phase 116: If all context sizes failed with VRAM errors, try unloading
+    // the model completely and reloading with gpuLayers=0 (CPU only).
+    // This is the last-resort fallback for low-VRAM systems where the model
+    // was loaded with GPU offload but there's not enough VRAM for ANY context.
+    const isVramError = /vram|context size.*too large|insufficient.*memory|out of memory|oom/i
+      .test(lastContextError?.message || '');
+
+    if (isVramError) {
+      console.warn('[VRAM_FALLBACK] All context sizes failed with VRAM error — trying CPU-only reload (gpuLayers=0)');
+      try {
+        // Unload everything (model + context)
+        if (_loadedModel) {
+          try { (_loadedModel as any).dispose?.(); } catch { /* */ }
+          _loadedModel = null;
+        }
+        _loadedContext = null;
+        _loadedModelId = null;
+        _loadedModelInfo = null;
+        _loadedModelGpuLayers = null;
+        _loadedContextSize = null;
+
+        // Reload with gpuLayers=0 (CPU only — no VRAM needed)
+        console.log('[VRAM_FALLBACK] Reloading model with gpuLayers=0 (CPU only)...');
+        const cpuModelOpts: any = {
+          modelPath: model.path,
+          gpuLayers: 0,  // CPU only — no VRAM
+        };
+        _loadedModel = await llama.loadModel(cpuModelOpts);
+
+        // Create context with small size for CPU
+        const cpuContextSize = Math.min(requestedContextSize, 2048);
+        _loadedContext = await _loadedModel.createContext({
+          contextSize: { min: 256, max: cpuContextSize },
+          threads: opts.threads ?? 4,
+          flashAttention: 'auto',
+        } as any);
+
+        usedContextSize = (typeof (_loadedContext as any).contextSize === 'number')
+          ? (_loadedContext as any).contextSize : cpuContextSize;
+        kvCacheMode = `cpu-fallback-${usedContextSize}`;
+
+        console.log(`[VRAM_FALLBACK] CPU-only reload succeeded: contextSize=${usedContextSize} (gpuLayers=0)`);
+        lastContextError = null;
+      } catch (cpuErr: any) {
+        console.error('[VRAM_FALLBACK] CPU-only reload also failed:', cpuErr?.message);
+        throw cpuErr;
+      }
+    }
+
+    if (lastContextError) {
+      throw lastContextError;
+    }
   }
 
   _ctxSequence = null; // new context → new sequence pool
