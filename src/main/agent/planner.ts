@@ -180,31 +180,81 @@ export async function generatePlan(
 }
 
 /**
+ * Strip Qwen3 thinking/reasoning tokens from the response.
+ * Qwen3 models produce blocks.
+ * The actual JSON output comes AFTER the closing </think> tag.
+ *
+ * Also strips markdown code fences (```json ... ``` or ``` ... ```).
+ *
+ * Phase 116 FIX: The old parser used a simple regex that failed when the
+ * model wrapped JSON in think blocks or code fences, causing the planner
+ * to fall back to a no-tool "direct response" plan — which is why the
+ * agent showed "0 tool calls executed".
+ */
+function cleanPlanResponse(response: string): string {
+  let cleaned = response;
+
+  // Strip Qwen3 thinking tokens: everything before and including </think>
+  // The model outputs reasoning inside <think> blocks, then the JSON
+  const thinkEnd = cleaned.indexOf('</think>');
+  if (thinkEnd !== -1) {
+    cleaned = cleaned.substring(thinkEnd + '</think>'.length).trim();
+    console.log('[PLANNER_DIAG] stripped think block, remaining length:', cleaned.length);
+  }
+
+  // Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+  const codeFenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (codeFenceMatch) {
+    cleaned = codeFenceMatch[1].trim();
+    console.log('[PLANNER_DIAG] stripped code fence, remaining length:', cleaned.length);
+  }
+
+  return cleaned;
+}
+
+/**
  * Parse the LLM's response into a structured plan.
- * Tolerates JSON-with-prefix-text (e.g. "Here's my plan:\n```json\n{...}\n```").
+ * Tolerates JSON-with-prefix-text, markdown code fences, and Qwen3 thinking tokens.
  */
 function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
-  // Try to extract JSON from the response
-  const jsonMatch = response.match(/\{[\s\S]*\}/);
+  // Phase 116: Log the raw response for diagnosis
+  console.log('[PLANNER_DIAG] raw response length:', response.length);
+  console.log('[PLANNER_DIAG] raw response preview:', response.slice(0, 500));
+
+  // Clean the response (strip think blocks + code fences)
+  const cleaned = cleanPlanResponse(response);
+
+  // Try to extract JSON object — find the first { and the LAST }
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     AgentLogger.warn('Planner response was not JSON, using fallback', {
       data: { responsePreview: response.slice(0, 200) },
     });
+    console.warn('[PLANNER_DIAG] no JSON found in response — falling back');
     return fallbackPlan(request.userRequest, 'Planner did not return JSON');
   }
 
   let parsed: any;
   try {
     parsed = JSON.parse(jsonMatch[0]);
+    console.log('[PLANNER_DIAG] JSON parsed OK, steps:', Array.isArray(parsed.steps) ? parsed.steps.length : 'NOT ARRAY');
   } catch (err: any) {
     AgentLogger.warn(`Planner JSON parse failed: ${err.message}`, {
       data: { jsonPreview: jsonMatch[0].slice(0, 200) },
     });
+    console.warn('[PLANNER_DIAG] JSON parse failed:', err.message);
+    console.warn('[PLANNER_DIAG] attempted JSON:', jsonMatch[0].slice(0, 300));
     return fallbackPlan(request.userRequest, `JSON parse error: ${err.message}`);
   }
 
   if (!Array.isArray(parsed.steps)) {
+    console.warn('[PLANNER_DIAG] parsed.steps is not an array:', typeof parsed.steps);
     return fallbackPlan(request.userRequest, 'Plan missing steps[]');
+  }
+
+  if (parsed.steps.length === 0) {
+    console.warn('[PLANNER_DIAG] parsed.steps is empty array');
+    return fallbackPlan(request.userRequest, 'Plan has 0 steps');
   }
 
   const steps: AgentStep[] = parsed.steps.map((s: any, idx: number) => ({
@@ -219,6 +269,9 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
     retryCount: 0,
   }));
 
+  console.log('[PLANNER_DIAG] plan created with', steps.length, 'steps');
+  console.log('[PLANNER_DIAG] tools in plan:', steps.map(s => s.toolName || '(none)').join(', '));
+
   return {
     steps,
     reasoning: parsed.reasoning || '(no reasoning provided)',
@@ -230,8 +283,12 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
 /**
  * Fallback plan when the planner fails: a single step that just attempts
  * to answer the user's request directly (no tools).
+ *
+ * Phase 116: Added diagnostic logging so we can see WHY the fallback fired.
  */
 function fallbackPlan(userRequest: string, reason: string): PlanResult {
+  console.warn('[PLANNER_DIAG] FALLBACK triggered — reason:', reason);
+  console.warn('[PLANNER_DIAG] user request was:', userRequest.slice(0, 100));
   return {
     steps: [{
       id: `fallback-${Date.now().toString(36)}`,
