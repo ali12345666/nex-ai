@@ -774,12 +774,27 @@ async function setupIPC(): Promise<void> {
       // Phase 83: Log inference start
       console.log(`[INFERENCE_START] Starting chatStream with ${messages.length} messages`);
 
+      // Phase 116: Dynamic maxTokens based on task complexity.
+      // Qwen3-8B uses reasoning tokens (thinking) internally — too few
+      // maxTokens truncates both reasoning AND answer. But for casual chat,
+      // 1024 is plenty. Scale based on the user's message length + keywords.
+      const userMsg = messages[messages.length - 1]?.content || '';
+      const userWordCount = userMsg.trim().split(/\s+/).filter(Boolean).length;
+      const isCodingTask = /\b(code|function|debug|error|bug|build|test|implement|کد|تابع|خطا|دیباگ|اجرا)\b/i.test(userMsg);
+      const isComplexTask = userWordCount > 30 || /\b(architect|design|refactor|analyze|explain|معماری|طراحی|تحلیل|بررسی)\b/i.test(userMsg);
+      const isGreeting = userWordCount <= 5 && /\b(hello|hi|hey|salam|سلام|خوبی|چطوری)\b/i.test(userMsg);
+      const dynamicMaxTokens = isGreeting
+        ? 512
+        : (isCodingTask || isComplexTask)
+          ? 2048
+          : 1024;
+
       const result = await runtime.chatStream(
         messages.map((m) => ({ role: m.role, content: m.content })),
         (chunk) => { if (chunk.content) streamer.push(chunk.content); },
         {
           temperature: config.localTemperature ?? config.temperature ?? 0.7,
-          maxTokens: config.localMaxTokens ?? config.maxTokens ?? 1024,
+          maxTokens: config.localMaxTokens ?? config.maxTokens ?? dynamicMaxTokens,
           systemPrompt: getSystemPromptFor(config),
         }
       );
@@ -1968,7 +1983,13 @@ async function setupIPC(): Promise<void> {
       }
 
       // 3. Load the new model
-      const model = await mgr.loadModel(modelId);
+      // Phase 116 FIX: Pass contextSize=4096 to match ModelRouter's
+      // suggestedContextSize. Previously activation used the model's default
+      // contextSize (2048 from registry), but the first chat request asked
+      // for 4096 — causing the idempotency check to fail and reload the
+      // model from disk a SECOND time. Now both paths use 4096, so the
+      // preloaded/activated model is reused on first chat (no reload).
+      const model = await mgr.loadModel(modelId, { contextSize: 4096 });
       console.log(`[MODEL_ACTIVATE] New model loaded: ${model?.name}`);
 
       // 4. Return runtime status
@@ -5770,14 +5791,14 @@ async function setupIPC(): Promise<void> {
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  const t0 = Date.now();
+  console.log(`[STARTUP_TIMING] app-ready: +${Date.now() - t0}ms`);
+
   // Initialize persistence before anything else
   initPersistence(userDataPath);
+  console.log(`[STARTUP_TIMING] persistence-init: +${Date.now() - t0}ms`);
 
   // Phase 115: Load snapshot index from disk + run retention cleanup.
-  // CRITICAL: Without this, undo/restore is broken after restart (the
-  // in-memory Map is empty even though snapshot files exist on disk).
-  // The retention policy (7-day / 100-per-task / 500MB) is also unenforced
-  // without this call.
   try {
     const { loadSnapshotIndex, cleanupOldSnapshots, startSnapshotCleanupInterval } = await import('./agent/snapshot-service');
     loadSnapshotIndex();
@@ -5785,68 +5806,67 @@ app.whenReady().then(async () => {
     if (cleanup.deleted > 0) {
       console.log(`[NEX AI] Snapshot cleanup: ${cleanup.deleted} old snapshot(s) pruned`);
     }
-    // Phase 115: Start periodic cleanup (every 24h, unref'd)
     startSnapshotCleanupInterval();
   } catch (err: any) {
     console.warn(`[NEX AI] Snapshot index load failed (non-blocking): ${err.message}`);
   }
+  console.log(`[STARTUP_TIMING] snapshot-init: +${Date.now() - t0}ms`);
 
-  // Phase 40: Initialize the Semantic Memory Store + Retrieval Engine.
-  // This wires the embedding-based memory search into the agent flow.
-  try {
-    const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
-    const { SemanticMemoryStore } = await import('./memory/semantic-memory-store');
-    const { MemoryRetrievalEngine, setMemoryRetrievalEngine } = await import('./memory/memory-retrieval-engine');
-    const embedderResolution = await createConfiguredEmbedder();
-    const semanticStore = new SemanticMemoryStore(embedderResolution.embedder);
-    const retrievalEngine = new MemoryRetrievalEngine(semanticStore, embedderResolution.embedder);
-    setMemoryRetrievalEngine(retrievalEngine);
-    console.log(`[NEX AI] Phase 40: Memory Retrieval Engine initialized (embedder: ${embedderResolution.backend})`);
-  } catch (err: any) {
-    console.warn(`[NEX AI] Phase 40: Memory Retrieval Engine init failed (non-blocking): ${err.message}`);
-  }
+  // Phase 116 FIX: Semantic Memory Engine init moved to BACKGROUND (non-blocking).
+  // Previously this ran BEFORE createWindow(), blocking window creation. If
+  // createConfiguredEmbedder was slow (e.g. loading an embedding model),
+  // the user would see a blank screen for seconds. Now the window opens
+  // immediately and semantic memory initializes in parallel.
+  (async () => {
+    try {
+      const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+      const { SemanticMemoryStore } = await import('./memory/semantic-memory-store');
+      const { MemoryRetrievalEngine, setMemoryRetrievalEngine } = await import('./memory/memory-retrieval-engine');
+      const embedderResolution = await createConfiguredEmbedder();
+      const semanticStore = new SemanticMemoryStore(embedderResolution.embedder);
+      const retrievalEngine = new MemoryRetrievalEngine(semanticStore, embedderResolution.embedder);
+      setMemoryRetrievalEngine(retrievalEngine);
+      console.log(`[NEX AI] Semantic Memory Engine initialized (embedder: ${embedderResolution.backend}) — +${Date.now() - t0}ms`);
+    } catch (err: any) {
+      console.warn(`[NEX AI] Semantic Memory Engine init failed (non-blocking): ${err.message}`);
+    }
+  })();
 
   setupIPC().catch((err) => console.error('[NEX AI] IPC setup failed:', err));
   createWindow();
+  console.log(`[STARTUP_TIMING] window-created: +${Date.now() - t0}ms`);
 
-  // ── Preload only the user-selected default model ─────────────────────────
-  // Do NOT scan + auto-activate other models. The Model Router will pick the
-  // best model per-request, but we preload the pinned model (if any) so the
-  // first chat request is fast. This runs in the background (non-blocking).
-  //
-  // Phase 116 FIX: Removed the 2-second setTimeout delay — preload starts
-  // immediately after window creation. The 2s delay was adding unnecessary
-  // latency to startup. The preload is non-blocking anyway (async, doesn't
-  // block window creation or IPC setup).
-  //
-  // Phase 116 FIX: contextSize=4096 (was 1024). Matches ModelRouter's
-  // suggestedContextSize so the idempotency check in inference.ts reuses
-  // the preloaded model on first chat (no reload needed).
+  // ── Preload the user-selected default model ───────────────────────────────
+  // Phase 116: Preload starts immediately after window creation (no delay).
+  // contextSize=4096 matches ModelRouter default + activation default, so
+  // the idempotency check reuses this model on first chat (no reload).
   (async () => {
+    const preloadT0 = Date.now();
     try {
       const { getModelRouter } = await import('./ai/model-router');
       const pinnedId = getModelRouter().getPinnedModelId();
       if (pinnedId) {
-        console.log(`[STARTUP_PRELOAD] Preloading user-selected model: ${pinnedId}`);
+        console.log(`[STARTUP_PRELOAD] Preloading model: ${pinnedId} (+${Date.now() - t0}ms)`);
         const { getModel } = await import('./ai/model-registry');
         const model = getModel(pinnedId);
         if (model && model.fileExists) {
           const { getDefaultRuntime } = await import('./ai/runtime');
           const runtime = getDefaultRuntime();
           await runtime.loadModel(model, {
-            contextSize: 4096,  // Phase 116: match ModelRouter default
+            contextSize: 4096,
             threads: 4,
-            gpuLayers: -1,  // auto — Vulkan GPU offload
+            gpuLayers: -1,
           });
-          console.log(`[STARTUP_PRELOAD] Model preloaded: ${model.name}`);
+          console.log(`[STARTUP_TIMING] model-preloaded: +${Date.now() - t0}ms (load took ${Date.now() - preloadT0}ms)`);
+          console.log(`[STARTUP_TIMING] AI_READY: +${Date.now() - t0}ms`);
         } else {
           console.log(`[STARTUP_PRELOAD] Pinned model not found or file missing — skipping preload`);
         }
       } else {
-        console.log(`[STARTUP_PRELOAD] No pinned model — skipping preload (Model Router will select on first request)`);
+        console.log(`[STARTUP_PRELOAD] No pinned model — skipping preload`);
       }
     } catch (err: any) {
-      console.warn(`[STARTUP_PRELOAD] Failed (non-blocking): ${err?.message || err}`);
+      console.warn(`[STARTUP_PRELOAD] Failed (non-blocking): ${err?.message || err} (+${Date.now() - t0}ms)`);
     }
   })();
 
