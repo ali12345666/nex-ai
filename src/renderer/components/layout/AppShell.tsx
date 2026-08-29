@@ -233,7 +233,40 @@ export default function AppShell() {
       // Log the controller's resolved state for diagnostics
       console.log(`[ORB_TRACE_CONTROLLER] conditions=engine:${orbState} resolvedState=${voiceController.orbState}`);
     });
-    return () => { if (off) off(); };
+
+    // ── Phase 116 FIX: Wire whisper STT transcripts to Chat ──────────────
+    // The LocalVoiceEngine (whisper) produces transcripts in the MAIN process.
+    // These are sent via the 'voice-conversation-user' IPC channel. Previously
+    // NO renderer component listened to this channel — so even when whisper
+    // successfully transcribed speech, the transcript NEVER reached Chat.
+    //
+    // This listener dispatches the transcript via the SAME nex:voice-transcript
+    // DOM event that the browser STT path uses, so NexChatPanel picks it up
+    // and sends it to the AI model — regardless of which STT path produced it.
+    const offUser = window.nexAPI?.onVoiceConversationUser?.((ev: any) => {
+      const text = ev?.text;
+      if (!text || !text.trim()) return;
+      console.log(`[VOICE] whisper transcript received: "${text.substring(0, 100)}"`);
+      // Dispatch to Chat (same path as browser STT)
+      window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: text.trim() } }));
+    });
+
+    // Also listen for NEX responses (from the main-side conversation pipeline)
+    // so they appear in Chat if the conversation system produced them.
+    const offNex = window.nexAPI?.onVoiceConversationNex?.((ev: any) => {
+      const text = ev?.text;
+      if (!text || !text.trim()) return;
+      console.log(`[VOICE] NEX response from conversation: "${text.substring(0, 100)}"`);
+      // The conversation system already speaks the response via TTS.
+      // We don't dispatch it to Chat — the conversation pipeline handles
+      // the full voice→AI→TTS loop independently of the text Chat panel.
+    });
+
+    return () => {
+      if (off) off();
+      if (offUser) offUser();
+      if (offNex) offNex();
+    };
   }, []);
 
   // Left workspace content based on active view

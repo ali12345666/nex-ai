@@ -414,7 +414,28 @@ export class VoiceService {
 
   private startSTT(): void {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { this.callbacks.onError?.('Speech recognition unavailable'); return; }
+    if (!SR) {
+      // Phase 116: Browser SpeechRecognition is NOT available in Electron
+      // (Google removed the cloud speech API from Chromium). Previously this
+      // failed silently with 'Speech recognition unavailable'. Now we log
+      // clearly and rely on the main-side whisper STT path instead.
+      //
+      // The whisper path works as follows:
+      //   1. Audio is captured by this VoiceService (getUserMedia + ScriptProcessor)
+      //   2. PCM chunks are sent via voiceFeedAudioChunk IPC to the main process
+      //   3. LocalVoiceEngine.feedAudioChunk() forwards to whisper provider
+      //   4. Whisper transcribes → onFinalTranscript → conversation.feedTranscript()
+      //   5. AppShell.tsx listens to voice-conversation-user IPC → dispatches
+      //      nex:voice-transcript → NexChatPanel sends to AI
+      //
+      // So we DON'T fail here — we just don't start browser STT. The mic
+      // capture + IPC feeding (already enabled in startListening) handles
+      // the audio path. The whisper STT runs in the main process.
+      console.log('[VOICE] Browser SpeechRecognition not available — using main-side whisper STT path');
+      this._sttActive = true; // mark as active so state shows 'listening'
+      this.setCondition('mic', 'listening');
+      return;
+    }
     this.stopSTT();
     const recognition = new SR();
     recognition.continuous = true;
@@ -429,9 +450,13 @@ export class VoiceService {
         else interim += result[0].transcript;
       }
       if (interim) this.callbacks.onPartialTranscript?.(interim);
-      if (final) this.callbacks.onFinalTranscript?.(final.trim());
+      if (final) {
+        console.log(`[VOICE] browser STT transcript: "${final.trim().substring(0, 100)}"`);
+        this.callbacks.onFinalTranscript?.(final.trim());
+      }
     };
     recognition.onerror = (event: any) => {
+      console.warn(`[VOICE] browser STT error: ${event.error}`);
       if (event.error === 'not-allowed') {
         this.callbacks.onError?.('Speech recognition permission denied');
         this._shouldRestartSTT = false;
@@ -447,6 +472,7 @@ export class VoiceService {
       recognition.start();
       this._recognition = recognition;
       this._sttActive = true;
+      console.log('[VOICE] browser STT started');
     } catch { /* already started */ }
   }
 
