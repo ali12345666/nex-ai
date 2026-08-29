@@ -594,7 +594,7 @@ export interface NexOrbProps {
   className?: string;
 }
 
-export default function NexOrb({
+export default React.memo(function NexOrb({
   state = 'idle',
   audioLevelRef,
   audioLevel = 0,
@@ -686,4 +686,15 @@ export default function NexOrb({
       </Canvas>
     </div>
   );
-}
+}, (prev, next) => {
+  // Phase 116 PERF: Only re-render Orb if visual props changed.
+  // audioLevelRef is a ref (not React state) so it doesn't trigger re-render.
+  // state changes (idle→listening→thinking→speaking) are the main trigger.
+  return (
+    prev.state === next.state &&
+    prev.primaryColor === next.primaryColor &&
+    prev.secondaryColor === next.secondaryColor &&
+    prev.quality === next.quality &&
+    prev.className === next.className
+  );
+});

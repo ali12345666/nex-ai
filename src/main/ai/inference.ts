@@ -541,8 +541,10 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // Load the model — if this throws, the error message tells us exactly why
   // (unsupported architecture, corrupt GGUF, OOM, etc.). We log the full
   // error so the user can see the real reason, not a generic message.
+  const modelLoadStart = Date.now();
   try {
     _loadedModel = await llama.loadModel(modelOpts);
+    console.log(`[MODEL_TIMING] model_load: ${Date.now() - modelLoadStart}ms (path=${model.path})`);
   } catch (loadErr: any) {
     // Surface the REAL llama.cpp error with full context
     console.error('[NEX AI Local] llama.loadModel() FAILED:', {
@@ -619,12 +621,14 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   let kvCacheMode = 'default';
 
   // Attempt 1: auto-fit context (min:256, max:requested) with flash attention
+  const ctxCreateStart = Date.now();
   try {
     _loadedContext = await _loadedModel.createContext({
       contextSize: { min: MIN_CONTEXT, max: requestedContextSize },
       threads: opts.threads ?? 4,
       flashAttention: 'auto',
     } as any);
+    console.log(`[MODEL_TIMING] context_create: ${Date.now() - ctxCreateStart}ms (size=${usedContextSize})`);
     // Read the actual context size that was created
     usedContextSize = (typeof (_loadedContext as any).contextSize === 'number')
       ? (_loadedContext as any).contextSize

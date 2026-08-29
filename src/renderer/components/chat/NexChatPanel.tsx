@@ -1032,58 +1032,20 @@ export default function NexChatPanel() {
           </div>
         )}
         {messages.map((msg) => (
-          <div key={msg.id}>
-            {/* Phase 33: Edit mode for user messages */}
-            {editingMessageId === msg.id ? (
-              <div className="flex gap-2 mb-3 ml-8">
-                <textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditMessage(msg.id, editText); }
-                    if (e.key === 'Escape') cancelEdit();
-                  }}
-                  className="flex-1 bg-white/[0.05] border border-[var(--nex-accent)]/30 rounded-lg px-3 py-2 text-[12px] resize-none outline-none"
-                  style={{ color: 'var(--nex-text)', minHeight: 40 }}
-                  autoFocus
-                  aria-label="Edit message"
-                />
-                <div className="flex flex-col gap-1">
-                  <button onClick={() => handleEditMessage(msg.id, editText)} className="px-2 py-1 rounded text-[9px] font-medium" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>Save</button>
-                  <button onClick={cancelEdit} className="px-2 py-1 rounded text-[9px]" style={{ border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text-muted)' }}>Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <MessageBubble message={msg} onUndo={handleUndo} />
-                {/* Phase 33: Edit/Regenerate actions */}
-                {!isGenerating && msg.status === 'complete' && (
-                  <div className={`flex gap-2 mt-0.5 mb-2 ${msg.role === 'user' ? 'justify-end pr-10' : 'pl-10'}`}>
-                    {msg.role === 'user' && (
-                      <button
-                        onClick={() => startEdit(msg.id)}
-                        className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
-                        style={{ color: 'var(--nex-text-muted)' }}
-                        aria-label="Edit message"
-                      >
-                        Edit
-                      </button>
-                    )}
-                    {msg.role === 'assistant' && msg === messages[messages.length - 1] && (
-                      <button
-                        onClick={handleRegenerate}
-                        className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
-                        style={{ color: 'var(--nex-text-muted)' }}
-                        aria-label="Regenerate response"
-                      >
-                        Regenerate
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <MessageRow
+            key={msg.id}
+            msg={msg}
+            isLast={msg === messages[messages.length - 1]}
+            isGenerating={isGenerating}
+            editingMessageId={editingMessageId}
+            editText={editText}
+            onUndo={handleUndo}
+            onEditMessage={handleEditMessage}
+              onStartEdit={startEdit}
+              onCancelEdit={cancelEdit}
+              onEditText={setEditText}
+              onRegenerate={handleRegenerate}
+          />
         ))}
         <div ref={messagesEndRef} />
       </div>
@@ -1234,3 +1196,96 @@ export default function NexChatPanel() {
     </div>
   );
 }
+
+// ── Phase 116 PERF: Memoized MessageRow ───────────────────────────────────
+// Previously, every chat token caused the ENTIRE messages.map() to re-render
+// because the inline JSX (Edit/Regenerate buttons, conditional rendering)
+// created new closures on every render. Now, MessageRow is React.memo'd
+// with stable callback references — only the message that actually changed
+// (the streaming one) re-renders. All other messages skip re-rendering.
+
+interface MessageRowProps {
+  msg: NexMessage;
+  isLast: boolean;
+  isGenerating: boolean;
+  editingMessageId: string | null;
+  editText: string;
+  onUndo: (messageId: string, snapshotId: string) => void;
+  onEditMessage: (messageId: string, newContent: string) => void;
+  onStartEdit: (messageId: string) => void;
+  onCancelEdit: () => void;
+  onEditText: (text: string) => void;
+  onRegenerate: () => void;
+}
+
+const MessageRow = React.memo(function MessageRow({
+  msg, isLast, isGenerating, editingMessageId, editText,
+  onUndo, onEditMessage, onStartEdit, onCancelEdit, onEditText, onRegenerate,
+}: MessageRowProps) {
+  // Edit mode for user messages
+  if (editingMessageId === msg.id) {
+    return (
+      <div className="flex gap-2 mb-3 ml-8">
+        <textarea
+          value={editText}
+          onChange={(e) => onEditText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onEditMessage(msg.id, editText); }
+            if (e.key === 'Escape') onCancelEdit();
+          }}
+          className="flex-1 bg-white/[0.05] border border-[var(--nex-accent)]/30 rounded-lg px-3 py-2 text-[12px] resize-none outline-none"
+          style={{ color: 'var(--nex-text)', minHeight: 40 }}
+          autoFocus
+          aria-label="Edit message"
+        />
+        <div className="flex flex-col gap-1">
+          <button onClick={() => onEditMessage(msg.id, editText)} className="px-2 py-1 rounded text-[9px] font-medium" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>Save</button>
+          <button onClick={onCancelEdit} className="px-2 py-1 rounded text-[9px]" style={{ border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text-muted)' }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <MessageBubble message={msg} onUndo={onUndo} />
+      {!isGenerating && msg.status === 'complete' && (
+        <div className={`flex gap-2 mt-0.5 mb-2 ${msg.role === 'user' ? 'justify-end pr-10' : 'pl-10'}`}>
+          {msg.role === 'user' && (
+            <button
+              onClick={() => onStartEdit(msg.id)}
+              className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+              style={{ color: 'var(--nex-text-muted)' }}
+              aria-label="Edit message"
+            >
+              Edit
+            </button>
+          )}
+          {msg.role === 'assistant' && isLast && (
+            <button
+              onClick={onRegenerate}
+              className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+              style={{ color: 'var(--nex-text-muted)' }}
+              aria-label="Regenerate response"
+            >
+              Regenerate
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+}, (prev, next) => {
+  // Custom comparison: only re-render if this specific message changed
+  // or if global state that affects this row changed
+  return (
+    prev.msg.id === next.msg.id &&
+    prev.msg.content === next.msg.content &&
+    prev.msg.status === next.msg.status &&
+    prev.msg.metadata === next.msg.metadata &&
+    prev.isLast === next.isLast &&
+    prev.isGenerating === next.isGenerating &&
+    prev.editingMessageId === next.editingMessageId &&
+    prev.editText === next.editText
+  );
+});

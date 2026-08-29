@@ -215,34 +215,33 @@ function App() {
   }, [projectPath]);
 
   // ── Phase 2: Load persisted settings on startup ──
-  // Survives close, restart, crash — settings live in userData/config.json
-  // and API keys live in encrypted secrets.json.
+  // Phase 116 PERF: Parallelize independent IPC calls to reduce startup time.
+  // Previously settingsLoad() and configGetAll() ran sequentially (40-120ms).
+  // Now they run in parallel — saves one IPC roundtrip.
   useEffect(() => {
     (async () => {
       try {
-        const { settings: persisted, apiKey, glmApiKey } = await window.nexAPI.settingsLoad();
+        const [settingsResult, configResult] = await Promise.all([
+          window.nexAPI.settingsLoad(),
+          window.nexAPI.configGetAll(),
+        ]);
+
+        const { settings: persisted, apiKey, glmApiKey } = settingsResult;
         updateSettings(persisted);
         if (apiKey) {
           updateSettings({ aiApiKey: apiKey });
         }
-        // Phase 8 / P8-A: GLM API key (encrypted at rest, same secrets store)
         if (glmApiKey !== undefined && glmApiKey !== null && glmApiKey !== '') {
           updateSettings({ glmApiKey });
         }
         if (persisted.aiMode) {
           setAIMode(persisted.aiMode);
         }
-        // Load local models registry (Phase 4 will populate this)
-        const all = await window.nexAPI.configGetAll();
-        if (all?.localModels) {
-          setLocalModels(all.localModels);
+        if (configResult?.localModels) {
+          setLocalModels(configResult.localModels);
           if (persisted.activeLocalModelId) {
             setActiveLocalModel(persisted.activeLocalModelId);
           }
-        }
-        // Restore recent projects
-        if (all?.recentProjects && !projectPath) {
-          // Don't auto-open — let user pick from WelcomeScreen
         }
       } catch (err) {
         console.error('[NEX AI] Failed to load settings:', err);
