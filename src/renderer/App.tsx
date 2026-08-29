@@ -195,6 +195,16 @@ function App() {
       console.log(`[AI_READY] Model "${ev.modelName}" ready in ${ev.totalLoadMs}ms`);
       window.dispatchEvent(new CustomEvent('nex:ai-ready', { detail: ev }));
     }) || (() => {}));
+    // Phase 116: Agent → Editor bridge — when agent tool calls open_file_in_editor,
+    // the main process sends 'open-file-in-editor' IPC. We open the file in Monaco.
+    cleanups.push(window.nexAPI.onOpenFileInEditor?.((ev) => {
+      console.log(`[OPEN_FILE_IN_EDITOR] Opening: ${ev.path}`);
+      if (ev?.path) {
+        useStore.getState().openFile(ev.path).catch((err: any) => {
+          console.warn('[OPEN_FILE_IN_EDITOR] Failed to open file:', err?.message);
+        });
+      }
+    }) || (() => {}));
     cleanups.push(window.nexAPI.onNewTerminal(() => useStore.getState().setTerminalVisible(true)));
     cleanups.push(window.nexAPI.onKillTerminal(() => useStore.getState().setTerminalVisible(false)));
     cleanups.push(window.nexAPI.onOpenSettings(() => {

@@ -736,6 +736,12 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('ai-ready', handler);
     return () => ipcRenderer.removeListener('ai-ready', handler);
   },
+  // Phase 116: Agent → Editor bridge — open file from agent tool
+  onOpenFileInEditor: (callback: (ev: { path: string }) => void) => {
+    const handler = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('open-file-in-editor', handler);
+    return () => ipcRenderer.removeListener('open-file-in-editor', handler);
+  },
   onNewTerminal: (callback: () => void) => {
     const handler = () => callback();
     ipcRenderer.on('new-terminal', handler);

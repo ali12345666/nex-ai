@@ -192,6 +192,39 @@ export async function generatePlan(
     }
 
     const plan = parsePlanResponse(result.content, request);
+
+    // Phase 116: If the plan has 0 steps (LLM produced invalid JSON like
+    // {"action":"ask"}), retry with a stricter prompt before falling back.
+    if (plan.steps.length === 0) {
+      console.warn('[PLANNER_DIAG] Plan has 0 steps — retrying with stricter prompt...');
+      const retryPrompt = `Your previous response was invalid. You MUST output JSON with a "steps" array. Do NOT output {"action":"ask"}. 
+
+User request: ${request.userRequest}
+
+Output STRICT JSON with steps[]:`;
+
+      const retryResult = await runtime.chat([
+        ...context.messages,
+        { role: 'assistant' as const, content: result.content },
+        { role: 'user' as const, content: retryPrompt },
+      ], chatOpts);
+
+      console.log('[PLANNER_DEBUG] retry response length:', retryResult.content?.length || 0);
+      const retryPlan = parsePlanResponse(retryResult.content || '', request);
+      if (retryPlan.steps.length > 0) {
+        console.log('[PLANNER_DIAG] retry succeeded — plan has', retryPlan.steps.length, 'steps');
+        retryPlan.usage = {
+          promptTokens: retryResult.promptTokens,
+          completionTokens: retryResult.completionTokens,
+          tokensGenerated: retryResult.tokensGenerated,
+          durationMs: Date.now() - started,
+        };
+        return retryPlan;
+      }
+      console.warn('[PLANNER_DIAG] retry also failed — using heuristic fallback');
+      return fallbackPlan(request.userRequest, 'Planner retry also produced invalid plan');
+    }
+
     plan.usage = {
       promptTokens: result.promptTokens,
       completionTokens: result.completionTokens,
@@ -337,32 +370,47 @@ function fallbackPlan(userRequest: string, reason: string): PlanResult {
   const steps: AgentStep[] = [];
   const lower = userRequest.toLowerCase();
 
+  // Extract explicit path from request (e.g., "C:\Users\AliK\Desktop\nex ai")
+  const pathMatch = userRequest.match(/([A-Za-z]:[\\\/][^\s,،]+)/);
+  const explicitPath = pathMatch?.[1] || '';
+
   // Extract folder name from request (e.g., "NEX-Test" from "یه پوشه به اسم NEX-Test بساز")
   const folderMatch = userRequest.match(/(?:پوشه|folder|directory)\s*(?:ای|به)?\s*(?:اسم|نام|name)?\s*[:：]?\s*([A-Za-z0-9_\-]+)/i);
-  const folderName = folderMatch?.[1] || 'NEX-Folder';
+  const folderName = folderMatch?.[1] || '';
 
   // Extract file name (e.g., "hello.txt" from "فایل hello.txt بساز")
   const fileMatch = userRequest.match(/(?:فایل|file)\s*(?:ای|به)?\s*(?:اسم|نام|name)?\s*[:：]?\s*([A-Za-z0-9_\-\.]+)/i);
-  const fileName = fileMatch?.[1] || 'hello.txt';
+  const fileName = fileMatch?.[1] || '';
 
   // Extract content to write (e.g., "بنویس سلام من نکس هستم" → "سلام من نکس هستم")
   const contentMatch = userRequest.match(/(?:بنویس|write|محتوای|content)\s*[:：]?\s*(.+?)(?:بعد|then|و|and|،|,|$)/i);
   const content = contentMatch?.[1]?.trim() || '';
 
+  // Extract content search query (e.g., "که دارای hello هست" → "hello")
+  const contentSearchMatch = userRequest.match(/(?:دارای|contains|شامل|که\s*داریم?)\s*[:：]?\s*(.+?)(?:باز\s*کن|نشون|show|read|و|and|،|,|$)/i);
+  const contentQuery = contentSearchMatch?.[1]?.trim() || '';
+
+  // Determine search root: explicit path > folder name > workspace root
+  const searchRoot = explicitPath || folderName || '.';
+
+  // Determine search query for finding files
+  const searchQuery = fileName || contentQuery || '';
+
+  console.log('[PLANNER_DIAG] heuristic analysis:', {
+    explicitPath, folderName, fileName, content, contentQuery,
+    searchRoot, searchQuery,
+  });
+
   // Pattern: create folder + file
   if (/(ساز|بساز|create|make|mkdir)/i.test(lower) && (content || fileName)) {
     console.log('[PLANNER_DIAG] heuristic: create folder + file pattern detected');
-    const filePath = `${folderName}/${fileName}`;
+    const filePath = folderName ? `${folderName}/${fileName || 'file.txt'}` : (fileName || 'file.txt');
     steps.push({
       id: `heuristic-1-${Date.now().toString(36)}`,
       index: 0,
       description: `Create file: ${filePath} (with parent directory)`,
       toolName: 'write_file',
-      toolParams: {
-        path: filePath,
-        content: content || 'hello',
-        create_dirs: true,
-      },
+      toolParams: { path: filePath, content: content || 'hello', create_dirs: true },
       requiresPermission: 'write',
       requiresDiffApproval: false,
       status: 'pending',
@@ -373,87 +421,73 @@ function fallbackPlan(userRequest: string, reason: string): PlanResult {
       index: 1,
       description: `Read back file to verify: ${filePath}`,
       toolName: 'read_file',
-      toolParams: {
-        path: filePath,
-      },
-      requiresPermission: 'read',
-      requiresDiffApproval: false,
-      status: 'pending',
-      retryCount: 0,
-    });
-  }
-
-  // Pattern: write/create file (no folder)
-  else if (/(بساز|ساز|create|write|بنویس)/i.test(lower) && fileName) {
-    console.log('[PLANNER_DIAG] heuristic: create file pattern detected');
-    steps.push({
-      id: `heuristic-1-${Date.now().toString(36)}`,
-      index: 0,
-      description: `Create file: ${fileName}`,
-      toolName: 'write_file',
-      toolParams: {
-        path: fileName,
-        content: content || 'hello',
-        create_dirs: true,
-      },
-      requiresPermission: 'write',
-      requiresDiffApproval: false,
-      status: 'pending',
-      retryCount: 0,
-    });
-  }
-
-  // Pattern: read/open/show file (including "باز کن", "نشون بده", "محتویات")
-  // Phase 116 FIX: "باز کن" (open) and "نشون بده" (show) are READ intents,
-  // not LIST intents. Previously "نشون" matched the list_directory pattern,
-  // causing the agent to just list files instead of reading the specific file.
-  if (/(بخوان|read|محتوا|content|باز\s*کن|بازش|نشون\s*بده|نشونم|show\s+content|open\s+file)/i.test(lower) && fileName) {
-    console.log('[PLANNER_DIAG] heuristic: read/open file pattern detected');
-    steps.push({
-      id: `heuristic-1-${Date.now().toString(36)}`,
-      index: 0,
-      description: `Search for file: ${fileName}`,
-      toolName: 'search_files',
-      toolParams: { query: fileName, dir: '.', maxResults: 10 },
-      requiresPermission: 'read',
-      requiresDiffApproval: false,
-      status: 'pending',
-      retryCount: 0,
-    });
-    steps.push({
-      id: `heuristic-2-${Date.now().toString(36)}`,
-      index: 1,
-      description: `Read file: ${fileName}`,
-      toolName: 'read_file',
-      toolParams: { path: fileName },
-      requiresPermission: 'read',
-      requiresDiffApproval: false,
-      status: 'pending',
-      retryCount: 0,
-    });
-  }
-
-  // Pattern: read/open/show with folder context (e.g., "فایلی که در NEX folder ساختی")
-  else if (/(بخوان|read|محتوا|content|باز\s*کن|بازش|نشون\s*بده|نشونم|show|open)/i.test(lower) && folderName) {
-    console.log('[PLANNER_DIAG] heuristic: read file in folder pattern detected');
-    const filePath = `${folderName}/${fileName}`;
-    steps.push({
-      id: `heuristic-1-${Date.now().toString(36)}`,
-      index: 0,
-      description: `List directory to find file: ${folderName}`,
-      toolName: 'list_directory',
-      toolParams: { path: folderName, recursive: false },
-      requiresPermission: 'read',
-      requiresDiffApproval: false,
-      status: 'pending',
-      retryCount: 0,
-    });
-    steps.push({
-      id: `heuristic-2-${Date.now().toString(36)}`,
-      index: 1,
-      description: `Read file: ${filePath}`,
-      toolName: 'read_file',
       toolParams: { path: filePath },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: read/open/show file — uses search_files to FIND the actual file,
+  // then read_file to read it, then open_file_in_editor to open it.
+  // Phase 116 FIX: Do NOT hardcode filenames. Use search_files to find
+  // the actual file path, then use that path for read_file.
+  else if (/(بخوان|read|محتوا|content|باز\s*کن|بازش|نشون\s*بده|نشونم|show|open|hello)/i.test(lower)) {
+    console.log('[PLANNER_DIAG] heuristic: read/open file pattern detected');
+
+    // Step 1: Search for the file
+    const searchQ = searchQuery || (contentQuery ? contentQuery : 'hello');
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: `Search for files matching "${searchQ}" in ${searchRoot}`,
+      toolName: 'search_files',
+      toolParams: { query: searchQ, dir: searchRoot, maxResults: 10 },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+
+    // Step 2: List directory to see what files exist
+    steps.push({
+      id: `heuristic-2-${Date.now().toString(36)}`,
+      index: 1,
+      description: `List directory to find txt files: ${searchRoot}`,
+      toolName: 'list_directory',
+      toolParams: { path: searchRoot, recursive: false },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+
+    // Step 3: Read the found file (path will come from search/list results)
+    // We use a placeholder path — the ReAct loop should resolve the actual
+    // path from the search/list observation and inject it here.
+    // If the planner produced valid JSON, the LLM would have used the
+    // search result. In heuristic fallback, we use the best guess.
+    const readPath = fileName || (folderName ? `${folderName}/file.txt` : 'file.txt');
+    steps.push({
+      id: `heuristic-3-${Date.now().toString(36)}`,
+      index: 2,
+      description: `Read file: ${readPath}`,
+      toolName: 'read_file',
+      toolParams: { path: readPath },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+
+    // Step 4: Open in editor
+    steps.push({
+      id: `heuristic-4-${Date.now().toString(36)}`,
+      index: 3,
+      description: `Open file in editor: ${readPath}`,
+      toolName: 'open_file_in_editor',
+      toolParams: { path: readPath },
       requiresPermission: 'read',
       requiresDiffApproval: false,
       status: 'pending',

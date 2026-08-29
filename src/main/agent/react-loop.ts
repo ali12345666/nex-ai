@@ -102,29 +102,27 @@ Format:
     {
       "description": "What this new step does",
       "tool": "tool_name",
-      "params": {"param": "value"},
-      "verificationCriteria": {
-        "expectedExitCode": 0,
-        "expectedOutputContains": ["..."],
-        "forbiddenOutputContains": ["error", "failed"]
-      }
+      "params": {"param": "value"}
     }
   ],
   "finalAnswer": "When action='complete', the final answer for the user"
 }
 
 Decision rules:
-- "continue": The step succeeded, the observation matches expectations, and the remaining plan is still valid. Use this for routine successful steps.
-- "replan": The step failed OR the observation reveals the remaining plan is wrong (test failed, file missing, unexpected error). Discard the remaining steps and emit newSteps. Each replan MUST include a verification step at the end if the task involves code changes.
-- "complete": The original user goal has been achieved. Skip remaining steps and finalize. Include a finalAnswer.
-- "abort": The task cannot succeed (wrong project, missing dependency, unrecoverable error). Include a reason.
+- "continue": The step succeeded AND the remaining plan is still valid. Use this for intermediate steps (e.g. after search_files, continue to read_file).
+- "replan": The step failed OR the observation reveals the remaining plan is wrong (file not found, search returned no results, unexpected error). Discard remaining steps and emit newSteps. USE THE ACTUAL PATH from the tool result — do NOT guess file paths.
+- "complete": The original user goal has been FULLY achieved. This means:
+  * If user asked to READ a file: read_file MUST have succeeded AND the content must be in the observation.
+  * If user asked to OPEN a file: open_file_in_editor MUST have succeeded.
+  * If user asked to CREATE a file: write_file MUST have succeeded AND read_file verification passed.
+  NEVER mark "complete" after only list_directory or search_files — these are reconnaissance steps, not the final goal.
+- "abort": The task cannot succeed (file not found after search, unrecoverable error).
 
-Rules for newSteps:
-- Maximum 10 steps per replan
-- Start with reconnaissance if the error is unfamiliar (read_file, list_directory)
-- ALWAYS include a verification step at the end for code-change tasks (npm_build, npm_test)
-- For destructive operations, mark: {"requiresPermission": "write"}
-- Do NOT repeat steps that already succeeded
+CRITICAL RULES:
+- When the user says "باز کن" (open), you MUST call open_file_in_editor before "complete".
+- When the user says "محتویات" (contents), you MUST call read_file and include the content in finalAnswer before "complete".
+- When search_files returns results, USE THE ACTUAL FILE PATH from the results for subsequent read_file calls. Do NOT guess or hardcode paths.
+- If search_files returns no results, "replan" with a broader search or "abort" with a clear message.
 
 Available tools:`;
 
@@ -379,23 +377,20 @@ export function shouldInvokeRePlanner(
   // Invoke if the tool failed.
   if (toolResult && !toolResult.success) return true;
 
+  // Phase 116: ALWAYS invoke after search_files or list_directory.
+  // These are reconnaissance steps — the LLM needs to see the results to
+  // decide the correct path for the next read_file/open_file_in_editor call.
+  // Without this, the agent blindly uses hardcoded paths from the plan
+  // instead of the actual paths returned by search/list.
+  if (step.toolName === 'search_files' || step.toolName === 'list_directory') {
+    return true;
+  }
+
   // Invoke if the observation has error/needs-attention signals.
   const hasConcerningSignal = observation.signals.some(
     (s) => s.type === 'error' || s.type === 'needs-attention',
   );
   if (hasConcerningSignal) return true;
-
-  // Invoke if the step had verification criteria but they failed
-  // (the caller checks verification separately; here we just check presence).
-  if (step.verificationCriteria) {
-    // If criteria exist, we already verified — if verification failed, the
-    // observation will have an error signal (caught above). If it passed,
-    // we can skip. But to be safe, invoke when criteria are complex.
-    const complex = step.verificationCriteria.expectedOutputRegex ||
-      (step.verificationCriteria.forbiddenOutputContains &&
-        step.verificationCriteria.forbiddenOutputContains.length > 0);
-    if (complex) return true;
-  }
 
   // Fast path: skip the LLM call.
   return false;

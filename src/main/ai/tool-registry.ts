@@ -364,4 +364,8 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   const { EditFileTool } = await import('./tools/edit-file-tool');
   registerTool(new GitPushTool());
   registerTool(new EditFileTool());
+
+  // Phase 116: open_file_in_editor — bridge Agent → Monaco Editor
+  const { OpenFileInEditorTool } = await import('./tools/open-file-in-editor-tool');
+  registerTool(new OpenFileInEditorTool());
 }

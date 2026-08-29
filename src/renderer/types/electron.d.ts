@@ -585,6 +585,7 @@ export interface NexAPI {
 
   // Events
   onAIReady: (callback: (ev: { modelId: string; modelName: string; readyAt: number; totalLoadMs: number }) => void) => () => void;
+  onOpenFileInEditor: (callback: (ev: { path: string }) => void) => () => void;
   onNewTerminal: (callback: () => void) => () => void;
   onKillTerminal: (callback: () => void) => () => void;
   onOpenSettings: (callback: () => void) => () => void;
