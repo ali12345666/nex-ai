@@ -538,7 +538,22 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
     vramBefore = await (llama as any).getVramState?.();
   } catch { /* CPU backend has no VRAM state */ }
 
-  _loadedModel = await llama.loadModel(modelOpts);
+  // Load the model — if this throws, the error message tells us exactly why
+  // (unsupported architecture, corrupt GGUF, OOM, etc.). We log the full
+  // error so the user can see the real reason, not a generic message.
+  try {
+    _loadedModel = await llama.loadModel(modelOpts);
+  } catch (loadErr: any) {
+    // Surface the REAL llama.cpp error with full context
+    console.error('[NEX AI Local] llama.loadModel() FAILED:', {
+      modelPath: model.path,
+      modelName: model.name,
+      error: loadErr?.message,
+      code: loadErr?.code,
+      stack: loadErr?.stack?.split('\n').slice(0, 5).join('\n'),
+    });
+    throw loadErr;
+  }
 
   // ── PROVE GPU offload: read the ACTUAL offloaded layer count ───────────
   let actualGpuLayers = 0;

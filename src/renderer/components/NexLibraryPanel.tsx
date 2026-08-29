@@ -28,6 +28,7 @@ import StoragePanel, { type StorageData } from './library/StoragePanel';
 import EmptyState from './library/EmptyState';
 import ModelDetailsModal from './library/ModelDetailsModal';
 import { useDownloadStore } from '../store/download-store';
+import { useStore } from '../store/useStore';
 
 type Tab = 'models' | 'installed' | 'downloads' | 'extensions' | 'knowledge' | 'recommendations';
 
@@ -323,6 +324,18 @@ export default function NexLibraryPanel() {
         setLoadErrors((prev) => ({ ...prev, [modelId]: errMsg }));
         setToast({ type: 'error', message: `Load failed: ${errMsg}` });
       } else {
+        // CRITICAL FIX: Update Zustand state so the renderer knows which
+        // model is active. Without this, getProviderConfig() reads the
+        // STALE settings.activeLocalModelId and sends the old model
+        // as modelIdOverride to the ModelRouter — which overrides the
+        // user's new selection.
+        //
+        // Previously this was missing — the main process persisted
+        // activeLocalModelId, but the renderer's Zustand store was never
+        // updated. On next chat, getProviderConfig() sent the OLD modelId,
+        // causing the active model to silently revert to the previous one.
+        const { setActiveLocalModel } = useStore.getState();
+        setActiveLocalModel(modelId);
         await refresh();
       }
     } catch (err: any) {
