@@ -37,7 +37,7 @@ const SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 export default function NexChatPanel() {
-  const { settings, aiMode, activeLocalModel, projectPath } = useStore();
+  const { settings, aiMode, activeLocalModel, projectPath, activeFile } = useStore();
   const [messages, setMessages] = useState<NexMessage[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -680,6 +680,59 @@ export default function NexChatPanel() {
     setIsGenerating(true);
     setChatStreaming(true);
     streamBufRef.current = '';
+
+    // Phase 116: Intent Resolution — check if this is a follow-up action
+    // (open/reveal/read/edit) that can be handled WITHOUT invoking the LLM.
+    // This makes the Agent feel like a real IDE assistant: "بازش کن" after
+    // creating a file immediately opens it in the editor, without waiting
+    // for the model to respond.
+    try {
+      const { isActionableFollowUp, resolveReference, executeIntent, extractArtifactsFromResponse } =
+        await import('../../lib/intent-resolver');
+
+      if (isActionableFollowUp(trimmed)) {
+        // Extract artifacts from the last assistant message
+        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.status === 'complete');
+        const artifacts = lastAssistantMsg
+          ? extractArtifactsFromResponse(lastAssistantMsg.content)
+          : { files: [], folders: [] };
+
+        const lastArtifactPath = artifacts.files[artifacts.files.length - 1];
+        const lastArtifactFolder = artifacts.folders[artifacts.folders.length - 1];
+
+        const intentResult = resolveReference(trimmed, {
+          lastArtifactPath,
+          lastArtifactFolder,
+          activeFile,
+          projectPath,
+        });
+
+        if (intentResult.resolved) {
+          // Execute the action directly (no LLM needed)
+          const resultMessage = await executeIntent(intentResult);
+
+          // Add the user message + action result to chat
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = {
+              ...next[next.length - 1],
+              content: resultMessage,
+              status: 'complete',
+              metadata: { ...next[next.length - 1].metadata, completed: true },
+            };
+            return next;
+          });
+
+          setIsGenerating(false);
+          setChatStreaming(false);
+          setTimeout(() => saveConversation(), 100);
+          return; // Don't proceed to brainRoute/LLM
+        }
+      }
+    } catch (intentErr) {
+      console.warn('[INTENT] Resolution failed (non-blocking):', intentErr);
+      // Fall through to normal brainRoute/LLM path
+    }
 
     // Build API messages
     const apiMessages = [
