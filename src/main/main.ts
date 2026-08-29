@@ -1979,6 +1979,65 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 116: Test Load — verify a model can be loaded WITHOUT activating ──
+  // Picks a model from the registry, checks file existence + readability,
+  // loads it with node-llama-cpp, then immediately unloads it. Returns the
+  // REAL llama.cpp error if loading fails (not a generic "model not found").
+  // This catches: invalid GGUF, corrupt files, OOM, unsupported architecture.
+  ipcMain.handle('model-test-load', async (_event, modelId: string) => {
+    try {
+      const { getModel } = await import('./ai/model-registry');
+      const model = getModel(modelId);
+      if (!model) {
+        return { success: false, error: `Model not found in registry: ${modelId}` };
+      }
+
+      // 1. Check file existence
+      const fs = await import('fs');
+      if (!fs.existsSync(model.path)) {
+        return { success: false, error: `File not found: ${model.path}`, modelName: model.name };
+      }
+
+      // 2. Check readability (fs.accessSync — catches permission errors)
+      try {
+        fs.accessSync(model.path, fs.constants.R_OK);
+      } catch (accErr: any) {
+        return { success: false, error: `File not readable: ${accErr.message}`, modelName: model.name };
+      }
+
+      // 3. Check file is a valid GGUF (magic bytes: "GGUF")
+      try {
+        const fd = fs.openSync(model.path, 'r');
+        const buf = Buffer.alloc(4);
+        fs.readSync(fd, buf, 0, 4, 0);
+        fs.closeSync(fd);
+        if (buf.toString('ascii') !== 'GGUF') {
+          return { success: false, error: `Not a valid GGUF file (magic bytes mismatch: expected "GGUF", got "${buf.toString('ascii')}")`, modelName: model.name };
+        }
+      } catch (magicErr: any) {
+        return { success: false, error: `Failed to read GGUF header: ${magicErr.message}`, modelName: model.name };
+      }
+
+      // 4. Load the model with node-llama-cpp (catches OOM, architecture errors, etc.)
+      const { loadModel, unloadModel } = await import('./ai/inference');
+      try {
+        await loadModel(model, { contextSize: 512 }); // small context for fast test
+      } catch (loadErr: any) {
+        // Surface the REAL llama.cpp error — not a generic message
+        const realError = loadErr?.message || String(loadErr);
+        return { success: false, error: realError, modelName: model.name };
+      }
+
+      // 5. Immediately unload (we're just testing, not activating)
+      try { await unloadModel(); } catch { /* non-fatal */ }
+
+      return { success: true, modelName: model.name, sizeBytes: model.sizeBytes };
+    } catch (err: any) {
+      console.error('[MODEL_TEST_LOAD] Error:', err);
+      return { success: false, error: err.message };
+    }
+  });
+
   // Phase 82: Get detailed runtime status (loaded, VRAM, context, GPU layers)
   ipcMain.handle('local-runtime-detailed-status', async () => {
     try {

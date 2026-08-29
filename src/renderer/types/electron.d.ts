@@ -92,6 +92,9 @@ export interface NexAPI {
   modelUpdate: (id: string, patch: any) => Promise<{ success: boolean; model?: any }>;
   modelGet: (id: string) => Promise<any>;
   modelPickFile: () => Promise<{ canceled?: boolean; path?: string }>;
+  // Phase 116: Test Load — verify a model loads without activating it.
+  // Returns the REAL llama.cpp error if loading fails (invalid GGUF, OOM, etc.)
+  modelTestLoad: (modelId: string) => Promise<{ success: boolean; error?: string; modelName?: string; sizeBytes?: number }>;
 
   // Phase 39: Professional Model Manager
   modelComputeHash: (modelId: string) => Promise<{ success: boolean; hash?: string; algorithm?: string; error?: string }>;

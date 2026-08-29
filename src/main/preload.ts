@@ -84,6 +84,8 @@ contextBridge.exposeInMainWorld('nexAPI', {
   modelUpdate: (id: string, patch: any) => ipcRenderer.invoke('model-update', id, patch),
   modelGet: (id: string) => ipcRenderer.invoke('model-get', id),
   modelPickFile: () => ipcRenderer.invoke('model-pick-file'),
+  // Phase 116: Test Load — verify a model loads without activating it
+  modelTestLoad: (modelId: string) => ipcRenderer.invoke('model-test-load', modelId),
 
   // ── Phase 39: Professional Model Manager (versioning, hash, hardware, backup) ──
   modelComputeHash: (modelId: string) =>

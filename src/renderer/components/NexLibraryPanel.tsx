@@ -20,7 +20,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Brain, CheckCircle2, Download, Puzzle, BookOpen, Cpu,
-  Search, RefreshCw, HardDrive, Star, X, Loader2,
+  Search, RefreshCw, HardDrive, Star, X, Loader2, Plus, FileUp, AlertCircle,
 } from 'lucide-react';
 import ModelCard, { type ModelCardData, type ModelType } from './library/ModelCard';
 import DownloadCard, { type DownloadCardData } from './library/DownloadCard';
@@ -54,6 +54,10 @@ export default function NexLibraryPanel() {
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [downloadableModels, setDownloadableModels] = useState<any[]>([]);
   const [detailsModel, setDetailsModel] = useState<ModelCardData | null>(null);
+  // Phase 116: Add Local Model — error/toast state for surfacing real load errors
+  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [addingModel, setAddingModel] = useState(false);
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({}); // modelId → error
 
   // Download store
   const { downloads, history } = useDownloadStore();
@@ -308,22 +312,93 @@ export default function NexLibraryPanel() {
     }
   }, []);
   const handleLoad = useCallback(async (modelId: string) => {
-    try { await window.nexAPI.localRuntimeActivateModel(modelId); await refresh(); } catch (err) { console.error('Load failed:', err); }
+    // Phase 116: Surface real llama.cpp load errors to the UI.
+    // Previously this only logged to console — the user never saw WHY
+    // the model failed to load (missing file, invalid GGUF, OOM, etc.).
+    setLoadErrors((prev) => { const n = { ...prev }; delete n[modelId]; return n; });
+    try {
+      const result = await window.nexAPI.localRuntimeActivateModel(modelId);
+      if (!result.success) {
+        const errMsg = result.error || 'Unknown load error';
+        setLoadErrors((prev) => ({ ...prev, [modelId]: errMsg }));
+        setToast({ type: 'error', message: `Load failed: ${errMsg}` });
+      } else {
+        await refresh();
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      setLoadErrors((prev) => ({ ...prev, [modelId]: errMsg }));
+      setToast({ type: 'error', message: `Load failed: ${errMsg}` });
+    }
   }, [refresh]);
   const handleRemove = useCallback(async (modelId: string) => {
     try { await window.nexAPI.modelRemove(modelId); await refresh(); } catch (err) { console.error('Remove failed:', err); }
   }, [refresh]);
-  const handleInstall = useCallback(async () => {
-    try { const r = await window.nexAPI.modelPickFile(); if (r?.path) { await window.nexAPI.modelAdd(r.path); await refresh(); } } catch (err) { console.error('Install failed:', err); }
+
+  // Phase 116: Add Local Model — pick a .gguf file from disk, register by
+  // its REAL absolute path (no copy, no re-download). The backend model-add
+  // IPC already supports this — the issue was the button was hidden.
+  const handleAddLocalModel = useCallback(async () => {
+    setAddingModel(true);
+    setToast(null);
+    try {
+      const pickResult = await window.nexAPI.modelPickFile();
+      if (pickResult.canceled) { setAddingModel(false); return; }
+      if (!pickResult.path) {
+        setToast({ type: 'error', message: 'No file selected.' });
+        setAddingModel(false);
+        return;
+      }
+      const addResult = await window.nexAPI.modelAdd(pickResult.path);
+      if (!addResult.success) {
+        setToast({ type: 'error', message: `Failed to add model: ${addResult.error || 'unknown error'}` });
+        setAddingModel(false);
+        return;
+      }
+      await refresh();
+      setToast({ type: 'success', message: `Model added: ${addResult.model?.name || pickResult.path}` });
+      // Auto-switch to Installed tab so the user sees the newly added model
+      setTab('installed');
+    } catch (err: any) {
+      setToast({ type: 'error', message: `Failed to add model: ${err?.message || String(err)}` });
+    } finally {
+      setAddingModel(false);
+    }
   }, [refresh]);
+
+  // Phase 116: Test Load — verify a model can be loaded WITHOUT activating it.
+  // This catches invalid GGUF, corrupt files, OOM, etc. before the user
+  // tries to use the model in chat. Shows the real llama.cpp error.
+  const handleTestLoad = useCallback(async (modelId: string) => {
+    setLoadErrors((prev) => { const n = { ...prev }; delete n[modelId]; return n; });
+    setToast(null);
+    try {
+      const result = await window.nexAPI.modelTestLoad(modelId);
+      if (result.success) {
+        setToast({ type: 'success', message: `Test load OK: ${result.modelName || modelId}` });
+      } else {
+        const errMsg = result.error || 'Test load failed';
+        setLoadErrors((prev) => ({ ...prev, [modelId]: errMsg }));
+        setToast({ type: 'error', message: `Test load failed: ${errMsg}` });
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      setLoadErrors((prev) => ({ ...prev, [modelId]: errMsg }));
+      setToast({ type: 'error', message: `Test load failed: ${errMsg}` });
+    }
+  }, []);
   const handleCancelDownload = useCallback(async (downloadId: string) => {
     try { await window.nexAPI.modelDownloadCancel(downloadId); } catch (err) { console.error('Cancel failed:', err); }
   }, []);
+  // Phase 116: handleInstall — catalog "Install" button now also uses the
+  // file-picker flow (consistent with "Add Local Model"). Catalog download
+  // uses handleDownload; Install is for adding a local .gguf.
+  const handleInstall = useCallback(async () => {
+    await handleAddLocalModel();
+  }, [handleAddLocalModel]);
   const handleInstallVoiceComponent = useCallback(async (componentId: string) => {
     try { await window.nexAPI.componentUnifiedInstall(componentId); } catch (err) { console.error('Voice install failed:', err); }
   }, []);
-
-  // ── Filter pills ────────────────────────────────────────────────────────
   const FILTER_PILLS: Array<{ id: 'all' | ModelType; label: string }> = [
     { id: 'all', label: 'All' },
     { id: 'llm', label: 'LLM' },
@@ -357,11 +432,47 @@ export default function NexLibraryPanel() {
               {(storageInfo.usedBytes / (1024 * 1024 * 1024)).toFixed(1)} GB • {storageInfo.modelCount} models
             </span>
           )}
+          {/* Phase 116: Add Local Model — prominent button, visible on ALL tabs.
+              Picks a .gguf file from disk and registers it by its real absolute
+              path (no copy, no re-download). */}
+          <button
+            onClick={handleAddLocalModel}
+            disabled={addingModel}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium nex-click shrink-0"
+            style={{
+              background: 'var(--nex-accent-dim)',
+              color: 'var(--nex-accent-text)',
+              border: '1px solid var(--nex-accent-glow)',
+            }}
+            title="Add a local .gguf model file from disk (no copy, no download)"
+            aria-label="Add local model"
+          >
+            {addingModel ? <Loader2 size={11} className="animate-spin" /> : <FileUp size={11} />}
+            <span>Add Local Model</span>
+          </button>
           <button onClick={refresh} disabled={loading} className="p-1 rounded transition-colors hover:bg-white/[0.06] disabled:opacity-50" style={{ color: 'var(--nex-text-muted)' }} title="Refresh">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
+
+      {/* Phase 116: Toast notification — surfaces real load/add errors to the user */}
+      {toast && (
+        <div
+          className="flex items-center gap-2 px-4 py-2 shrink-0 text-[10px]"
+          style={{
+            background: toast.type === 'error' ? 'rgba(239,68,68,0.12)' : toast.type === 'success' ? 'rgba(34,197,94,0.12)' : 'rgba(59,130,246,0.12)',
+            borderBottom: '1px solid var(--nex-glass-border)',
+            color: toast.type === 'error' ? '#fca5a5' : toast.type === 'success' ? '#86efac' : '#93c5fd',
+          }}
+        >
+          {toast.type === 'error' ? <AlertCircle size={12} /> : toast.type === 'success' ? <CheckCircle2 size={12} /> : <Brain size={12} />}
+          <span className="flex-1">{toast.message}</span>
+          <button onClick={() => setToast(null)} className="p-0.5 rounded hover:bg-white/10" aria-label="Dismiss">
+            <X size={11} />
+          </button>
+        </div>
+      )}
 
       {/* Tab bar — equal width, flex, no scroll */}
       <div className="flex items-stretch gap-0.5 px-3 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--nex-glass-border)', overflowX: 'hidden' }}>
@@ -494,30 +605,66 @@ export default function NexLibraryPanel() {
                   <EmptyState
                     variant="installed"
                     title="No models installed"
-                    description="Install your first model to start using NEX AI locally. Browse the catalog or import a .gguf file."
-                    actionLabel="Browse Models"
-                    onAction={() => setTab('models')}
+                    description="Add a local .gguf model file from disk, or browse the catalog to download one."
+                    actionLabel="Add Local Model"
+                    onAction={handleAddLocalModel}
                   />
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {installedModels.map((model) => (
-                      <ModelCard
-                        key={model.id}
-                        model={model}
-                        onLoad={handleLoad}
-                        onRemove={handleRemove}
-                      />
+                      <div key={model.id} className="flex flex-col gap-1.5">
+                        <ModelCard
+                          model={model}
+                          onLoad={handleLoad}
+                          onRemove={handleRemove}
+                        />
+                        {/* Phase 116: Per-model error display — shows the real
+                            llama.cpp load error so the user knows WHY it failed */}
+                        {loadErrors[model.id] && (
+                          <div
+                            className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md text-[9px]"
+                            style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5' }}
+                          >
+                            <AlertCircle size={10} className="shrink-0 mt-0.5" />
+                            <span className="flex-1 break-words">{loadErrors[model.id]}</span>
+                            <button
+                              onClick={() => handleTestLoad(model.id)}
+                              className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium nex-click"
+                              style={{ background: 'rgba(59,130,246,0.15)', color: '#93c5fd', border: '1px solid rgba(59,130,246,0.3)' }}
+                              title="Retry loading this model to see if the issue persists"
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
+                        {/* Phase 116: Test Load button — verify the model can be
+                            loaded WITHOUT activating it (catches corrupt GGUF, OOM, etc.) */}
+                        {!loadErrors[model.id] && (
+                          <button
+                            onClick={() => handleTestLoad(model.id)}
+                            className="self-start flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-medium nex-click"
+                            style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--nex-text-muted)', border: '1px solid var(--nex-panel-border)' }}
+                            title="Test load — verify the model can be loaded without activating it"
+                          >
+                            <Cpu size={9} /> Test Load
+                          </button>
+                        )}
+                      </div>
                     ))}
                   </div>
                 )}
 
-                {/* Import button */}
+                {/* Phase 116: Secondary add button at bottom of Installed tab.
+                    The primary "Add Local Model" button is now in the header
+                    (visible on ALL tabs). This is kept for discoverability
+                    when the Installed tab is empty. */}
                 <button
-                  onClick={handleInstall}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-medium transition-all nex-click"
+                  onClick={handleAddLocalModel}
+                  disabled={addingModel}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-medium transition-all nex-click disabled:opacity-50"
                   style={{ background: 'rgba(255,255,255,0.03)', color: 'var(--nex-text-muted)', border: '1px dashed var(--nex-panel-border)' }}
                 >
-                  <HardDrive size={12} /> Import .gguf file
+                  {addingModel ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />} Add Local Model (.gguf)
                 </button>
               </div>
             )}
