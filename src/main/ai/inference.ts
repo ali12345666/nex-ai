@@ -864,8 +864,11 @@ export async function chatComplete(
       response = await session.prompt(lastUserMsg.content, {
         maxTokens: opts.maxTokens ?? 1024,
         temperature: opts.temperature ?? 0.7,
+        // Phase 116: Same sampling params as chatStream for consistency
+        topP: 0.9,
+        repeatPenalty: 1.1,
         signal: abortController.signal,
-      });
+      } as any);
       const genMs = Date.now() - _t0;
       const genTokens = estimateTokens(response);
       console.log(`[INFERENCE_METRICS] model=${model.name} backend=${_gpuBackend} gpuLayers=${opts.gpuLayers ?? model.gpuLayers ?? -1} context=${opts.contextSize ?? model.contextSize ?? 1024} generatedTokens=${genTokens} generationMs=${genMs} tokensPerSecond=${(genTokens / Math.max(0.001, genMs / 1000)).toFixed(1)} totalMs=${Date.now() - start}`);
@@ -964,6 +967,14 @@ export async function chatStream(
       const response = await session.prompt(lastUserMsg.content, {
         maxTokens: opts.maxTokens ?? 1024,
         temperature: opts.temperature ?? 0.7,
+        // Phase 116: Sampling params for natural conversation.
+        // topP=0.9: nucleus sampling — allows diversity while filtering
+        //   unlikely tokens (prevents both rambling and repetition).
+        // repeatPenalty=1.1: discourages the model from repeating itself
+        //   (fixes the "re-introducing myself every turn" problem and
+        //   repetitive phrasing). 1.0 = no penalty, 1.3 = aggressive.
+        topP: 0.9,
+        repeatPenalty: 1.1,
         signal: abortController.signal,
         onTextChunk: (chunk: string) => {
           if (abortController.signal.aborted) return;
@@ -971,7 +982,7 @@ export async function chatStream(
           fullResponse += chunk;
           onChunk({ content: chunk, done: false });
         },
-      });
+      } as any);
       void response;
       if (response && !fullResponse.endsWith(response.slice(-50))) {
         fullResponse = response;
