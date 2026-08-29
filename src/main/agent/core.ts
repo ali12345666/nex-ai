@@ -318,14 +318,25 @@ export async function runTask(taskId: string): Promise<AgentTask> {
     // gpuLayers: always -1 (auto) for local — the old check returned 0 for
     // online (harmless, no GGUF) but could leak into local paths. -1 is safe
     // for both since online ignores it.
-    // contextSize: cap at 1024 for GPU VRAM safety (inference.ts will
-    // auto-fallback if even 1024 is too large).
+    //
+    // Phase 116 FIX: contextSize was capped at 1024, but the planner system
+    // prompt + 28 tool descriptions + user request easily exceeds 1024 tokens.
+    // This caused the planner response to be truncated or fail with "context
+    // shift" errors — resulting in 0 tool calls and "Task completed" with
+    // no actual work done.
+    //
+    // Now using 4096 (matching the chat path) which gives ample room for:
+    //   - system prompt (~200 tokens)
+    //   - tool list (~600 tokens)
+    //   - user request (~100 tokens)
+    //   - planner output (up to 1500 tokens)
+    //   - generation headroom
     await runtime.loadModel(model, {
-      contextSize: Math.min(model.contextSize || 1024, 1024),
+      contextSize: 4096,
       threads: 4,
       gpuLayers: -1,
-      temperature: 0.7,
-      maxTokens: model.contextSize ? Math.floor(model.contextSize / 2) : 1024,
+      temperature: 0.3,  // Low temperature for structured JSON output
+      maxTokens: 2048,   // Enough for a detailed plan with multiple steps
     });
 
     const tools = listToolDefinitions();

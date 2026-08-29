@@ -876,7 +876,7 @@ async function setupIPC(): Promise<void> {
           userRequest: request.message,
           workspaceRoot: request.projectPath || process.cwd(),
           sessionId: request.sessionId || `session-${Date.now()}`,
-          preferredModel: request.modelId,
+          modelId: request.modelId,  // Phase 116: use correct field name
           toolContextExtras: {},
         };
         const task = await createTask(agentRequest);

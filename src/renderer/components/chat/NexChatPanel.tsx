@@ -701,6 +701,7 @@ export default function NexChatPanel() {
           content: m.content,
         })),
         projectPath: projectPath || undefined,
+        modelId: settings.activeLocalModelId || activeLocalModel?.id,  // Phase 116: send active model ID
         forceRoute: undefined, // let the router decide
         inAgentTask: !!activeAgentTaskRef.current, // Phase 110: session stickiness
       });
