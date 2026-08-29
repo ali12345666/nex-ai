@@ -49,9 +49,16 @@ export class VoiceController {
     });
   }
 
-  /** Register UI callbacks (from AppShell or ChatPanel). */
+  /** Register UI callbacks (from AppShell or ChatPanel).
+   *  Phase 116: Pass null/empty object to CLEAR callbacks (previously
+   *  spread-merge meant {} was a no-op, so the intended clear at
+   *  AppShell.tsx:178 did nothing). */
   setCallbacks(callbacks: VoiceControllerCallbacks): void {
-    this.callbacks = { ...this.callbacks, ...callbacks };
+    if (callbacks && Object.keys(callbacks).length > 0) {
+      this.callbacks = { ...this.callbacks, ...callbacks };
+    } else {
+      this.callbacks = {};
+    }
   }
 
   /** Subscribe to Orb audio level updates (returns unsubscribe). */
@@ -125,6 +132,7 @@ export class VoiceController {
     voiceService.dispose();
     this.orbAudioCallbacks.clear();
     this.orbStateCallbacks.clear();
+    this.callbacks = {}; // Phase 116: clear callbacks too
     this.orbStateRef.current = 'idle';
     this.orbAudioRef.current = 0;
   }

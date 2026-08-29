@@ -196,7 +196,14 @@ function App() {
       // UI-06: dispatch nex:navigate (AppShell listens for this).
       window.dispatchEvent(new CustomEvent('nex:navigate', { detail: { view: 'settings' } }));
     }));
-    cleanups.push(window.nexAPI.onFsChange((change) => console.log('File changed:', change)));
+    cleanups.push(window.nexAPI.onFsChange((change) => {
+      // Phase 116: Dispatch a DOM event so FileExplorer, WorkspaceExplorer,
+      // and EditorPanel can subscribe and refresh/reload as needed.
+      // Previously this was a no-op console.log — file changes from agent
+      // or terminal were silently dropped, causing stale file trees and
+      // silent data loss in the editor.
+      window.dispatchEvent(new CustomEvent('nex:fs-change', { detail: change }));
+    }));
     return () => cleanups.forEach((fn) => fn());
   }, []);
 

@@ -175,6 +175,24 @@ export default function WorkspaceExplorer() {
     loadRoot(); // refresh
   }, [loadRoot]);
 
+  // Phase 116: Auto-refresh file tree when files change on disk.
+  // This catches: agent write_file/edit_file, terminal commands, external
+  // editor changes. Debounced 500ms to avoid spamming during batch writes.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const handler = () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => {
+        loadRoot();
+      }, 500);
+    };
+    window.addEventListener('nex:fs-change', handler);
+    return () => {
+      window.removeEventListener('nex:fs-change', handler);
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, [loadRoot]);
+
   const renderNode = useCallback((node: TreeNode, depth: number): React.ReactNode => {
     const isExpanded = node.expanded;
     const hasChildren = node.children !== undefined;

@@ -128,6 +128,40 @@ export default function EditorPanel() {
     }
   }, [activeFile, saveFile]);
 
+  // Phase 116: Detect external file changes (agent write_file/edit_file,
+  // terminal commands, external editor). When a file that's open in the
+  // editor changes on disk, prompt the user to reload — prevents silent
+  // data loss where the user's Ctrl+S would clobber the agent's changes.
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const changedPath = detail?.path;
+      if (!changedPath) return;
+      // Check if this file is currently open in the editor
+      const openFile = useStore.getState().openFiles.find((f) => f.path === changedPath);
+      if (!openFile) return;
+      // Re-read the file from disk to get the new content
+      const result = await window.nexAPI.readFile(changedPath);
+      if (!result.success || result.content === undefined) return;
+      // If the user has unsaved changes, warn them
+      if (openFile.modified) {
+        if (!confirm(`"${openFile.name}" changed on disk but you have unsaved edits.\n\nReload from disk? (Your unsaved changes will be lost.)`)) {
+          return;
+        }
+      }
+      // Update the file content in the store (silently if no user edits)
+      useStore.getState().updateFileContent(changedPath, result.content);
+      // Mark as not modified (since it now matches disk)
+      useStore.setState((s) => ({
+        openFiles: s.openFiles.map((f) =>
+          f.path === changedPath ? { ...f, modified: false } : f
+        ),
+      }));
+    };
+    window.addEventListener('nex:fs-change', handler);
+    return () => window.removeEventListener('nex:fs-change', handler);
+  }, []);
+
   if (openFiles.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-[var(--nex-text-muted)]">
