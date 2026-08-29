@@ -143,6 +143,14 @@ let _gpuBackend: 'cpu' | 'cuda' | 'metal' | 'vulkan' = 'cpu';
 let _loadedModelGpuLayers: number | null = null;
 let _loadedContextSize: number | null = null;
 
+// Phase 116 LIFECYCLE FIX: Track model loading state to prevent race conditions.
+// When loadModel() is in progress, _loadingPromise is set. shutdownLlama()
+// and unloadModel() MUST wait for this promise to settle before disposing
+// the engine — otherwise the in-flight llama.loadModel() call will try to
+// use a disposed engine and throw "Object is disposed".
+let _loadingPromise: Promise<void> | null = null;
+let _isShuttingDown: boolean = false;
+
 /** GPU runtime diagnostics (collected at init + enriched at model load). */
 let _gpuDiagnostics: GpuRuntimeDiagnostics | null = null;
 
@@ -453,6 +461,26 @@ function translateGpuLayers(value: number | undefined): number | string {
  *   - llama.getVramState()         (before/after VRAM delta)
  */
 export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = {}): Promise<void> {
+  // Phase 116 LIFECYCLE FIX: If shutdown is in progress, refuse to load.
+  if (_isShuttingDown) {
+    console.warn('[NEX AI Local] loadModel() called during shutdown — refusing');
+    throw new Error('Cannot load model during shutdown');
+  }
+
+  // Phase 116 LIFECYCLE FIX: If another loadModel() is in progress, wait for it.
+  // This prevents concurrent loadModel calls from racing (e.g. preload + chat).
+  if (_loadingPromise) {
+    console.log('[NEX AI Local] loadModel() — another load in progress, waiting...');
+    try { await _loadingPromise; } catch { /* ignore — we'll try our own load */ }
+    // After waiting, check if the loaded model matches what we need
+    if (_loadedModelId === model.id && _loadedContext && _loadedModel &&
+        !((_loadedModel as any).disposed) && !((_loadedContext as any).disposed)) {
+      console.log('[MODEL_LOAD_PATH] selected=reuse-after-wait');
+      _loadedModelInfo = model;
+      return;
+    }
+  }
+
   // Phase 87: Assert model has a valid path before proceeding
   if (!model.path) {
     console.error('[MODEL_PATH_MISSING]', JSON.stringify({ id: model.id, name: model.name, path: model.path }));
@@ -527,6 +555,11 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // Phase 90: Wait for any in-flight inference before unloading
   await waitForInFlight();
 
+  // Phase 116 LIFECYCLE FIX: Wrap the actual model loading in a _loadingPromise
+  // so that shutdownLlama() and concurrent loadModel() calls can wait for it.
+  // This prevents the "Object is disposed" race condition where shutdown
+  // disposes the engine while llama.loadModel() is still in progress.
+  const loadWork = (async () => {
   // Unload previous model (unless it's already cleared above)
   await unloadModel();
 
@@ -755,6 +788,14 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
     contextMaxTokens: usedContextSize,
   });
   console.log(`[NEX AI Local] Model loaded: ${model.name}`);
+  })(); // end loadWork
+
+  _loadingPromise = loadWork;
+  try {
+    await _loadingPromise;
+  } finally {
+    if (_loadingPromise === loadWork) _loadingPromise = null;
+  }
 }
 
 /**
@@ -786,6 +827,15 @@ function generateContextFallbackChain(requested: number, minContext: number = 25
  * Use `shutdownLlama()` for full teardown (e.g. before app.exit()).
  */
 export async function unloadModel(): Promise<void> {
+  // Phase 116 LIFECYCLE FIX: Wait for any in-progress model loading before
+  // unloading. If loadModel() is in progress (e.g. startup preload), we must
+  // NOT dispose the engine until it finishes — otherwise the in-flight
+  // llama.loadModel() call will throw "Object is disposed".
+  if (_loadingPromise) {
+    console.log('[NEX AI Local] unloadModel() — waiting for in-progress loadModel()...');
+    try { await _loadingPromise; } catch { /* ignore — we're unloading anyway */ }
+  }
+
   // Phase 90: Wait for any in-flight inference before disposing
   await waitForInFlight();
   if (_ctxSequence) {
@@ -819,6 +869,18 @@ export async function unloadModel(): Promise<void> {
  * but `app.exit()` skips `beforeExit` entirely.
  */
 export async function shutdownLlama(): Promise<void> {
+  // Phase 116 LIFECYCLE FIX: Set shutdown flag so loadModel() refuses to start.
+  _isShuttingDown = true;
+
+  // Wait for any in-progress model loading BEFORE disposing.
+  // This is the critical fix for the "Object is disposed" race condition:
+  // if startup preload is in the middle of llama.loadModel(), we must NOT
+  // dispose the engine until it finishes.
+  if (_loadingPromise) {
+    console.log('[NEX AI Local] shutdownLlama() — waiting for in-progress loadModel()...');
+    try { await _loadingPromise; } catch { /* ignore — we're shutting down */ }
+  }
+
   await unloadModel();
   if (_llama) {
     try {
@@ -832,6 +894,7 @@ export async function shutdownLlama(): Promise<void> {
     _LlamaChatSession = null;
     _gpuDiagnostics = null;
   }
+  _isShuttingDown = false;
 }
 
 /**
