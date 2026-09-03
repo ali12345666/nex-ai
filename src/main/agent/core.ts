@@ -137,6 +137,12 @@ export interface CreateTaskRequest {
    * ignorant of concrete services (DI at the wiring layer).
    */
   toolContextExtras?: Record<string, unknown>;
+  /** Phase 8: Context Propagation — chat conversation ID (for correlation). */
+  conversationId?: string;
+  /** Phase 8: Context Propagation — UI session ID (for permission scope). */
+  sessionId?: string;
+  /** Phase 8: Context Propagation — detected language (en/fa/...) for i18n-aware prompts. */
+  language?: string;
 }
 
 /**
@@ -214,6 +220,11 @@ export async function createTask(request: CreateTaskRequest): Promise<AgentTask>
     cancelled: false,
     // Phase 9 / P9-S5: wiring-layer services for tool contexts (opaque)
     toolContextExtras: request.toolContextExtras,
+    // Phase 8: Context Propagation — optional correlation + i18n fields.
+    // All additive: undefined if the caller doesn't provide them.
+    conversationId: request.conversationId,
+    sessionId: request.sessionId,
+    language: request.language,
   };
 
   _activeTasks.set(taskId, task);
@@ -783,9 +794,13 @@ async function executeStep(
       token.throwIfCancelled();
 
       // Permission check
+      // Phase 8: Use task.sessionId (the UI session) if available, falling
+      // back to task.id (self-reference). This lets session-level permission
+      // grants (e.g. "Allow for this session") actually scope to the chat
+      // session, not the per-task ID (which changes for every new task).
       const permContext: PermissionContext = {
         projectId: task.context.projectPath,
-        sessionId: task.id,
+        sessionId: task.sessionId || task.id,
         targetPath: toolCall.params.path || toolCall.params.file || toolCall.params.cwd,
         metadata: toolCall.params,
       };
@@ -1454,6 +1469,16 @@ async function handleStepFailure(
     case 'MODIFY_AND_RETRY': {
       step.retryCount = retryCount + 1;
       (step as { status: string }).status = 'pending';
+      // Phase 8: Snapshot the ORIGINAL tool params before modification.
+      // This preserves auditability — we can later see what the recovery
+      // engine changed. Uses snapshotToolParams (shallow clone — sufficient
+      // for flat key-value params).
+      if (decision.modifiedParams && !task.originalToolParams) {
+        try {
+          const { snapshotToolParams } = await import('./context-contract');
+          task.originalToolParams = snapshotToolParams(step);
+        } catch { /* best-effort — audit field, not critical */ }
+      }
       // Apply the modified tool params (from heuristic or LLM)
       if (decision.modifiedParams) {
         step.toolParams = { ...step.toolParams, ...decision.modifiedParams };
@@ -1465,6 +1490,8 @@ async function handleStepFailure(
         message: `Modifying arguments and retrying: ${decision.reason.slice(0, 80)}`,
         data: {
           modifiedParams: decision.modifiedParams,
+          // Phase 8: include the original (pre-modification) params for audit
+          originalParams: task.originalToolParams,
           retryCount: step.retryCount,
           llmAnalyzed: decision.llmAnalyzed,
         },

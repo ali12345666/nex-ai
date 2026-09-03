@@ -74,6 +74,8 @@ import {
 } from './error-classifier';
 import { AgentLogger } from './logger';
 import { redactObjectDeep } from './logger';
+// Phase 8: Context Propagation — reuse the canonical snapshot helper
+import { safeContextSnapshot, type AgentContextContract } from './context-contract';
 
 // ─── Recovery decisions ──────────────────────────────────────────────────────
 
@@ -481,53 +483,100 @@ function buildLLMRecoveryPrompt(
   classification: ErrorClassification,
   heuristic: RecoveryDecision
 ): string {
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 8: Context Propagation
+  //
+  // We now use safeContextSnapshot() to build a single redacted + bounded
+  // snapshot of the agent context. This replaces the inline redaction logic
+  // that was here before (no duplication — single source of truth).
+  //
+  // The snapshot includes:
+  //   - taskId, conversationId, sessionId (correlation)
+  //   - userRequest (truncated to 200), intent, projectPath, activeFile, language
+  //   - currentPlan + currentStep summaries
+  //   - toolParamsSafe (redacted, bounded JSON)
+  //   - lastObservation (truncated rawOutput, signals, modifiedFiles)
+  //   - error + errorClass + attempt + maxRetries
+  //   - remainingSteps (max 5)
+  //   - executionMetadata (backend, model, timeout)
+  // ════════════════════════════════════════════════════════════════════════
+  const snapshot: AgentContextContract = safeContextSnapshot(
+    ctx.task,
+    ctx.step,
+    {
+      error: ctx.errorMessage,
+      errorClass: classification.class,
+      attempt: ctx.attempt,
+      agentTaskId: ctx.taskId,
+    },
+  );
+
   const lines: string[] = [];
-  // ── Context propagation (Phase 7 §5) — REDACTED ──
-  // Never include raw tool params (may contain secrets) — use redacted summary.
-  const safeParams = redactObjectDeep(ctx.step.toolParams || {});
 
+  // ── Task ──
   lines.push('## Task');
-  lines.push(`- Task ID: ${ctx.taskId}`);
-  lines.push(`- User request: ${truncate(ctx.task.userRequest, 200)}`);
-  lines.push(`- Step ${ctx.step.index + 1}/${ctx.task.plan.length}: ${ctx.step.description}`);
-  lines.push(`- Attempt: ${ctx.attempt}/${ctx.maxRetries}`);
+  lines.push(`- Task ID: ${snapshot.taskId}`);
+  if (snapshot.conversationId) lines.push(`- Conversation ID: ${snapshot.conversationId}`);
+  if (snapshot.sessionId) lines.push(`- Session ID: ${snapshot.sessionId}`);
+  lines.push(`- User request: ${snapshot.userRequest}`);
+  if (snapshot.intent) lines.push(`- Intent: ${snapshot.intent}`);
+  if (snapshot.projectPath) lines.push(`- Project: ${snapshot.projectPath}`);
+  if (snapshot.activeFile) lines.push(`- Active file: ${snapshot.activeFile}`);
+  if (snapshot.language) lines.push(`- Language: ${snapshot.language}`);
+  lines.push(`- Step ${snapshot.currentStep.index + 1}/${snapshot.currentPlan.totalSteps}: ${snapshot.currentStep.description}`);
+  lines.push(`- Attempt: ${snapshot.attempt ?? 0}/${snapshot.maxRetries ?? 0}`);
 
+  // ── Failure ──
   lines.push('');
   lines.push('## Failure');
-  lines.push(`- Tool: ${ctx.toolName || '(none)'}`);
-  lines.push(`- Error class: ${classification.class}`);
-  lines.push(`- Error message: ${truncate(ctx.errorMessage, 500)}`);
+  lines.push(`- Tool: ${snapshot.toolName || '(none)'}`);
+  lines.push(`- Error class: ${snapshot.errorClass || 'unknown'}`);
+  lines.push(`- Error message: ${snapshot.error || '(no message)'}`);
   if (ctx.errorCode) lines.push(`- Error code: ${ctx.errorCode}`);
 
+  // ── Tool arguments (REDACTED via snapshot) ──
   lines.push('');
   lines.push('## Tool arguments (redacted)');
   lines.push('```json');
-  lines.push(JSON.stringify(safeParams, null, 2).slice(0, 800));
+  lines.push(snapshot.toolParamsSafe?._redactedJson as string || '{}');
   lines.push('```');
 
+  // ── Last observation (TRUNCATED via snapshot) ──
   lines.push('');
   lines.push('## Last observation');
-  if (ctx.lastObservation) {
-    lines.push(`- Signals: ${ctx.lastObservation.signals.map((s) => `[${s.type}] ${s.message}`).join('; ') || '(none)'}`);
-    if (ctx.lastObservation.modifiedFiles?.length) {
-      lines.push(`- Modified files: ${ctx.lastObservation.modifiedFiles.map((f) => f.path).join(', ')}`);
+  if (snapshot.lastObservation) {
+    lines.push(`- Tool call ID: ${snapshot.lastObservation.toolCallId}`);
+    lines.push(`- Signals: ${snapshot.lastObservation.signals.map((s) => `[${s.type}] ${s.message}`).join('; ') || '(none)'}`);
+    if (snapshot.lastObservation.modifiedFiles.length > 0) {
+      lines.push(`- Modified files: ${snapshot.lastObservation.modifiedFiles.join(', ')}`);
     }
+    lines.push(`- Output (truncated): ${snapshot.lastObservation.rawOutputTruncated.slice(0, 300)}${snapshot.lastObservation.rawOutputTruncated.length > 300 ? '...' : ''}`);
   } else {
     lines.push('(no observation)');
   }
 
+  // ── Remaining plan (max 5 via snapshot) ──
   lines.push('');
   lines.push('## Remaining plan');
-  const remaining = ctx.task.plan.slice(ctx.task.currentStepIndex + 1);
-  if (remaining.length > 0) {
-    remaining.slice(0, 5).forEach((s, i) => {
+  if (snapshot.remainingSteps.length > 0) {
+    snapshot.remainingSteps.forEach((s, i) => {
       lines.push(`${i + 1}. ${s.description}${s.toolName ? ` (tool: ${s.toolName})` : ''}`);
     });
-    if (remaining.length > 5) lines.push(`... and ${remaining.length - 5} more`);
   } else {
     lines.push('(this is the last step)');
   }
 
+  // ── Execution metadata ──
+  lines.push('');
+  lines.push('## Execution metadata');
+  if (snapshot.executionMetadata) {
+    const m = snapshot.executionMetadata;
+    lines.push(`- Backend: ${m.backend || 'local'}`);
+    if (m.model) lines.push(`- Model: ${m.model}`);
+    if (m.timeoutMs) lines.push(`- Timeout: ${m.timeoutMs}ms`);
+  }
+
+  // ── Heuristic decision (for LLM reference) ──
   lines.push('');
   lines.push('## Heuristic decision (for your reference)');
   lines.push(`- Action: ${heuristic.action}`);

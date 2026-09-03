@@ -95,9 +95,38 @@ export function saveQueueState(
     const nonTerminal = persistable.filter((it) => !TERMINAL_STATUSES.includes(it.status));
     const final = [...nonTerminal, ...terminal];
 
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 8: Context Propagation — defense-in-depth redaction at the
+    // persistence boundary. Even if a caller puts a secret in item.metadata
+    // (e.g. user passes an API key in metadata), it's stripped before
+    // writing to disk.
+    //
+    // We redact each item's metadata via redactQueueMetadata (which wraps
+    // the existing redactObjectDeep from logger.ts). We also clear any
+    // `result` field that might contain secrets (terminal items may have
+    // results from function-kind tasks).
+    // ════════════════════════════════════════════════════════════════════════
+    const { redactQueueMetadata } = require('../agent/context-contract');
+    const safeItems = final.map((item) => {
+      const safeMetadata = redactQueueMetadata(item.metadata);
+      // For terminal items, redact the result too (function tasks may have
+      // raw output that contains secrets).
+      let safeResult = item.result;
+      if (safeResult !== undefined && typeof safeResult === 'object') {
+        try {
+          safeResult = redactQueueMetadata(safeResult as Record<string, unknown>);
+        } catch { /* best-effort */ }
+      }
+      return {
+        ...item,
+        metadata: safeMetadata,
+        result: safeResult,
+      };
+    });
+
     const state: PersistedQueueState = {
       version: 1,
-      items: final,
+      items: safeItems,
       config,
       savedAt: Date.now(),
     };

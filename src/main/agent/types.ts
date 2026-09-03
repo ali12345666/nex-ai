@@ -69,6 +69,20 @@ export interface AgentTask {
   toolContextExtras?: Record<string, unknown>;
   // Phase 111: Global task timeout (ms) — overrides default 300000 (5 min)
   timeoutMs?: number;
+  // Phase 8: Context Propagation — optional fields for correlation + i18n.
+  // All additive: existing tasks without these fields continue to work.
+  /** Chat conversation that spawned this task (for correlation + memory scope). */
+  conversationId?: string;
+  /** UI session ID (for permission scope + session-level memory grants). */
+  sessionId?: string;
+  /** Detected language (en/fa/...) for i18n-aware recovery/replan prompts. */
+  language?: string;
+  /**
+   * Phase 8: Snapshot of the ORIGINAL tool params before MODIFY_AND_RETRY
+   * modified them. Set when step.toolParams is changed by recovery. Useful
+   * for auditing what the recovery engine changed.
+   */
+  originalToolParams?: Record<string, unknown>;
 }
 
 export interface AgentStep {

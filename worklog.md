@@ -227,3 +227,154 @@ Stage Summary:
     - p33: 46/47 (1 pre-existing fail — NO voice toggle)
 - Files changed: 5 new/modified (error-classifier.ts, recovery-engine.ts, types.ts, core.ts, AgentStateDisplay.tsx, NexChatPanel.tsx) + 1 new test file
 - Next: commit + push to main
+
+---
+Task ID: phase-8-0
+Agent: main
+Task: PHASE 8 — Context Propagation (architecture trace + gap analysis)
+
+Work Log:
+- Traced existing context flow across the agent pipeline:
+  1. Agent → Planner: buildContext() in context-manager.ts builds messages from userRequest, intent, recentConversation, projectPath, activeFile, relevantKnowledge, relevantMemories. Token-aware (truncates from lowest-priority layers if needed).
+  2. Planner → Steps: generatePlan() returns PlanResult { steps: AgentStep[] }. Each step has id, index, description, toolName, toolParams, requiresPermission, requiresDiffApproval, verificationCriteria, status, retryCount. userRequest is NOT propagated per-step (it lives on task).
+  3. Steps → executeStep: passes (task, step, token, runtime, model). All context is on `task`. Step gets mutated (status, startedAt, completedAt, retryCount, error).
+  4. executeStep → Tool: prepareToolCall(step) returns ToolCall with toolDefinition + params + permission. Permission context: { projectId, sessionId: task.id, targetPath, metadata }. ToolContext.metadata gets the cancellationToken + toolContextExtras.
+  5. Tool → Observation: built as { id, toolCallId, stepId, rawOutput, data, signals, modifiedFiles, timestamp }. Pushed to task.observations. NO reference to userRequest/intent/conversation.
+  6. Observation → Agent: ReAct loop passes (userRequest, intent, lastStepDescription, lastToolName, toolResult, observation, remainingSteps, stepsExecuted, maxSteps, recentObservations, projectPath, tools). Missing: sessionId, conversationId, language, activeFile.
+  7. Agent → Recovery (Phase 7): RecoveryContext has { taskId, step, task, toolName, errorMessage, errorCode, attempt, maxRetries, lastObservation, cancelled, cancelReason }. Has access to full task (via task reference) so userRequest/intent/projectPath are reachable via ctx.task.
+  8. Recovery → Retry/Replan: RETRY/MODIFY_AND_RETRY call executeStep(task, step, ...) — same task reference preserved. REPLAN sets step.status='completed' and lets runTask loop continue (replanner is invoked via ReAct on the next step).
+  9. Task Queue → Agent: queue wraps agentTaskId. The queue has its own metadata (free-form). NO sessionId/conversationId propagation from queue → agent. Agent task gets its ID at createTask time; queue item has a separate queue ID.
+  10. Agent → Memory: TaskMemory.set() called in handleStepFailure for recovery + main.ts for task results. Records recovery decisions. No structured contract.
+  11. Agent → UI events: emit() with { type, taskId, stepId?, toolCallId?, timestamp, message, data? }. data is redacted via redactObjectDeep in AgentLogger (logger.ts:178). UI never sees raw tool params unless explicitly passed in data (e.g. permission_requested passes toolCall.params).
+
+- Identified gaps:
+  G1. CreateTaskRequest has NO sessionId/conversationId field — agent tasks can't be correlated back to the chat conversation that spawned them. Currently sessionId in permContext is just task.id (self-reference, not the actual conversation).
+  G2. TaskQueueItem.metadata is free-form (Record<string, unknown>) with NO contract — no way to know what's safe to persist (could leak secrets) vs. what's structured context (taskId, conversationId, language, userGoal).
+  G3. Recovery context propagation: RecoveryContext has `task` (full reference) which is good, but the LLM prompt builder (buildLLMRecoveryPrompt) doesn't explicitly surface userGoal/intent at the top — it's buried in "## Task" section. Should be more prominent for replan preservation.
+  G4. Observation propagation: observation object has NO reference to userRequest/intent. When observation is fed to the re-planner, it relies on the caller (executeStep) to pass userRequest separately. This is fragile — if a future caller forgets, the replan loses the original goal.
+  G5. IPC boundary: agent-event IPC passes the event object via webContents.send. Electron serializes via structured clone. Complex objects (Error instances, functions, class instances) don't survive — they become plain objects. Currently AgentEvent.data contains arbitrary objects (e.g. AgentError with stack) which could lose type info.
+  G6. Step context in retry: when a step is retried (RETRY/MODIFY_AND_RETRY), step.retryCount is incremented and step.toolParams may be modified. The ORIGINAL toolParams are lost (overwritten). No snapshot of the original params → can't audit what was changed.
+  G7. Memory recording: TaskMemory.set() is called in recordRecoveryMemory but the key is `recovery-${task.id}-${step.id}` which is unique per (task, step) — fine. But there's NO aggregation: if the same kind of error happens across tasks, we don't learn from it.
+  G8. Large tool outputs: context-manager truncates observations to 2000 chars (line 255). buildLLMRecoveryPrompt slices error to 500 chars, params JSON to 800 chars. But rawOutput on the Observation object is NOT truncated — task.observations keeps the full output. If task.observations grows unbounded, memory grows.
+  G9. Persistence redaction: TaskQueueItem.metadata is persisted to disk (task-queue.json) WITHOUT redaction. If metadata contains secrets (e.g. user passes an API key in metadata), it's written to disk in plaintext.
+
+- Designed Context Contract (minimal, additive — NO new system):
+  Phase 8 will ADD a structured `AgentContextContract` interface that captures the canonical context fields, and a `safeContextSnapshot()` helper that produces a redacted, bounded snapshot suitable for LLM prompts, memory, and IPC.
+
+  Contract fields (all optional except taskId + userRequest):
+    taskId, agentTaskId?, conversationId?, sessionId?, userRequest, intent?, projectPath?, activeFile?, language?, currentPlan (summary), currentStep (summary), stepIndex?, toolName?, toolParamsSafe (redacted), lastObservation? (truncated), error?, attempt?, maxRetries?, remainingSteps (summary), executionMetadata?
+
+  Snapshot rules:
+    - Always redacted (redactObjectDeep on toolParamsSafe + lastObservation)
+    - Always bounded (truncations: userRequest 200, error 500, toolParamsSafe 800, lastObservation 2000, remainingSteps 5)
+    - Never includes raw tool outputs > 2000 chars
+    - Never includes secrets (redactObjectDeep strips api_key, password, token, etc.)
+    - Shallow snapshot (no deep clone of task/plan — just summary fields)
+
+  Propagation rules (minimal fixes):
+    P1. Add conversationId/sessionId to CreateTaskRequest + AgentTask (additive, optional).
+    P2. Add safeContextSnapshot() helper that produces a redacted, bounded snapshot from any AgentTask+Step.
+    P3. Use safeContextSnapshot() in buildLLMRecoveryPrompt (replace inline redaction).
+    P4. Add redaction to TaskQueueItem.metadata before persistence (defense-in-depth).
+    P5. Preserve original toolParams snapshot on step when MODIFY_AND_RETRY changes them (for audit).
+    P6. Add sessionId (conversationId) to PermissionContext (currently uses task.id as sessionId).
+    P7. Add language field to AgentTask (for i18n-aware recovery prompts).
+    P8. Document the Context Contract in a new src/main/agent/context-contract.ts module.
+
+Stage Summary:
+- Architecture trace complete. 9 gaps identified. NO duplication of existing systems.
+- Context Contract designed as a minimal ADDITIVE layer on top of existing context-manager + types.
+- Snapshot helper will reuse existing redactObjectDeep + estimateTokens (no new redaction logic).
+- Propagation fixes are minimal: optional fields added, helper function for safe snapshots, redaction at persistence boundary.
+- Next: implement context-contract.ts → wire into core.ts + recovery-engine.ts + queue.ts → tests
+
+---
+Task ID: phase-8-1
+Agent: main
+Task: PHASE 8 — Context Propagation (implementation + tests + verification)
+
+Work Log:
+- Traced existing context flow (9 gaps identified, no duplication):
+  G1. No conversationId/sessionId on AgentTask — couldn't correlate to chat
+  G2. TaskQueueItem.metadata was free-form, no redaction at persistence
+  G3. Recovery LLM prompt built context inline (duplicated redaction logic)
+  G4. Observation had no reference to userRequest/intent (fragile)
+  G5. IPC boundary: AgentEvent.data with arbitrary objects could lose type info
+  G6. Step original toolParams lost when MODIFY_AND_RETRY modified them
+  G7. Memory recording per-(task,step) — no aggregation
+  G8. Observation.rawOutput unbounded on the task object
+  G9. No structured way to snapshot context for IPC/memory
+- Created src/main/agent/context-contract.ts (minimal, additive — no new system):
+  - AgentContextContract interface: taskId, agentTaskId?, conversationId?, sessionId?, userRequest, intent?, projectPath?, activeFile?, language?, currentPlan, currentStep, stepIndex?, toolName?, toolParamsSafe? (redacted), lastObservation? (truncated), error?, errorClass?, attempt?, maxRetries?, remainingSteps (max 5), executionMetadata?
+  - safeContextSnapshot(task, step?, opts?) helper: produces REDACTED + BOUNDED snapshot. Reuses redactObjectDeep (logger.ts) + estimateTokens (context-manager.ts). NO new redaction logic.
+  - snapshotToolParams(step) helper: shallow clone of tool params (for MODIFY_AND_RETRY audit)
+  - redactQueueMetadata(metadata) helper: defense-in-depth redaction at persistence boundary
+  - validateSnapshotBounds(snapshot) helper: bounds check (for tests)
+  - snapshotTokenSize(snapshot) helper: token budget check
+  - SNAPSHOT_BOUNDS constants: USER_REQUEST_MAX=200, INTENT_MAX=100, TOOL_PARAMS_JSON_MAX=800, OBSERVATION_RAW_OUTPUT_MAX=2000, ERROR_MESSAGE_MAX=500, REMAINING_STEPS_MAX=5, PLAN_DESCRIPTIONS_MAX=5
+  - Snapshot rules: ALWAYS redacted, ALWAYS bounded, NEVER includes raw outputs > 2000 chars, NEVER includes secrets, SHALLOW snapshot (no deep clone of task/plan/observations arrays)
+- Modified src/main/agent/types.ts: added optional fields to AgentTask (additive — no breaking changes):
+  - conversationId? (chat conversation correlation)
+  - sessionId? (UI session for permission scope + memory)
+  - language? (en/fa/... for i18n-aware recovery/replan prompts)
+  - originalToolParams? (snapshot before MODIFY_AND_RETRY modification, for audit)
+- Modified src/main/agent/core.ts:
+  - CreateTaskRequest: added conversationId?, sessionId?, language? fields
+  - createTask(): wired new fields into the task object
+  - PermissionContext: now uses task.sessionId || task.id (session-scoped permissions instead of per-task)
+  - MODIFY_AND_RETRY action: snapshots original toolParams BEFORE modification (via snapshotToolParams) and emits them in modify_retry_started event for audit
+- Modified src/main/agent/recovery-engine.ts:
+  - Imported safeContextSnapshot from context-contract
+  - Rewrote buildLLMRecoveryPrompt() to use safeContextSnapshot (removed inline redaction — no duplication)
+  - Prompt now surfaces conversationId, sessionId, language, projectPath, activeFile, intent, executionMetadata (backend, model, timeout) — all redacted + bounded
+- Modified src/main/tasks/persistence.ts:
+  - saveQueueState() now calls redactQueueMetadata on each item.metadata before writing to disk (defense-in-depth)
+  - Also redacts item.result for terminal items (function tasks may have raw output with secrets)
+  - Atomic write preserved (temp + rename)
+- Created tests/tools/test-phase-8-context.ts: 20 test sections, 151 assertions covering:
+  1. Agent → Tool context preservation (taskId, userRequest, toolName, toolParamsSafe, projectPath)
+  2. taskId preserved (matches task.id, distinct across tasks)
+  3. agentTaskId preserved (queue → agent)
+  4. user goal preserved in replan (userRequest + intent)
+  5. step context preserved in retry (description, index, snapshotToolParams produces NEW object)
+  6. observation propagated to next step (ReAct uses last 5 observations)
+  7. recovery context complete (all required fields, recovery-engine uses safeContextSnapshot)
+  8. queue → agent context correct (agentTaskId, agentRunTask, agentCancelTask, redaction at persistence)
+  9. IPC context serialize/deserialize (JSON-serializable, no undefined, redacted via logger)
+  10. snapshot immutability (mutating task/step doesn't change previous snapshot)
+  11. large tool output truncated (OBSERVATION_RAW_OUTPUT_MAX + 5000 chars → 2000)
+  12. context size controlled (SNAPSHOT_BOUNDS, validateSnapshotBounds, remainingSteps capped)
+  13. secrets redacted (API keys, passwords, tokens, GitHub PAT)
+  14. persistence does NOT store secrets (metadata + result redacted before disk write)
+  15. cancellation context preserved (cancelled flag, cancelReason, ABORT decision)
+  16. failed task context identifiable (errors array, errorClass, recoveryDecision fields)
+  17. replan context correct (remainingSteps, userRequest + intent, recentObservations)
+  18. concurrent tasks isolation (distinct taskIds, no aliasing, Map<taskId, AgentTask>)
+  19. two-task isolation (same userRequest but different IDs distinguishable, conversationId correlation)
+  20. regression — Phase 6 + Phase 7 + Phase 8 source inspection (additive, no breaking changes)
+- Verification:
+  - Typecheck (renderer + main): PASS
+  - Build: PASS
+  - Phase 8 tests: 151/151 PASS
+  - Phase 6 task queue tests: PASS
+  - Phase 7 recovery tests: PASS
+  - Phase 116 regression tests: ALL PASS (14 suites)
+  - System tests: same pass/fail count before and after (no regressions):
+    - phase38: 79/80 (1 pre-existing)
+    - phase40: 109/110 (1 pre-existing)
+    - phase41: 116/118 (2 pre-existing)
+    - ui14: 95/100 (5 pre-existing)
+    - p33: 46/47 (1 pre-existing)
+
+Stage Summary:
+- Architecture delivered: src/main/agent/context-contract.ts (CONTRACT + HELPERS) layered on existing context-manager + types + logger. NO new context manager.
+- Context Contract: AgentContextContract with 18 optional fields + safeContextSnapshot helper (single source of truth for redaction + bounds).
+- Propagation path: Agent → Planner (existing buildContext) → Steps → executeStep → Tool (permContext now uses sessionId) → Observation (task.observations) → Recovery (safeContextSnapshot) → Retry (same task/step references) → Replan (task.userRequest + intent + recentObservations) → Queue (agentTaskId link, redacted metadata at persistence) → Memory (TaskMemory.set) → UI (agent-event IPC, redacted by logger).
+- Redaction strategy: redactObjectDeep (logger.ts) reused everywhere. Applied at: recovery prompt (via safeContextSnapshot), persistence (via redactQueueMetadata), event emission (via AgentLogger). Single source of truth — no duplication.
+- Token/size limits: SNAPSHOT_BOUNDS enforce 200 (userRequest), 100 (intent), 800 (toolParams JSON), 2000 (observation), 500 (error), 5 (remaining steps + plan descriptions). Existing context-manager truncates observations to 2000 + conversation to last 10 + files to 4000 chars.
+- Queue integration: Phase 6 queue unchanged structurally. Persistence now redacts metadata + result before disk write. agentTaskId link preserved. Crash recovery still marks running → failed (NO fake completion).
+- Recovery integration: Phase 7 recovery-engine now uses safeContextSnapshot (single redaction source). Permission scope uses task.sessionId (chat session, not per-task). MODIFY_AND_RETRY snapshots original toolParams for audit.
+- Persistence changes: saveQueueState redacts item.metadata + item.result via redactQueueMetadata. Atomic write preserved (temp + rename).
+- Tests: 151/151 PASS across 20 sections covering all Phase 8 §11 requirements.
+- Files changed: 5 new/modified (context-contract.ts new, types.ts, core.ts, recovery-engine.ts, persistence.ts) + 1 new test file
+- Next: commit + push to main (hold for Phase 9 approval per user instruction)
