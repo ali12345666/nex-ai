@@ -75,6 +75,20 @@ function getEventState(event: AgentEvent): StateInfo {
       return { icon: <XCircle size={14} />, label: event.message, color: 'text-red-400' };
     case 'task_cancelled':
       return { icon: <Ban size={14} />, label: event.message, color: 'text-red-400' };
+    // Phase 7: LLM Error Recovery events
+    case 'recovery_started':
+      // THINKING Orb state — engine is analyzing the failure
+      return { icon: <Brain size={12} className="animate-pulse" />, label: event.message, color: 'text-purple-400' };
+    case 'recovery_decision':
+      return { icon: <Brain size={12} />, label: event.message, color: 'text-purple-400' };
+    case 'modify_retry_started':
+      return { icon: <Wrench size={12} className="animate-pulse" />, label: event.message, color: 'text-yellow-400' };
+    case 'skip_executed':
+      return { icon: <Square size={12} />, label: event.message, color: 'text-yellow-400' };
+    case 'recovery_succeeded':
+      return { icon: <CheckCircle2 size={12} />, label: event.message, color: 'text-green-400' };
+    case 'recovery_failed':
+      return { icon: <XCircle size={12} />, label: event.message, color: 'text-red-400' };
     default:
       return { icon: <Loader2 size={12} />, label: event.message.slice(0, 60), color: 'text-[var(--nex-text-dim)]' };
   }

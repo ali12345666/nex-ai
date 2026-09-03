@@ -205,6 +205,17 @@ export interface AgentError {
   // Recovery info
   recovered?: boolean;
   recoveryAction?: string;
+  // Phase 7: extended recovery metadata
+  /** 10-class error classification (transient_network/timeout/permission_denied/...). */
+  errorClass?: 'transient_network' | 'timeout' | 'permission_denied' | 'invalid_arguments'
+    | 'file_path' | 'model_inference' | 'tool_failure' | 'user_cancellation'
+    | 'security_policy' | 'unknown';
+  /** Recovery action taken (RETRY/MODIFY_AND_RETRY/REPLAN/SKIP/ABORT). */
+  recoveryDecision?: 'RETRY' | 'MODIFY_AND_RETRY' | 'REPLAN' | 'SKIP' | 'ABORT';
+  /** How many recovery attempts were made. */
+  recoveryAttempts?: number;
+  /** Whether the LLM analyzed this error (vs heuristic-only). */
+  llmAnalyzed?: boolean;
 }
 
 // ─── Verification ───────────────────────────────────────────────────────────
@@ -333,7 +344,20 @@ export type AgentEventType =
   // Phase 38: ReAct closed-loop events
   | 'react_decision'
   | 'replan_started'
-  | 'replan_completed';
+  | 'replan_completed'
+  // Phase 7: LLM Error Recovery events
+  //   recovery_started    — engine began analyzing the failure (Orb → THINKING)
+  //   recovery_decision   — engine decided the recovery action
+  //   modify_retry_started — MODIFY_AND_RETRY: tool params modified, re-executing
+  //   skip_executed        — SKIP: step skipped, continuing to next
+  //   recovery_succeeded   — recovery action led to a successful outcome
+  //   recovery_failed      — recovery exhausted all attempts (task will fail)
+  | 'recovery_started'
+  | 'recovery_decision'
+  | 'modify_retry_started'
+  | 'skip_executed'
+  | 'recovery_succeeded'
+  | 'recovery_failed';
 
 export interface AgentEvent {
   type: AgentEventType;

@@ -435,6 +435,54 @@ export default function NexChatPanel() {
           case 'replanning':
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔄 Re-planning based on results...' };
             break;
+          // ── Phase 7: LLM Error Recovery events ────────────────────────────
+          case 'recovery_started':
+            // THINKING Orb state — engine is analyzing the failure
+            voiceController.setCondition('agent', 'thinking');
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is thinking...\n\n⚠️ Analyzing failure: ${event.message || 'recovery in progress'}...`,
+            };
+            break;
+          case 'recovery_decision': {
+            const action = event?.data?.action || 'unknown';
+            const emoji = action === 'RETRY' || action === 'MODIFY_AND_RETRY' ? '🔄'
+              : action === 'REPLAN' ? '📋'
+              : action === 'SKIP' ? '⏭️'
+              : action === 'ABORT' ? '❌' : '🤔';
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n${emoji} Recovery: ${event.message || action}`,
+            };
+            break;
+          }
+          case 'modify_retry_started':
+            voiceController.setCondition('agent', 'working');
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n🔧 Modifying arguments and retrying: ${event.message || ''}`,
+            };
+            break;
+          case 'skip_executed':
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n⏭️ Skipping step: ${event.message || ''}`,
+            };
+            break;
+          case 'recovery_succeeded':
+            // SUCCESS — brief flash then clear (handled by existing task_completed flow)
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n✅ Recovery succeeded: ${event.message || ''}`,
+            };
+            break;
+          case 'recovery_failed':
+            // ERROR — task will abort; existing task_failed handler picks up
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent encountered an error...\n\n❌ Recovery failed: ${event.message || ''}`,
+            };
+            break;
           case 'agent_token':
             // Phase 110: Agent final answer — emitted by core.ts when ReAct
             // decides 'complete' with a finalAnswer. This is the actual

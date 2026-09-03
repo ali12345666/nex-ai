@@ -60,6 +60,14 @@ import { verifyToolResult } from './verification';
 import { rePlanAfterObservation, shouldInvokeRePlanner } from './react-loop';
 // Phase 14: trust levels + classified retries
 import { assessTrust, corroborate, decideRetry, sleep } from './trust-retry';
+// Phase 7: LLM Error Recovery — 10-class classifier + 5-action recovery engine
+import { classifyError } from './error-classifier';
+import {
+  decideRecovery,
+  type RecoveryAction,
+  type RecoveryContext,
+  type RecoveryDecision,
+} from './recovery-engine';
 import { buildContext } from './context-manager';
 import { proposeChange, acceptChange, rejectChange, listPendingChanges } from './diff-manager';
 import { AgentLogger, emitEvent } from './logger';
@@ -1320,33 +1328,296 @@ async function handleStepFailure(
   model: LocalModelInfo
 ): Promise<void> {
   const retryCount = step.retryCount || 0;
-  // Phase 14 / P14-B: classified retry with backoff — permanent failures
-  // (permission/validation/security) are never pointlessly re-run.
-  const decision = decideRetry({ errorMessage, attempt: retryCount, maxRetries: task.maxRetries });
-  if (decision.shouldRetry) {
-    step.retryCount = retryCount + 1;
-    step.status = 'pending'; // allow re-execution
-    emit({
-      type: 'retry',
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 7: LLM Error Recovery
+  //
+  // Replaces the Phase-14 decideRetry() with a 5-action recovery engine:
+  //   RETRY / MODIFY_AND_RETRY / REPLAN / SKIP / ABORT
+  //
+  // The engine is heuristic-first (offline-capable) and uses the LLM only
+  // as a fallback for ambiguous errors. Cancellation/permission/security
+  // errors are NEVER auto-retried (Phase 7 §8).
+  //
+  // The old decideRetry() is preserved for backward-compat (other callers),
+  // but this is the only caller that mattered.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // Emit recovery_started — UI shows THINKING (Orb → 'thinking' condition)
+  emit({
+    type: 'recovery_started',
+    taskId: task.id,
+    stepId: step.id,
+    message: `Analyzing failure: ${errorMessage.slice(0, 100)}`,
+    data: { attempt: retryCount, maxRetries: task.maxRetries, errorMessage },
+  });
+
+  // Build the recovery context (Phase 7 §5 — context propagation, redacted)
+  const lastObservation = task.observations.length > 0
+    ? task.observations[task.observations.length - 1]
+    : undefined;
+
+  const recoveryCtx: RecoveryContext = {
+    taskId: task.id,
+    step,
+    task,
+    toolName: step.toolName,
+    errorMessage,
+    errorCode: task.cancelled ? 'AGENT_CANCELLED' : 'TOOL_FAILURE',
+    attempt: retryCount,
+    maxRetries: task.maxRetries,
+    lastObservation,
+    cancelled: task.cancelled,
+    cancelReason: task.cancelReason,
+  };
+
+  // Decide the recovery action (heuristic first, LLM fallback for ambiguous)
+  let decision: RecoveryDecision;
+  try {
+    decision = await decideRecovery({
+      context: recoveryCtx,
+      runtime,
+      model,
+    });
+  } catch (err: any) {
+    // If the recovery engine itself crashes, fall back to ABORT (safe default).
+    AgentLogger.error(`Recovery engine crashed: ${err.message} — aborting step`, {
+      taskId: task.id, stepId: step.id,
+    });
+    decision = {
+      action: 'ABORT',
+      reason: `Recovery engine failure: ${err.message}`,
+      errorClass: 'unknown',
+      backoffMs: 0,
+      llmAnalyzed: false,
+      confidence: 0.0,
+      ambiguous: false,
+    };
+  }
+
+  // Emit recovery_decision — UI shows the chosen action + reason
+  emit({
+    type: 'recovery_decision',
+    taskId: task.id,
+    stepId: step.id,
+    message: `Recovery: ${decision.action} — ${decision.reason.slice(0, 80)}`,
+    data: {
+      action: decision.action,
+      reason: decision.reason,
+      errorClass: decision.errorClass,
+      backoffMs: decision.backoffMs,
+      llmAnalyzed: decision.llmAnalyzed,
+      confidence: decision.confidence,
+      ambiguous: decision.ambiguous,
+    },
+  });
+
+  AgentLogger.warn(
+    `Recovery decision for step ${step.index + 1}: ${decision.action} (${decision.errorClass}) — ${decision.reason}`,
+    { taskId: task.id, stepId: step.id, data: decision },
+  );
+
+  // ── Execute the recovery action ──────────────────────────────────────
+  switch (decision.action) {
+    case 'RETRY': {
+      step.retryCount = retryCount + 1;
+      (step as { status: string }).status = 'pending';
+      emit({
+        type: 'retry',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Retrying step ${step.index + 1}: ${decision.reason}`,
+        data: {
+          retryCount: step.retryCount,
+          maxRetries: task.maxRetries,
+          errorClass: decision.errorClass,
+          backoffMs: decision.backoffMs,
+          llmAnalyzed: decision.llmAnalyzed,
+        },
+      });
+      await sleep(decision.backoffMs);
+      await executeStep(task, step, token, runtime, model);
+      // If the step succeeded after retry, emit recovery_succeeded
+      if (step.status === 'completed') {
+        emit({
+          type: 'recovery_succeeded',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Recovery succeeded after retry ${step.retryCount}`,
+          data: { action: 'RETRY', attempts: step.retryCount },
+        });
+        recordRecoveryMemory(task, step, decision, true);
+      }
+      break;
+    }
+
+    case 'MODIFY_AND_RETRY': {
+      step.retryCount = retryCount + 1;
+      (step as { status: string }).status = 'pending';
+      // Apply the modified tool params (from heuristic or LLM)
+      if (decision.modifiedParams) {
+        step.toolParams = { ...step.toolParams, ...decision.modifiedParams };
+      }
+      emit({
+        type: 'modify_retry_started',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Modifying arguments and retrying: ${decision.reason.slice(0, 80)}`,
+        data: {
+          modifiedParams: decision.modifiedParams,
+          retryCount: step.retryCount,
+          llmAnalyzed: decision.llmAnalyzed,
+        },
+      });
+      await sleep(decision.backoffMs);
+      await executeStep(task, step, token, runtime, model);
+      if (step.status === 'completed') {
+        emit({
+          type: 'recovery_succeeded',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Recovery succeeded after MODIFY_AND_RETRY`,
+          data: { action: 'MODIFY_AND_RETRY', attempts: step.retryCount },
+        });
+        recordRecoveryMemory(task, step, decision, true);
+      }
+      break;
+    }
+
+    case 'REPLAN': {
+      // Phase 38: delegate to rePlanAfterObservation for the actual replan.
+      // We mark this step as 'completed' (in the sense that we observed it
+      // and decided to replan) so the runTask loop continues.
+      step.status = 'completed';
+      step.completedAt = Date.now();
+      emit({
+        type: 'replan_started',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Replanning after failure: ${decision.reason.slice(0, 80)}`,
+        data: { errorClass: decision.errorClass, llmAnalyzed: decision.llmAnalyzed },
+      });
+      // The actual replan happens in executeStep's ReAct loop (which calls
+      // rePlanAfterObservation). For a REPLAN triggered by handleStepFailure
+      // (step already failed), we set the step status so the runTask loop
+      // continues and the ReAct loop picks up the failure on the next step.
+      // Note: replan via ReAct is already handled in executeStep; here we
+      // just allow the loop to proceed.
+      recordRecoveryMemory(task, step, decision, false);
+      break;
+    }
+
+    case 'SKIP': {
+      step.status = 'skipped';
+      step.error = `Skipped after ${decision.errorClass}: ${errorMessage.slice(0, 100)}`;
+      emit({
+        type: 'skip_executed',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Skipping step ${step.index + 1}: ${decision.reason.slice(0, 80)}`,
+        data: { errorClass: decision.errorClass, llmAnalyzed: decision.llmAnalyzed },
+      });
+      // SKIP doesn't fail the task — the runTask loop continues to next step
+      recordRecoveryMemory(task, step, decision, false);
+      break;
+    }
+
+    case 'ABORT': {
+      step.status = 'failed';
+      step.error = `Aborted after ${decision.errorClass}: ${errorMessage}`;
+      const error: AgentError = {
+        id: `err-${Date.now()}`,
+        stepId: step.id,
+        type: mapErrorClassToAgentErrorType(decision.errorClass),
+        message: errorMessage,
+        details: { recoveryDecision: 'ABORT', reason: decision.reason },
+        timestamp: Date.now(),
+        recovered: false,
+        errorClass: decision.errorClass,
+        recoveryDecision: 'ABORT',
+        recoveryAttempts: retryCount,
+        llmAnalyzed: decision.llmAnalyzed,
+      };
+      task.errors.push(error);
+      emit({
+        type: 'recovery_failed',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Recovery failed — task will abort: ${decision.reason.slice(0, 80)}`,
+        data: { errorClass: decision.errorClass, attempts: retryCount, llmAnalyzed: decision.llmAnalyzed },
+      });
+      emit({
+        type: 'step_failed',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Step ${step.index + 1} failed: ${decision.reason.slice(0, 100)}`,
+        data: { errorClass: decision.errorClass, recoveryDecision: 'ABORT' },
+      });
+      recordRecoveryMemory(task, step, decision, false);
+      break;
+    }
+  }
+}
+
+/**
+ * Phase 7 §12: Record only important recoveries to memory.
+ * Skip transient/noisy retries. Record: SKIP, ABORT, REPLAN, LLM-analyzed, MODIFY_AND_RETRY.
+ */
+function recordRecoveryMemory(
+  task: AgentTask,
+  step: AgentStep,
+  decision: RecoveryDecision,
+  succeeded: boolean,
+): void {
+  // Don't record routine transient RETRY decisions (noisy)
+  if (decision.action === 'RETRY' && decision.errorClass === 'transient_network' && !decision.llmAnalyzed) {
+    return;
+  }
+  // Don't record successful simple retries of unknown errors (noisy)
+  if (decision.action === 'RETRY' && decision.errorClass === 'unknown' && succeeded && !decision.llmAnalyzed) {
+    return;
+  }
+
+  try {
+    const { TaskMemory } = require('../memory');
+    TaskMemory.set(`recovery-${task.id}-${step.id}`, {
       taskId: task.id,
       stepId: step.id,
-      message: `Retrying step ${step.index + 1}: ${decision.reason}`,
-      data: { retryCount: step.retryCount, maxRetries: task.maxRetries, classification: decision.classification, backoffMs: decision.backoffMs },
+      stepDescription: step.description,
+      action: decision.action,
+      errorClass: decision.errorClass,
+      reason: decision.reason,
+      llmAnalyzed: decision.llmAnalyzed,
+      confidence: decision.confidence,
+      succeeded,
+      attempts: step.retryCount || 0,
+      timestamp: Date.now(),
     });
-    AgentLogger.warn(`Retrying step ${step.index + 1} (${decision.classification}) after failure: ${errorMessage}`, { taskId: task.id, stepId: step.id });
-    await sleep(decision.backoffMs); // exponential backoff + jitter
-    // Re-execute
-    await executeStep(task, step, token, runtime, model);
-  } else {
-    step.status = 'failed';
-    step.error = `No retry (${decision.classification}): ${errorMessage}`;
-    emit({
-      type: 'step_failed',
-      taskId: task.id,
-      stepId: step.id,
-      message: `Step ${step.index + 1} failed permanently: ${decision.reason}`,
-      data: { classification: decision.classification },
-    });
+  } catch (err: any) {
+    // Memory recording is best-effort — don't fail the recovery
+    AgentLogger.warn(`Failed to record recovery memory: ${err.message}`);
+  }
+}
+
+/**
+ * Map a 10-class error class to the legacy AgentError.type (for backward-compat).
+ */
+function mapErrorClassToAgentErrorType(
+  errorClass: RecoveryDecision['errorClass'],
+): AgentError['type'] {
+  switch (errorClass) {
+    case 'permission_denied': return 'permission_denied';
+    case 'timeout': return 'timeout';
+    case 'user_cancellation': return 'cancelled';
+    case 'model_inference': return 'llm_error';
+    case 'security_policy':
+    case 'invalid_arguments':
+    case 'file_path':
+    case 'tool_failure':
+    case 'transient_network':
+    case 'unknown':
+    default:
+      return 'tool_error';
   }
 }
 
