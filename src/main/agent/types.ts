@@ -228,7 +228,7 @@ export interface AgentError {
   /** 10-class error classification (transient_network/timeout/permission_denied/...). */
   errorClass?: 'transient_network' | 'timeout' | 'permission_denied' | 'invalid_arguments'
     | 'file_path' | 'model_inference' | 'tool_failure' | 'user_cancellation'
-    | 'security_policy' | 'verification_failed' | 'unknown';
+    | 'security_policy' | 'verification_failed' | 'browser_error' | 'unknown';
   /** Recovery action taken (RETRY/MODIFY_AND_RETRY/REPLAN/SKIP/ABORT). */
   recoveryDecision?: 'RETRY' | 'MODIFY_AND_RETRY' | 'REPLAN' | 'SKIP' | 'ABORT';
   /** How many recovery attempts were made. */
@@ -277,15 +277,25 @@ export interface ExpectedOutcome {
     | 'file_contains'   // file at `path` should contain `content` substring
     | 'exit_code'       // command should exit with `exitCode`
     | 'output_contains' // command output should contain `outputContains`
-    | 'directory_exists'; // directory should exist at `path`
+    | 'directory_exists' // directory should exist at `path`
+    // Phase 10: browser automation outcomes
+    | 'url_changed'       // browser URL should equal/be `url` (or match pattern)
+    | 'page_contains_text' // browser page should contain `text` substring
+    | 'element_visible'    // browser element at `selector` should be visible
+    | 'screenshot_captured'; // screenshot was captured (always verified if tool succeeded)
   /** Path for file/directory operations. */
   path?: string;
-  /** Content to look for (for file_contains / output_contains). */
+  /** Content to look for (for file_contains / output_contains / page_contains_text). */
   content?: string;
   /** Expected exit code (for exit_code type). */
   exitCode?: number;
   /** Expected output substrings (for output_contains type). */
   outputContains?: string[];
+  // Phase 10: browser-specific fields
+  /** Expected URL (for url_changed type — exact match). */
+  url?: string;
+  /** CSS selector (for element_visible type). */
+  selector?: string;
 }
 
 // ─── Permission Grants ──────────────────────────────────────────────────────

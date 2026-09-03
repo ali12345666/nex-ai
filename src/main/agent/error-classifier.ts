@@ -145,8 +145,8 @@ const SECURITY_POLICY_PATTERNS: RegExp[] = [
  * Most are retryable (page may still be loading, selector timing). */
 const BROWSER_ERROR_PATTERNS: RegExp[] = [
   /navigation (failed|timeout|took too long)/i,
-  /element .* (not found|not visible|not actionable|detached)/i,
-  /selector .* (timeout|not found|didn't match)/i,
+  /element .*(not found|not visible|not actionable|detached)/i,
+  /selector .*(timeout|not found|didn't match)/i,
   /page\.waitForSelector.*timeout/i,
   /playwright.*(timeout|error)/i,
   /target closed|browser has been closed|page has been closed/i,
@@ -235,6 +235,30 @@ export function classifyError(
     }
   }
 
+  // 3b. Browser error (Phase 10) — MUST be checked BEFORE file_path and
+  // invalid_arguments because browser errors contain phrases that would
+  // match those patterns:
+  //   - "Element not found" matches file_path's "not found" pattern
+  //   - "URL validation failed" matches invalid_arguments' "validation failed"
+  // By checking browser patterns first, we ensure browser tools get the
+  // right recovery policy (RETRY/REPLAN instead of ABORT).
+  // Most browser errors are retryable (page may still be loading, selector
+  // timing, transient browser crash). URL validation failures are NOT
+  // retryable (security — caller passed a blocked URL).
+  for (const re of BROWSER_ERROR_PATTERNS) {
+    if (re.test(errorMessage)) {
+      const isSecurity = /url validation failed/i.test(errorMessage);
+      return {
+        class: 'browser_error',
+        legacyClass: isSecurity ? 'permanent' : 'transient',
+        retryable: !isSecurity,  // retryable unless URL validation (security)
+        neverRetry: isSecurity,  // security URL blocks never auto-retry
+        reason: `Browser error: ${truncate(errorMessage)}`,
+        matchedPattern: re.source,
+      };
+    }
+  }
+
   // 4. Invalid arguments
   for (const re of INVALID_ARGUMENTS_PATTERNS) {
     if (re.test(errorMessage)) {
@@ -263,26 +287,6 @@ export function classifyError(
       neverRetry: false,
       reason: `Verification failed: ${truncate(errorMessage)}`,
     };
-  }
-
-  // 4c. Browser error (Phase 10) — navigation, element, crash.
-  // Checked BEFORE file_path because browser navigation failures can
-  // contain "not found" phrases that would otherwise match file_path.
-  // Most browser errors are retryable (page may still be loading, selector
-  // timing, transient browser crash). URL validation failures are NOT
-  // retryable (security — caller passed a blocked URL).
-  for (const re of BROWSER_ERROR_PATTERNS) {
-    if (re.test(errorMessage)) {
-      const isSecurity = /url validation failed/i.test(errorMessage);
-      return {
-        class: 'browser_error',
-        legacyClass: isSecurity ? 'permanent' : 'transient',
-        retryable: !isSecurity,  // retryable unless URL validation (security)
-        neverRetry: isSecurity,  // security URL blocks never auto-retry
-        reason: `Browser error: ${truncate(errorMessage)}`,
-        matchedPattern: re.source,
-      };
-    }
   }
 
   // 5. File/path
@@ -380,4 +384,5 @@ export const _PATTERNS = {
   file_path: FILE_PATH_PATTERNS,
   model_inference: MODEL_INFERENCE_PATTERNS,
   security_policy: SECURITY_POLICY_PATTERNS,
+  browser_error: BROWSER_ERROR_PATTERNS,
 };

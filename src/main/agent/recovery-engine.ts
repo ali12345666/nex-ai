@@ -324,6 +324,47 @@ export function decideRecoveryHeuristic(ctx: RecoveryContext): RecoveryDecision 
     };
   }
 
+  // Phase 10: Browser error — navigation, element, crash.
+  // RETRY once (page may still be loading or selector timing was off),
+  // then REPLAN (try different selector/approach), then SKIP/ABORT.
+  // URL validation failures are permanent (security — classified as
+  // legacyClass='permanent') so they hit the ABORT path immediately.
+  if (cls === 'browser_error') {
+    // Security URL blocks never retry (neverRetry=true from classifier)
+    if (ctx.errorMessage.toLowerCase().includes('url validation failed')) {
+      return {
+        action: 'ABORT',
+        reason: `Browser URL validation failed (security) — aborting`,
+        errorClass: cls,
+        backoffMs: 0,
+        llmAnalyzed: false,
+        confidence: 0.9,
+        ambiguous: false,
+      };
+    }
+    if (ctx.attempt < 1) {
+      return {
+        action: 'RETRY',
+        reason: `Browser error — retry once (attempt ${ctx.attempt + 1}/1, page may still be loading)`,
+        errorClass: cls,
+        backoffMs: exponentialBackoff(ctx.attempt, cls),
+        llmAnalyzed: false,
+        confidence: 0.6,
+        ambiguous: true, // browser errors benefit from LLM analysis
+      };
+    }
+    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+    return {
+      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+      reason: `Browser error after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+      errorClass: cls,
+      backoffMs: 0,
+      llmAnalyzed: false,
+      confidence: 0.7,
+      ambiguous: false,
+    };
+  }
+
   // Unknown — RETRY once, then ABORT (preserves Phase 14 behavior)
   if (cls === 'unknown') {
     if (ctx.attempt < 1) {

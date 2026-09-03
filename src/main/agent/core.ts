@@ -1140,7 +1140,7 @@ async function executeStep(
       if (step.expectedOutcome || result.data?.exitCode !== undefined) {
         try {
           const outcomeVerification = await verifyStepOutcome(
-            step, result, task.context.projectPath,
+            step, result, task.context.projectPath, task.id,
           );
           verificationResults.push(outcomeVerification);
           if (outcomeVerification.status === 'failed') verificationPassed = false;
@@ -1790,6 +1790,9 @@ function mapErrorClassToAgentErrorType(
     // Phase 9: verification failure maps to 'tool_error' (the tool didn't
     // achieve the expected outcome). We keep the detailed class in
     // AgentError.errorClass for recovery analysis.
+    case 'browser_error':
+    // Phase 10: browser errors map to 'tool_error' (browser tool didn't
+    // achieve expected outcome — navigation failed, element not found, etc.).
     case 'security_policy':
     case 'invalid_arguments':
     case 'file_path':

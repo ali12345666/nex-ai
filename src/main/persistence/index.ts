@@ -49,6 +49,10 @@ export interface PersistedSettings {
   localTemperature?: number;
   localMaxTokens?: number;
   activeLocalModelId?: string | null;
+  // Phase 10: Browser Automation (Playwright) opt-in flag.
+  // OFF by default — user must explicitly enable in Settings → Browser Automation.
+  // When false, no browser tools are registered, no browser sessions created.
+  browserAutomationEnabled?: boolean;
 }
 
 export interface PersistedState {

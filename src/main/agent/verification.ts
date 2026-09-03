@@ -171,6 +171,7 @@ export async function verifyStepOutcome(
   step: AgentStep,
   toolResult: ToolResult,
   projectPath?: string,
+  taskId?: string,
 ): Promise<VerificationResult> {
   const id = `ver-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const evidence: string[] = [];
@@ -198,7 +199,7 @@ export async function verifyStepOutcome(
   if (step.expectedOutcome) {
     const outcome = step.expectedOutcome;
     try {
-      const result = await verifyExpectedOutcome(outcome, projectPath);
+      const result = await verifyExpectedOutcome(outcome, projectPath, taskId, toolResult);
       evidence.push(...result.evidence);
       signals.push(...result.signals);
       if (!result.verified) {
@@ -254,27 +255,47 @@ export async function verifyStepOutcome(
   }
 
   // ── All checks passed ──
+  const browserOutcome = step.expectedOutcome && (
+    step.expectedOutcome.type === 'url_changed' ||
+    step.expectedOutcome.type === 'page_contains_text' ||
+    step.expectedOutcome.type === 'element_visible' ||
+    step.expectedOutcome.type === 'screenshot_captured'
+  );
   return {
     id, stepId: step.id,
     description: step.description,
-    verifiedBy: step.expectedOutcome ? (step.expectedOutcome.type === 'file_contains' ? 'content' : 'structural') : 'tool_call',
+    verifiedBy: step.expectedOutcome
+      ? (browserOutcome ? 'structural' : (step.expectedOutcome.type === 'file_contains' ? 'content' : 'structural'))
+      : 'tool_call',
     status: 'verified',
     details: 'All verification conditions met',
     timestamp: Date.now(),
     confidence: step.expectedOutcome ? 0.9 : 0.7,
     evidence,
     signals,
-    level: step.expectedOutcome ? (step.expectedOutcome.type === 'file_contains' ? 3 : 2) : 1,
+    level: step.expectedOutcome
+      ? (browserOutcome ? 2 : (step.expectedOutcome.type === 'file_contains' ? 3 : 2))
+      : 1,
   };
 }
 
 /**
  * Verify a single expected outcome against the actual system state.
- * Uses read-only fs operations (no tool registry calls — direct fs).
+ * Uses read-only fs operations for file outcomes, and the browser session
+ * manager (read-only) for browser outcomes. NEVER writes or executes
+ * anything for verification.
+ *
+ * @param outcome     The expected outcome to verify
+ * @param projectPath Project root (for relative path resolution)
+ * @param taskId      The task ID (for browser session lookup)
+ * @param toolResult  The tool result (for screenshot_captured + url_changed
+ *                    fallback when no active session)
  */
 async function verifyExpectedOutcome(
   outcome: ExpectedOutcome,
   projectPath?: string,
+  taskId?: string,
+  toolResult?: ToolResult,
 ): Promise<{ verified: boolean; reason: string; evidence: string[]; signals: AgentSignal[] }> {
   const fs = await import('fs');
   const path = await import('path');
@@ -362,6 +383,196 @@ async function verifyExpectedOutcome(
         reason: 'output_contains verification should use toolResult.output (handled in verifyToolResult)',
         evidence,
         signals,
+      };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 10: Browser outcomes
+    // ═══════════════════════════════════════════════════════════════════════
+
+    case 'url_changed': {
+      // Try to get URL from active browser session, fallback to toolResult.data.url
+      let currentUrl: string | undefined;
+      if (taskId) {
+        try {
+          const { getSession } = require('../ai/tools/browser/session-manager');
+          const session = getSession(taskId);
+          if (session) currentUrl = session.currentUrl;
+        } catch { /* browser module not available */ }
+      }
+      if (!currentUrl && toolResult?.data?.url) {
+        currentUrl = toolResult.data.url;
+      }
+      const expectedUrl = outcome.url;
+      if (!expectedUrl) {
+        return {
+          verified: false,
+          reason: 'url_changed: no expected URL provided',
+          evidence,
+          signals: [{ type: 'error', message: 'missing expected url' }],
+        };
+      }
+      evidence.push(`current URL = ${currentUrl || '(none)'}`);
+      evidence.push(`expected URL = ${expectedUrl}`);
+      if (!currentUrl) {
+        return {
+          verified: false,
+          reason: `url_changed: no active browser session + no URL in toolResult`,
+          evidence,
+          signals: [{ type: 'error', message: 'no current URL to compare' }],
+        };
+      }
+      // Support exact match OR substring (if expected starts with '*=')
+      const matches = expectedUrl.startsWith('*=')
+        ? currentUrl.includes(expectedUrl.slice(2))
+        : currentUrl === expectedUrl;
+      if (!matches) {
+        return {
+          verified: false,
+          reason: `url_changed: current URL "${currentUrl}" does not match expected "${expectedUrl}"`,
+          evidence,
+          signals: [{ type: 'error', message: `URL mismatch` }],
+        };
+      }
+      return {
+        verified: true,
+        reason: `url_changed: current URL matches expected`,
+        evidence,
+        signals: [{ type: 'success', message: 'URL matches' }],
+      };
+    }
+
+    case 'page_contains_text': {
+      const expectedText = outcome.content || '';
+      if (!expectedText) {
+        return {
+          verified: false,
+          reason: 'page_contains_text: no expected content provided',
+          evidence,
+          signals: [{ type: 'error', message: 'missing expected content' }],
+        };
+      }
+      // Try to get page text from active browser session
+      if (taskId) {
+        try {
+          const { getSession } = require('../ai/tools/browser/session-manager');
+          const session = getSession(taskId);
+          if (session && session.page) {
+            const pageText = await session.page.textContent('body', { timeout: 5000 }).catch(() => '');
+            const contains = (pageText || '').toLowerCase().includes(expectedText.toLowerCase());
+            evidence.push(`page text contains "${expectedText.slice(0, 50)}": ${contains}`);
+            if (!contains) {
+              return {
+                verified: false,
+                reason: `page_contains_text: page does not contain "${expectedText}"`,
+                evidence,
+                signals: [{ type: 'error', message: 'text not found in page' }],
+              };
+            }
+            return {
+              verified: true,
+              reason: `page_contains_text: page contains expected text`,
+              evidence,
+              signals: [{ type: 'success', message: 'text found in page' }],
+            };
+          }
+        } catch { /* browser session not available */ }
+      }
+      // Fallback: check toolResult.output (browser_extract returns text in output)
+      const toolOutput = (toolResult?.output || '').toLowerCase();
+      const contains = toolOutput.includes(expectedText.toLowerCase());
+      evidence.push(`toolResult.output contains "${expectedText.slice(0, 50)}": ${contains}`);
+      if (!contains) {
+        return {
+          verified: false,
+          reason: `page_contains_text: no active session + toolResult.output does not contain "${expectedText}"`,
+          evidence,
+          signals: [{ type: 'error', message: 'text not found' }],
+        };
+      }
+      return {
+        verified: true,
+        reason: `page_contains_text: toolResult.output contains expected text`,
+        evidence,
+        signals: [{ type: 'success', message: 'text found in toolResult' }],
+      };
+    }
+
+    case 'element_visible': {
+      const selector = outcome.selector;
+      if (!selector) {
+        return {
+          verified: false,
+          reason: 'element_visible: no selector provided',
+          evidence,
+          signals: [{ type: 'error', message: 'missing selector' }],
+        };
+      }
+      if (!taskId) {
+        return {
+          verified: false,
+          reason: 'element_visible: no taskId for browser session lookup',
+          evidence,
+          signals: [{ type: 'error', message: 'missing taskId' }],
+        };
+      }
+      try {
+        const { getSession } = require('../ai/tools/browser/session-manager');
+        const session = getSession(taskId);
+        if (!session || !session.page) {
+          return {
+            verified: false,
+            reason: 'element_visible: no active browser session',
+            evidence,
+            signals: [{ type: 'error', message: 'no browser session' }],
+          };
+        }
+        // Read-only check: waitForSelector with state='visible' + short timeout
+        // If the element is visible, this resolves; if not, it throws.
+        const visible = await session.page.isVisible(selector).catch(() => false);
+        evidence.push(`element "${selector}" visible: ${visible}`);
+        if (!visible) {
+          return {
+            verified: false,
+            reason: `element_visible: element "${selector}" not visible`,
+            evidence,
+            signals: [{ type: 'error', message: 'element not visible' }],
+          };
+        }
+        return {
+          verified: true,
+          reason: `element_visible: element "${selector}" is visible`,
+          evidence,
+          signals: [{ type: 'success', message: 'element visible' }],
+        };
+      } catch (err: any) {
+        return {
+          verified: false,
+          reason: `element_visible: verification failed — ${err.message}`,
+          evidence,
+          signals: [{ type: 'error', message: err.message }],
+        };
+      }
+    }
+
+    case 'screenshot_captured': {
+      // Always verified if the browser_screenshot tool succeeded — the
+      // screenshot is in toolResult.data.screenshot (base64 PNG).
+      const hasScreenshot = !!toolResult?.data?.screenshot;
+      evidence.push(`toolResult.data.screenshot present: ${hasScreenshot}`);
+      if (!hasScreenshot) {
+        return {
+          verified: false,
+          reason: 'screenshot_captured: no screenshot data in toolResult',
+          evidence,
+          signals: [{ type: 'error', message: 'screenshot missing' }],
+        };
+      }
+      return {
+        verified: true,
+        reason: 'screenshot_captured: screenshot present in toolResult.data',
+        evidence,
+        signals: [{ type: 'success', message: 'screenshot captured' }],
       };
     }
 

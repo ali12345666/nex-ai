@@ -605,6 +605,10 @@ export interface NexAPI {
   taskQueuePrune: () => Promise<{ success: boolean; pruned: number }>;
   taskQueueSnapshot: () => Promise<{ success: boolean }>;
   onTaskQueueEvent: (callback: (event: any) => void) => () => void;
+
+  // ── Phase 10: Browser Automation opt-in ──
+  browserAutomationGet: () => Promise<{ enabled: boolean }>;
+  browserAutomationSet: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>;
 }
 
 declare global {

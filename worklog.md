@@ -611,3 +611,128 @@ Stage Summary:
 - Browser tools go through existing Permission Gate (new 'browser' permission) — NEVER bypass.
 - Integration: planner auto-picks browser tools; recovery handles browser_error; verification checks browser outcomes; context captures URL/title in executionMetadata.
 - AWAITING USER APPROVAL before implementation.
+
+---
+Task ID: phase-10-1
+Agent: main
+Task: PHASE 10 — Browser Automation (implementation + tests + verification)
+
+Work Log:
+- Installed Playwright (^1.62.1) via npm install playwright + verified Chromium already installed at ~/.cache/ms-playwright/
+- Created src/main/ai/tools/browser/session-manager.ts:
+  - BrowserSession interface (id, taskId, browser, context, page, currentUrl, currentTitle, createdAt, lastActivityAt, alive)
+  - BrowserSessionInfo for safe (redacted) session info via getSessionInfo()
+  - configureBrowserSessions({enabled, browserType, headless}) — opt-in OFF by default
+  - setBrowserEnabled(enabled) — runtime toggle for opt-in
+  - isBrowserEnabled() — checked by every browser tool before doing anything
+  - getOrCreateSession(taskId) — reuses existing session across steps of same task, creates new if dead
+  - getSession(taskId) — returns null if no session or dead
+  - closeSession(taskId) — safe close (page + context + browser)
+  - closeAllSessions() — called on app shutdown
+  - cleanupOrphanedSessions(activeTaskIds) — periodic cleanup
+  - getSessionInfo(taskId) — redacted via redactObjectDeep (URL may contain tokens)
+  - updateSessionState(taskId, {url, title}) — cached URL/title after navigation
+  - markSessionDead(taskId) — for crash recovery
+  - isUrlBlocked(url) — blocks private IPs, localhost, file://, ftp://, data:, javascript:
+  - isBrowserCrashError(err) — detects "Target closed", "Browser has been closed", "page has been closed", protocol errors
+  - getActiveSessionTaskIds(), getSessionCount() — for diagnostics
+  - Playwright lazy-loaded via require() at first use (not module load) — non-browser code pays no import cost
+- Created src/main/ai/tools/browser/helpers.ts:
+  - getTaskIdFromContext(context) — extracts taskId from ToolContext.metadata
+  - acquireSession(context) — pre-flight check (enabled + taskId + session create)
+  - validateUrl(url) — blocks blocked URLs via isUrlBlocked
+  - withCrashRecovery(taskId, action) — wraps action, detects crashes, marks session dead
+  - recordNavigation(taskId, url, title) — updates session state
+- Created 6 browser tools (all require 'browser' permission):
+  - browser-navigate-tool.ts: browser_navigate (goto URL, waitUntil, timeout)
+  - browser-click-tool.ts: browser_click (click element by selector)
+  - browser-type-tool.ts: browser_type (fill input, clears first by default, does NOT echo raw text in data — only charCount)
+  - browser-extract-tool.ts: browser_extract (text/html/attribute, truncates to 10000 chars)
+  - browser-screenshot-tool.ts: browser_screenshot (base64 PNG, memory-only — NO disk write)
+  - browser-close-tool.ts: browser_close (safe close session)
+- Created src/main/ai/tools/browser/index.ts:
+  - registerBrowserTools() — only registers if isBrowserEnabled() (opt-in gate)
+  - listBrowserToolDefinitions() — for settings panel
+  - re-exports session-manager functions
+- Extended Permission union (additive): added 'browser' to src/main/permissions/index.ts
+- Extended ToolPermission union (additive): added 'browser' to src/main/ai/tool-registry.ts
+- Extended ToolCategory: 'browser' already existed (placeholder) — no change needed
+- Extended ErrorClass (additive): added 'browser_error' (12th class) to src/main/agent/error-classifier.ts
+  - BROWSER_ERROR_PATTERNS: navigation timeout, element not found, selector timeout, page.waitForSelector, playwright errors, target closed, browser crashed, URL validation failed
+  - Checked BEFORE file_path + invalid_arguments (priority fix) — browser errors contain phrases that would otherwise match those patterns ("not found" → file_path, "validation failed" → invalid_arguments)
+  - URL validation failures classified as permanent (neverRetry=true, retryable=false) — security
+  - Other browser errors classified as transient (retryable=true) — page may still be loading
+  - Added BROWSER_ERROR_PATTERNS to _PATTERNS export
+- Extended recovery-engine.ts (additive): added cls === 'browser_error' branch
+  - URL validation failures → ABORT immediately (security)
+  - attempt 0 → RETRY (ambiguous=true, LLM fallback available)
+  - attempt 1 with more steps → REPLAN
+  - attempt 1 last step → ABORT
+- Extended ExpectedOutcome (additive): added 'url_changed' | 'page_contains_text' | 'element_visible' | 'screenshot_captured' types + url/selector fields
+- Extended AgentError.errorClass union (additive): added 'browser_error'
+- Extended verification.ts (additive): verifyStepOutcome now accepts taskId parameter
+  - verifyExpectedOutcome handles browser outcomes:
+    - url_changed: compares session.currentUrl OR toolResult.data.url to expected
+    - page_contains_text: uses session.page.textContent('body') OR toolResult.output
+    - element_visible: uses session.page.isVisible(selector) (read-only)
+    - screenshot_captured: checks toolResult.data.screenshot presence
+  - All browser verification is READ-ONLY (never writes, never executes)
+- Extended core.ts (additive): passes task.id to verifyStepOutcome for browser session lookup
+- Extended mapErrorClassToAgentErrorType: browser_error → 'tool_error' (legacy compat)
+- Extended PersistedSettings (additive): added browserAutomationEnabled?: boolean (OFF by default)
+- Wired main.ts:
+  - configureBrowserSessions called at startup (reads browserAutomationEnabled from settings)
+  - closeAllSessions called on before-quit (best-effort cleanup)
+  - Added 2 IPC handlers: browser-automation-get, browser-automation-set (toggle opt-in)
+- Extended preload.ts: browserAutomationGet, browserAutomationSet
+- Extended electron.d.ts: browserAutomationGet/Set type declarations
+- Created tests/tools/test-phase-10-browser.ts: 26 test sections, 136 assertions covering:
+  1. Tool registration (files exist, registerBrowserTools exported, tool-registry calls it)
+  2. Permission enforcement (Permission union has 'browser', all tools require it, goes through executeToolWithPermission)
+  3. Opt-in OFF (default OFF, registerBrowserTools skips when disabled, settings field exists, main.ts reads it)
+  4. Opt-in ON (setBrowserEnabled toggles, IPC handlers exist, preload exposes them)
+  5. Session isolation (keyed by taskId, no cross-task leakage)
+  6. Session reuse (getOrCreateSession reuses existing alive session)
+  7. Session cleanup (closeSession, closeAllSessions, cleanupOrphanedSessions, main.ts calls closeAllSessions)
+  8-11. Tools (navigate validates URL + goto, click waits + clicks, type clears + types + no raw text in data, extract truncates)
+  12-13. Screenshot memory-only (base64 in data, NO fs.writeFileSync, comment says memory-only)
+  14-16. URL validation (valid https OK, localhost + private IPs + unsafe schemes blocked)
+  17. Secret redaction (getSessionInfo uses redactObjectDeep, browser_type no raw text)
+  18. Browser error classification (navigation timeout, element not found, browser closed, URL validation)
+  19. Retry/replan (attempt 0 → RETRY, attempt 1 → REPLAN/ABORT, URL validation → ABORT)
+  20. Cancellation cleanup (closeAllSessions called on shutdown)
+  21. Verification outcomes (ExpectedOutcome has browser types, screenshot_captured verified, verification.ts handles all 4 browser outcomes, core.ts passes taskId)
+  22. Task completion gate (browser tools + all completed → SUCCESS, failed browser step → NOT SUCCESS)
+  23. Prompt-injection resistance (extract truncates, UNTRUSTED content, no eval/exposeFunction in session manager)
+  24. Concurrent tasks isolation (sessions keyed by taskId, unique session ID per task)
+  25. Browser crash recovery (isBrowserCrashError detects crashes, withCrashRecovery marks dead, markSessionDead exported)
+  26. Regression (Phase 6-9 intact, Phase 10 additive, Playwright installed)
+- Fixed bugs found during testing:
+  1. browser-close-tool imported from wrong module (helpers vs session-manager) — fixed
+  2. recovery-engine used `errorMessage` instead of `ctx.errorMessage` — fixed
+  3. Browser error patterns had `element .* (not found)` with required space after `.*` — fixed to `element .*(not found)` to match "Element not found"
+  4. Browser error check was after invalid_arguments/file_path — moved BEFORE them (priority fix) so browser errors don't get misclassified
+- Verification:
+  - Typecheck (renderer + main): PASS
+  - Build: PASS
+  - Phase 10 tests: 136/136 PASS
+  - Phase 6/7/8/9 tests: ALL PASS (18 suites)
+  - Phase 116 regression: ALL PASS
+  - System tests: same pass/fail count before and after (no regressions):
+    - phase38: 79/80 (1 pre-existing)
+    - phase40: 109/110 (1 pre-existing)
+    - phase41: 116/118 (2 pre-existing)
+    - ui14: 95/100 (5 pre-existing)
+    - p33: 46/47 (1 pre-existing)
+
+Stage Summary:
+- Architecture delivered: Playwright-based browser automation with opt-in OFF by default, memory-only screenshots.
+- 6 browser tools (navigate/click/type/extract/screenshot/close) all require 'browser' permission, go through Permission Gate.
+- Session manager: per-task isolated sessions, reuse across steps, crash detection + recovery, cleanup on shutdown.
+- URL validation: blocks private IPs, localhost, file://, ftp://, data:, javascript: (defense-in-depth).
+- Security: read-only verification (never writes/executes), untrusted content treated as data not instructions, redaction via existing redactObjectDeep.
+- Recovery: browser_error error class with RETRY/REPLAN/ABORT policy; URL validation failures never retry (security).
+- Verification: 4 browser ExpectedOutcome types (url_changed/page_contains_text/element_visible/screenshot_captured) handled in verification.ts.
+- Tests: 136/136 PASS across 26 sections covering all Phase 10 requirements.
+- All changes additive — no breaking changes to Phase 6-9.
+- Files changed: 8 new (browser/ module: session-manager, helpers, 6 tools, index) + 8 modified (types, core, verification, error-classifier, recovery-engine, tool-registry, permissions, persistence, main, preload, electron.d.ts) + 1 new test file

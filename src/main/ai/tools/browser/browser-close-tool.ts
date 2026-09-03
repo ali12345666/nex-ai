@@ -11,7 +11,8 @@
  */
 
 import type { Tool, ToolDefinition, ToolResult, ToolContext } from '../../tool-registry';
-import { closeSession, isBrowserEnabled, getTaskIdFromContext } from './helpers';
+import { closeSession, isBrowserEnabled } from './session-manager';
+import { getTaskIdFromContext } from './helpers';
 
 export class BrowserCloseTool implements Tool {
   readonly definition: ToolDefinition = {

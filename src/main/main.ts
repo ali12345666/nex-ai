@@ -667,6 +667,36 @@ async function setupIPC(): Promise<void> {
     return { success: true };
   });
 
+  // ── Phase 10: Browser Automation opt-in toggle ──
+  // Reads/writes the browserAutomationEnabled flag in persisted settings.
+  // When toggled ON, registers browser tools (available in planner immediately).
+  // When toggled OFF, future browser tool calls are blocked (existing sessions
+  // finish gracefully). Tools are re-registered by re-running ensureBuiltinToolsRegistered.
+  ipcMain.handle('browser-automation-get', async () => {
+    const settings = loadState().settings || {};
+    return { enabled: !!(settings.browserAutomationEnabled) };
+  });
+
+  ipcMain.handle('browser-automation-set', async (_event, enabled: boolean) => {
+    try {
+      // Persist the flag
+      persistUpdateSettings({ browserAutomationEnabled: enabled });
+      // Update the session manager's runtime flag
+      const { setBrowserEnabled, registerBrowserTools } = await import('./ai/tools/browser');
+      setBrowserEnabled(enabled);
+      if (enabled) {
+        // Register browser tools immediately so they appear in the planner.
+        registerBrowserTools();
+      }
+      // When disabled, the tools remain registered but isBrowserEnabled() returns
+      // false — every browser tool checks this before doing anything, so they
+      // effectively become no-ops that return "disabled" errors.
+      return { success: true, enabled };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Persistence info (for Settings > About) ──
   ipcMain.handle('persistence-info', async () => {
     return {
@@ -6001,6 +6031,25 @@ app.whenReady().then(async () => {
   initPersistence(userDataPath);
   console.log(`[STARTUP_TIMING] persistence-init: +${Date.now() - t0}ms`);
 
+  // ── Phase 10: Configure Browser Automation (Playwright) — opt-in OFF by default ──
+  // Browser tools are ONLY registered when this flag is true. Reads from
+  // persisted settings so the user's choice survives across restarts.
+  (async () => {
+    try {
+      const { configureBrowserSessions } = await import('./ai/tools/browser');
+      const settings = loadState().settings || {};
+      const browserEnabled = !!(settings.browserAutomationEnabled);
+      configureBrowserSessions({
+        enabled: browserEnabled,
+        browserType: 'chromium',
+        headless: true,
+      });
+      console.log(`[STARTUP_TIMING] browser-automation: ${browserEnabled ? 'ENABLED' : 'disabled (opt-in OFF)'} (+${Date.now() - t0}ms)`);
+    } catch (err: any) {
+      console.warn('[NEX AI] Browser automation config failed (non-blocking):', err.message);
+    }
+  })();
+
   // ── Phase 6: Initialize Background Task Queue ───────────────────────────────
   // The task queue wraps agent tasks and arbitrary functions, running them
   // in the background without blocking the UI. It recovers any persisted
@@ -6187,6 +6236,13 @@ app.on('before-quit', (event) => {
   try {
     shutdownTaskQueue();
   } catch { /* best-effort */ }
+
+  // Phase 10: Close all browser sessions (Playwright) — best-effort cleanup
+  // so we don't leave orphaned Chromium processes behind.
+  try {
+    const { closeAllSessions } = require('./ai/tools/browser');
+    closeAllSessions().catch(() => {});
+  } catch { /* best-effort — browser module may not be loaded */ }
 
   // Phase 115: Stop the periodic snapshot cleanup timer.
   try {

@@ -789,6 +789,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('task-queue-event', handler);
     return () => ipcRenderer.removeListener('task-queue-event', handler);
   },
+
+  // ── Phase 10: Browser Automation opt-in ──
+  browserAutomationGet: () => ipcRenderer.invoke('browser-automation-get'),
+  browserAutomationSet: (enabled: boolean) => ipcRenderer.invoke('browser-automation-set', enabled),
 });
 
 export {};
