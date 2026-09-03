@@ -55,7 +55,7 @@ import { generatePlan } from './planner';
 import { createTokenStreamer } from './stream-emit';
 import { redactSecrets } from './logger';
 import { prepareToolCall } from './tool-selector';
-import { verifyToolResult } from './verification';
+import { verifyToolResult, verifyStepOutcome, verifyTaskCompletion } from './verification';
 // Phase 38: ReAct closed-loop — re-planner that feeds observations back to the LLM
 import { rePlanAfterObservation, shouldInvokeRePlanner } from './react-loop';
 // Phase 14: trust levels + classified retries
@@ -587,6 +587,51 @@ export async function runTask(taskId: string): Promise<AgentTask> {
         return task;
       }
 
+      // ════════════════════════════════════════════════════════════════════════
+      // Phase 9: Task Completion Gate (Level 5 verification)
+      //
+      // Before emitting task_completed, we run verifyTaskCompletion() which
+      // checks:
+      //   - All steps in terminal state (NOT pending/in_progress)
+      //   - No failed steps (hard failures that weren't recovered via SKIP)
+      //   - No unresolved errors (errors with recovered=false that are
+      //     tool_error/permission_denied/invalid_state/timeout/max_steps/etc.)
+      //   - At least one tool call executed (existing Phase 116 check)
+      //
+      // If the gate fails, we emit task_failed instead of task_completed.
+      // This is the LAST line of defense against false-success: even if
+      // every step reported success, if any step is still pending or has
+      // unresolved errors, the task is NOT complete.
+      // ════════════════════════════════════════════════════════════════════════
+      const completionGate = verifyTaskCompletion(task);
+      if (!completionGate.passed) {
+        task.status = 'failed';
+        task.completedAt = Date.now();
+        const gateError: AgentError = {
+          id: `err-gate-${Date.now()}`,
+          type: 'invalid_state',
+          message: `Task completion gate failed: ${completionGate.reason}`,
+          timestamp: Date.now(),
+          details: {
+            unresolvedSteps: completionGate.unresolvedSteps.map((s) => s.index + 1),
+            unresolvedErrors: completionGate.unresolvedErrors.map((e) => e.type),
+          },
+        };
+        task.errors.push(gateError);
+        emit({
+          type: 'task_failed',
+          taskId,
+          message: `Task completion gate failed: ${completionGate.reason}`,
+          data: {
+            error: { message: gateError.message },
+            unresolvedSteps: completionGate.unresolvedSteps.length,
+            unresolvedErrors: completionGate.unresolvedErrors.length,
+          },
+        });
+        AgentLogger.warn(`Task ${taskId} completion gate FAILED: ${completionGate.reason}`, { taskId });
+        return task;
+      }
+
       task.status = 'completed';
       task.completedAt = Date.now();
 
@@ -621,6 +666,8 @@ export async function runTask(taskId: string): Promise<AgentTask> {
           toolCalls: task.toolCalls.length,
           observations: task.observations.length,
           verifications: task.verification.length,
+          // Phase 9: include completion gate confidence in the event
+          completionConfidence: completionGate.confidence,
         },
       });
 
@@ -1053,18 +1100,25 @@ async function executeStep(
         }
       }
 
-      // ── Phase 38: VERIFICATION (was imported but never called) ───────────
-      // If the step has verification criteria, run verifyToolResult against
-      // the tool result. This produces a VerificationResult that is recorded
-      // on task.verification and can gate the ReAct decision.
+      // ── Phase 38: VERIFICATION + Phase 9: structural/content/task verification ─
+      // Level 1 (Phase 38): if step.verificationCriteria exists, run
+      //   verifyToolResult against the tool result (exit code + output patterns).
+      // Level 2/3 (Phase 9): if step.expectedOutcome exists, run
+      //   verifyStepOutcome to check actual system state (file exists, content
+      //   matches, etc.). This catches false-success where the tool reports
+      //   success but the expected outcome didn't actually happen.
       let verificationPassed = true;
+      const verificationResults: VerificationResult[] = [];
+
+      emit({
+        type: 'verification_started',
+        taskId: task.id,
+        stepId: step.id,
+        message: `Verifying step ${step.index + 1}...`,
+      });
+
+      // ── Level 1: tool result verification (Phase 38, existing) ──
       if (step.verificationCriteria) {
-        emit({
-          type: 'verification_started',
-          taskId: task.id,
-          stepId: step.id,
-          message: `Verifying step ${step.index + 1}...`,
-        });
         const verification = verifyToolResult({
           stepId: step.id,
           description: step.description,
@@ -1074,14 +1128,87 @@ async function executeStep(
           forbiddenOutputContains: step.verificationCriteria.forbiddenOutputContains,
           toolResult: result,
         });
+        verificationResults.push(verification);
+        if (verification.status !== 'verified') verificationPassed = false;
+      }
+
+      // ── Level 2/3/4: structural + content + execution verification (Phase 9) ──
+      // Run when either step.expectedOutcome exists (structural/content) OR
+      // always (to catch non-zero exit codes even without explicit criteria).
+      // The Level 4 check (non-zero exit code) is always run because it's
+      // a strong signal of failure.
+      if (step.expectedOutcome || result.data?.exitCode !== undefined) {
+        try {
+          const outcomeVerification = await verifyStepOutcome(
+            step, result, task.context.projectPath,
+          );
+          verificationResults.push(outcomeVerification);
+          if (outcomeVerification.status === 'failed') verificationPassed = false;
+          // 'inconclusive' does NOT fail the step (we can't verify — keep going)
+        } catch (err: any) {
+          // Verification itself crashed — log + mark inconclusive (don't fail step)
+          AgentLogger.warn(`verifyStepOutcome crashed: ${err.message} — treating as inconclusive`, {
+            taskId: task.id, stepId: step.id,
+          });
+        }
+      }
+
+      // ── Record verification results + emit events ──
+      for (const verification of verificationResults) {
         task.verification.push(verification);
-        verificationPassed = verification.status === 'verified';
+      }
+      // Emit verification_completed (backward compat — carries status in data)
+      const lastVerification = verificationResults[verificationResults.length - 1];
+      if (lastVerification) {
         emit({
           type: 'verification_completed',
           taskId: task.id,
           stepId: step.id,
-          message: `Verification ${verification.status}: ${verification.details}`,
-          data: { status: verification.status, details: verification.details },
+          message: `Verification ${lastVerification.status}: ${lastVerification.details}`,
+          data: {
+            status: lastVerification.status,
+            details: lastVerification.details,
+            confidence: lastVerification.confidence,
+            level: lastVerification.level,
+            evidence: lastVerification.evidence,
+          },
+        });
+        // Phase 9: emit explicit verification_passed / verification_failed events
+        if (lastVerification.status === 'verified') {
+          emit({
+            type: 'verification_passed',
+            taskId: task.id,
+            stepId: step.id,
+            message: `Step ${step.index + 1} verified: ${lastVerification.details}`,
+            data: {
+              level: lastVerification.level,
+              confidence: lastVerification.confidence,
+              evidence: lastVerification.evidence,
+            },
+          });
+        } else if (lastVerification.status === 'failed') {
+          emit({
+            type: 'verification_failed',
+            taskId: task.id,
+            stepId: step.id,
+            message: `Step ${step.index + 1} verification FAILED: ${lastVerification.details}`,
+            data: {
+              level: lastVerification.level,
+              confidence: lastVerification.confidence,
+              evidence: lastVerification.evidence,
+              recommendedAction: lastVerification.recommendedAction,
+            },
+          });
+        }
+      } else if (step.verificationCriteria || step.expectedOutcome) {
+        // No verification ran but criteria were set — emit verification_completed
+        // with 'inconclusive' to maintain event flow for UI.
+        emit({
+          type: 'verification_completed',
+          taskId: task.id,
+          stepId: step.id,
+          message: `Verification inconclusive (no verification ran)`,
+          data: { status: 'inconclusive' },
         });
       }
 
@@ -1273,11 +1400,24 @@ async function executeStep(
           await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model);
         }
       } else if (!verificationPassed) {
-        // Tool succeeded but verification failed — treat as failure.
-        // The ReAct decision (continue/replan) already happened above.
-        // If the ReAct said 'continue', we still mark the step as failed
-        // because verification didn't pass.
+        // ── Phase 9: Tool succeeded BUT verification failed ──────────────
+        // This is the "false success" path: the tool ran fine, but the
+        // expected outcome didn't actually happen (file doesn't exist,
+        // content doesn't match, exit code wrong, etc.).
+        //
+        // Phase 9 FIX: we now route this through handleStepFailure (Phase 7
+        // recovery) with errorCode='VERIFICATION_FAILED'. The Phase 7
+        // recovery engine maps this to the 'verification_failed' error class
+        // and decides RETRY (once) → REPLAN → SKIP/ABORT. This replaces the
+        // old behavior of just marking the step failed (which bypassed
+        // recovery — a false-success could never recover).
+        //
+        // Build the verification failure message from the last verification
+        // result (so the recovery engine sees WHY verification failed).
+        const lastVer = verificationResults[verificationResults.length - 1];
+        const verErrorMessage = `Verification failed: ${lastVer?.details || 'expected outcome not observed'}`;
         if (reactDecision.action === 'replan') {
+          // The re-planner already decided to replan — let it proceed.
           step.status = 'completed';
           step.completedAt = Date.now();
           emit({
@@ -1288,14 +1428,8 @@ async function executeStep(
             data: { durationMs: step.completedAt - (step.startedAt || 0) },
           });
         } else {
-          step.status = 'failed';
-          step.error = 'Verification failed';
-          emit({
-            type: 'step_failed',
-            taskId: task.id,
-            stepId: step.id,
-            message: `Step ${step.index + 1} failed: verification failed`,
-          });
+          // Route to Phase 7 recovery with verification_failed error code.
+          await handleStepFailure(task, step, verErrorMessage, token, runtime, model);
         }
       }
     } else {
@@ -1378,7 +1512,15 @@ async function handleStepFailure(
     task,
     toolName: step.toolName,
     errorMessage,
-    errorCode: task.cancelled ? 'AGENT_CANCELLED' : 'TOOL_FAILURE',
+    // Phase 9: detect verification failures via the "Verification failed:" prefix
+    // (set by the !verificationPassed path in executeStep). This lets the
+    // Phase 7 classifier map them to 'verification_failed' error class with
+    // the right recovery policy (RETRY once → REPLAN → SKIP/ABORT).
+    errorCode: task.cancelled
+      ? 'AGENT_CANCELLED'
+      : errorMessage.startsWith('Verification failed:')
+        ? 'VERIFICATION_FAILED'
+        : 'TOOL_FAILURE',
     attempt: retryCount,
     maxRetries: task.maxRetries,
     lastObservation,
@@ -1604,6 +1746,13 @@ function recordRecoveryMemory(
   if (decision.action === 'RETRY' && decision.errorClass === 'unknown' && succeeded && !decision.llmAnalyzed) {
     return;
   }
+  // Phase 9: don't record successful verification-failed retries that succeeded
+  // (the verification failure was transient — not worth remembering). We DO
+  // record verification-failed REPLAN/ABORT decisions (the expected outcome
+  // was genuinely wrong — worth remembering for future planning).
+  if (decision.action === 'RETRY' && decision.errorClass === 'verification_failed' && succeeded && !decision.llmAnalyzed) {
+    return;
+  }
 
   try {
     const { TaskMemory } = require('../memory');
@@ -1637,6 +1786,10 @@ function mapErrorClassToAgentErrorType(
     case 'timeout': return 'timeout';
     case 'user_cancellation': return 'cancelled';
     case 'model_inference': return 'llm_error';
+    case 'verification_failed':
+    // Phase 9: verification failure maps to 'tool_error' (the tool didn't
+    // achieve the expected outcome). We keep the detailed class in
+    // AgentError.errorClass for recovery analysis.
     case 'security_policy':
     case 'invalid_arguments':
     case 'file_path':

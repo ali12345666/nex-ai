@@ -432,6 +432,21 @@ export default function NexChatPanel() {
           case 'verification':
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔍 Verifying results...' };
             break;
+          // Phase 9: explicit verification pass/fail events
+          case 'verification_passed':
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n✅ Verified: ${event.message || ''}`,
+            };
+            break;
+          case 'verification_failed':
+            // Verification failure triggers Phase 7 recovery — show the failure
+            // + the recovery flow picks it up (recovery_started, etc.)
+            next[next.length - 1] = {
+              ...last,
+              content: `🧠 Agent is working...\n\n⚠️ Verification failed: ${event.message || ''}\n\nRecovery in progress...`,
+            };
+            break;
           case 'replanning':
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔄 Re-planning based on results...' };
             break;

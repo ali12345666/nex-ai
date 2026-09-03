@@ -296,6 +296,34 @@ export function decideRecoveryHeuristic(ctx: RecoveryContext): RecoveryDecision 
     };
   }
 
+  // Phase 9: Verification failure — tool succeeded but expected outcome not observed.
+  // RETRY once (maybe the verification was transient — file system race, etc.),
+  // then REPLAN (try a different approach — the tool isn't producing the expected result),
+  // then SKIP/ABORT.
+  if (cls === 'verification_failed') {
+    if (ctx.attempt < 1) {
+      return {
+        action: 'RETRY',
+        reason: `Verification failed — retry once (attempt ${ctx.attempt + 1}/1) to re-check expected outcome`,
+        errorClass: cls,
+        backoffMs: exponentialBackoff(ctx.attempt, cls),
+        llmAnalyzed: false,
+        confidence: 0.6,
+        ambiguous: true, // verification failures benefit from LLM analysis (maybe expected outcome was wrong)
+      };
+    }
+    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+    return {
+      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+      reason: `Verification failed after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+      errorClass: cls,
+      backoffMs: 0,
+      llmAnalyzed: false,
+      confidence: 0.7,
+      ambiguous: false,
+    };
+  }
+
   // Unknown — RETRY once, then ABORT (preserves Phase 14 behavior)
   if (cls === 'unknown') {
     if (ctx.attempt < 1) {

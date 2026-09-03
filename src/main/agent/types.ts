@@ -111,6 +111,11 @@ export interface AgentStep {
   // Phase 38: marks a step as injected by the ReAct re-planner (mid-loop),
   // distinguishing it from planner-emitted steps. Used for telemetry.
   injectedByReAct?: boolean;
+  // Phase 9: expected outcome for structural/content verification.
+  // When present, the verifier checks actual system state (not just tool result).
+  expectedOutcome?: ExpectedOutcome;
+  // Phase 9: free-form hints for the verifier (e.g. "check file is readable").
+  verificationHints?: string[];
 }
 
 export interface AgentContext {
@@ -223,7 +228,7 @@ export interface AgentError {
   /** 10-class error classification (transient_network/timeout/permission_denied/...). */
   errorClass?: 'transient_network' | 'timeout' | 'permission_denied' | 'invalid_arguments'
     | 'file_path' | 'model_inference' | 'tool_failure' | 'user_cancellation'
-    | 'security_policy' | 'unknown';
+    | 'security_policy' | 'verification_failed' | 'unknown';
   /** Recovery action taken (RETRY/MODIFY_AND_RETRY/REPLAN/SKIP/ABORT). */
   recoveryDecision?: 'RETRY' | 'MODIFY_AND_RETRY' | 'REPLAN' | 'SKIP' | 'ABORT';
   /** How many recovery attempts were made. */
@@ -240,12 +245,47 @@ export interface VerificationResult {
   // What we're verifying (e.g. "build passes", "tests pass")
   description: string;
   // How we verified (tool call that produced the result)
-  verifiedBy: 'tool_call' | 'manual' | 'inferred';
+  verifiedBy: 'tool_call' | 'manual' | 'inferred' | 'structural' | 'content' | 'execution';
   verifyingToolCallId?: string;
   // Result
   status: 'verified' | 'failed' | 'inconclusive';
   details?: string;
   timestamp: number;
+  // Phase 9: extended verification metadata (additive — all optional)
+  /** Confidence 0..1 that this verification result is accurate. */
+  confidence?: number;
+  /** Evidence collected (e.g. "file exists at /tmp/test.ts", "exit code 0"). */
+  evidence?: string[];
+  /** Signals detected during verification (reuse AgentSignal). */
+  signals?: AgentSignal[];
+  /** Recommended next action if verification failed. */
+  recommendedAction?: 'continue' | 'retry' | 'replan' | 'skip' | 'abort';
+  /** Verification level (1=tool result, 2=structural, 3=content, 4=execution, 5=task). */
+  level?: 1 | 2 | 3 | 4 | 5;
+}
+
+/**
+ * Phase 9: Expected outcome for a step.
+ * When present, the verifier checks the actual system state against this expectation
+ * (in addition to the tool's self-reported success).
+ */
+export interface ExpectedOutcome {
+  /** Type of expected outcome. */
+  type:
+    | 'file_exists'     // file should exist at `path`
+    | 'file_gone'       // file should NOT exist at `path`
+    | 'file_contains'   // file at `path` should contain `content` substring
+    | 'exit_code'       // command should exit with `exitCode`
+    | 'output_contains' // command output should contain `outputContains`
+    | 'directory_exists'; // directory should exist at `path`
+  /** Path for file/directory operations. */
+  path?: string;
+  /** Content to look for (for file_contains / output_contains). */
+  content?: string;
+  /** Expected exit code (for exit_code type). */
+  exitCode?: number;
+  /** Expected output substrings (for output_contains type). */
+  outputContains?: string[];
 }
 
 // ─── Permission Grants ──────────────────────────────────────────────────────
@@ -348,6 +388,11 @@ export type AgentEventType =
   | 'observation'
   | 'verification_started'
   | 'verification_completed'
+  // Phase 9: explicit pass/fail events (additive — verification_completed
+  // still carries status in data for backward compat, but these let the
+  // UI subscribe to pass/fail specifically).
+  | 'verification_passed'
+  | 'verification_failed'
   | 'retry'
   | 'task_completed'
   | 'task_failed'

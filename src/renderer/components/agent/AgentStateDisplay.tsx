@@ -63,6 +63,11 @@ function getEventState(event: AgentEvent): StateInfo {
       return { icon: <FlaskConical size={12} className="animate-pulse" />, label: 'Verifying', color: 'text-purple-400' };
     case 'verification_completed':
       return { icon: <FlaskConical size={12} />, label: 'Verified', color: 'text-green-400' };
+    // Phase 9: explicit pass/fail events (more specific than verification_completed)
+    case 'verification_passed':
+      return { icon: <CheckCircle2 size={12} />, label: event.message, color: 'text-green-400' };
+    case 'verification_failed':
+      return { icon: <XCircle size={12} />, label: event.message, color: 'text-red-400' };
     case 'retry':
       return { icon: <RefreshCw size={12} className="animate-spin" />, label: event.message, color: 'text-yellow-400' };
     case 'step_completed':

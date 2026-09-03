@@ -37,6 +37,7 @@ export type ErrorClass =
   | 'tool_failure'
   | 'user_cancellation'
   | 'security_policy'
+  | 'verification_failed'  // Phase 9: tool succeeded but expected outcome not observed
   | 'unknown';
 
 export const ALL_ERROR_CLASSES: ErrorClass[] = [
@@ -49,6 +50,7 @@ export const ALL_ERROR_CLASSES: ErrorClass[] = [
   'tool_failure',
   'user_cancellation',
   'security_policy',
+  'verification_failed',
   'unknown',
 ];
 
@@ -229,6 +231,22 @@ export function classifyError(
         matchedPattern: re.source,
       };
     }
+  }
+
+  // 4b. Verification failed (Phase 9) — MUST be checked BEFORE file_path
+  // because verification failure messages often contain file-path phrases
+  // (e.g. "Expected file does not exist: /tmp/x"). The error code
+  // VERIFICATION_FAILED or "Verification failed:" prefix takes priority
+  // over file_path classification — this is a tool-success-but-expected-
+  // outcome-not-observed situation, not a missing-file situation.
+  if (errorCode === 'VERIFICATION_FAILED' || /Verification failed:/i.test(errorMessage)) {
+    return {
+      class: 'verification_failed',
+      legacyClass: 'unknown',
+      retryable: true, // one retry (maybe the verification was transient)
+      neverRetry: false,
+      reason: `Verification failed: ${truncate(errorMessage)}`,
+    };
   }
 
   // 5. File/path
