@@ -228,7 +228,7 @@ export interface AgentError {
   /** 10-class error classification (transient_network/timeout/permission_denied/...). */
   errorClass?: 'transient_network' | 'timeout' | 'permission_denied' | 'invalid_arguments'
     | 'file_path' | 'model_inference' | 'tool_failure' | 'user_cancellation'
-    | 'security_policy' | 'verification_failed' | 'browser_error' | 'unknown';
+    | 'security_policy' | 'verification_failed' | 'browser_error' | 'computer_error' | 'unknown';
   /** Recovery action taken (RETRY/MODIFY_AND_RETRY/REPLAN/SKIP/ABORT). */
   recoveryDecision?: 'RETRY' | 'MODIFY_AND_RETRY' | 'REPLAN' | 'SKIP' | 'ABORT';
   /** How many recovery attempts were made. */
@@ -282,7 +282,11 @@ export interface ExpectedOutcome {
     | 'url_changed'       // browser URL should equal/be `url` (or match pattern)
     | 'page_contains_text' // browser page should contain `text` substring
     | 'element_visible'    // browser element at `selector` should be visible
-    | 'screenshot_captured'; // screenshot was captured (always verified if tool succeeded)
+    | 'screenshot_captured' // screenshot was captured (always verified if tool succeeded)
+    // Phase 11: computer automation outcomes
+    | 'screenshot_captured_desktop' // desktop screenshot was captured
+    | 'window_focused'             // a specific window title/process is focused
+    | 'element_clicked_at';        // a mouse click was performed at coordinates
   /** Path for file/directory operations. */
   path?: string;
   /** Content to look for (for file_contains / output_contains / page_contains_text). */

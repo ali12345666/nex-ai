@@ -793,6 +793,12 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // ── Phase 10: Browser Automation opt-in ──
   browserAutomationGet: () => ipcRenderer.invoke('browser-automation-get'),
   browserAutomationSet: (enabled: boolean) => ipcRenderer.invoke('browser-automation-set', enabled),
+
+  // ── Phase 11: Computer Control opt-in ──
+  computerControlGet: () => ipcRenderer.invoke('computer-control-get'),
+  computerControlSet: (enabled: boolean) => ipcRenderer.invoke('computer-control-set', enabled),
+  computerControlSetPolicy: (policy: 'per-action' | 'session-wide') =>
+    ipcRenderer.invoke('computer-control-set-policy', policy),
 });
 
 export {};

@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "@nut-tree-fork/nut-js": "^4.2.6",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "chokidar": "^3.6.0",
@@ -82,6 +83,10 @@
     "files": [
       "dist/**/*",
       "build/**/*"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "**/node_modules/@nut-tree-fork/**"
     ],
     "extraResources": [
       {

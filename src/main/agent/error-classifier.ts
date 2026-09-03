@@ -39,6 +39,7 @@ export type ErrorClass =
   | 'security_policy'
   | 'verification_failed'  // Phase 9: tool succeeded but expected outcome not observed
   | 'browser_error'        // Phase 10: browser automation error (navigation, element, crash)
+  | 'computer_error'       // Phase 11: desktop automation error (mouse, keyboard, screenshot)
   | 'unknown';
 
 export const ALL_ERROR_CLASSES: ErrorClass[] = [
@@ -53,6 +54,7 @@ export const ALL_ERROR_CLASSES: ErrorClass[] = [
   'security_policy',
   'verification_failed',
   'browser_error',
+  'computer_error',
   'unknown',
 ];
 
@@ -155,6 +157,23 @@ const BROWSER_ERROR_PATTERNS: RegExp[] = [
   /url validation failed/i,
 ];
 
+/** Computer automation errors (Phase 11) — mouse, keyboard, screenshot, native crash.
+ * Most are retryable (transient native call failures, window focus changes). */
+const COMPUTER_ERROR_PATTERNS: RegExp[] = [
+  /coordinate.*(out of bounds|invalid|negative)/i,
+  /screen.*(not found|unavailable|no display)/i,
+  /mouse.*(failed|error|not responding)/i,
+  /keyboard.*(failed|error|not responding)/i,
+  /screenshot.*(failed|error|capture failed)/i,
+  /window.*(not found|unavailable|cannot focus)/i,
+  /nut-js.*(error|failed)/i,
+  /libnut.*(error|failed|cannot load)/i,
+  /native module.*(not found|cannot load|failed)/i,
+  /hotkey.*(invalid|not supported|failed)/i,
+  /scroll.*(failed|error)/i,
+  /system window.*(blocked|denied)/i,
+];
+
 // ─── Cancellation code ───────────────────────────────────────────────────────
 
 const CANCEL_CODE = 'AGENT_CANCELLED';
@@ -254,6 +273,28 @@ export function classifyError(
         retryable: !isSecurity,  // retryable unless URL validation (security)
         neverRetry: isSecurity,  // security URL blocks never auto-retry
         reason: `Browser error: ${truncate(errorMessage)}`,
+        matchedPattern: re.source,
+      };
+    }
+  }
+
+  // 3c. Computer error (Phase 11) — mouse, keyboard, screenshot, native crash.
+  // Checked BEFORE file_path + invalid_arguments because computer errors
+  // contain phrases that would match those patterns:
+  //   - "window not found" matches file_path's "not found"
+  //   - "coordinate invalid" matches invalid_arguments' "invalid"
+  // Most computer errors are retryable (transient native call, window focus
+  // change). System window blocks are NOT retryable (security — blocked by
+  // allow-list enforcement in the main/tool layer).
+  for (const re of COMPUTER_ERROR_PATTERNS) {
+    if (re.test(errorMessage)) {
+      const isSecurity = /system window.*(blocked|denied)/i.test(errorMessage);
+      return {
+        class: 'computer_error',
+        legacyClass: isSecurity ? 'permanent' : 'transient',
+        retryable: !isSecurity,  // retryable unless system window block (security)
+        neverRetry: isSecurity,
+        reason: `Computer error: ${truncate(errorMessage)}`,
         matchedPattern: re.source,
       };
     }
@@ -385,4 +426,5 @@ export const _PATTERNS = {
   model_inference: MODEL_INFERENCE_PATTERNS,
   security_policy: SECURITY_POLICY_PATTERNS,
   browser_error: BROWSER_ERROR_PATTERNS,
+  computer_error: COMPUTER_ERROR_PATTERNS,
 };

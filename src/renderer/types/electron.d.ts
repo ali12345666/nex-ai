@@ -609,6 +609,11 @@ export interface NexAPI {
   // ── Phase 10: Browser Automation opt-in ──
   browserAutomationGet: () => Promise<{ enabled: boolean }>;
   browserAutomationSet: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>;
+
+  // ── Phase 11: Computer Control opt-in ──
+  computerControlGet: () => Promise<{ enabled: boolean; confirmationPolicy: 'per-action' | 'session-wide' }>;
+  computerControlSet: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>;
+  computerControlSetPolicy: (policy: 'per-action' | 'session-wide') => Promise<{ success: boolean; policy?: string; error?: string }>;
 }
 
 declare global {

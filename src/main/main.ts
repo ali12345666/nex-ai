@@ -697,6 +697,44 @@ async function setupIPC(): Promise<void> {
     }
   });
 
+  // ── Phase 11: Computer Control opt-in toggle ──
+  // Reads/writes the computerControlEnabled flag in persisted settings.
+  // When toggled ON, registers computer tools (available in planner immediately).
+  // When toggled OFF, future computer tool calls are blocked (existing sessions
+  // finish gracefully).
+  ipcMain.handle('computer-control-get', async () => {
+    const settings = loadState().settings || {};
+    return {
+      enabled: !!(settings.computerControlEnabled),
+      confirmationPolicy: settings.computerConfirmationPolicy || 'per-action',
+    };
+  });
+
+  ipcMain.handle('computer-control-set', async (_event, enabled: boolean) => {
+    try {
+      persistUpdateSettings({ computerControlEnabled: enabled });
+      const { setComputerEnabled, registerComputerTools } = await import('./ai/tools/computer');
+      setComputerEnabled(enabled);
+      if (enabled) {
+        registerComputerTools();
+      }
+      return { success: true, enabled };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('computer-control-set-policy', async (_event, policy: 'per-action' | 'session-wide') => {
+    try {
+      persistUpdateSettings({ computerConfirmationPolicy: policy });
+      const { setConfirmationPolicy } = await import('./ai/tools/computer');
+      setConfirmationPolicy(policy);
+      return { success: true, policy };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ── Persistence info (for Settings > About) ──
   ipcMain.handle('persistence-info', async () => {
     return {
@@ -6050,6 +6088,26 @@ app.whenReady().then(async () => {
     }
   })();
 
+  // ── Phase 11: Configure Computer Control — opt-in OFF by default ──
+  // Computer tools (screenshot_desktop, mouse_click, keyboard_type, etc.)
+  // are ONLY registered when this flag is true. Reads from persisted settings
+  // so the user's choice survives across restarts.
+  (async () => {
+    try {
+      const { configureComputerSessions } = await import('./ai/tools/computer');
+      const settings = loadState().settings || {};
+      const computerEnabled = !!(settings.computerControlEnabled);
+      const confirmationPolicy = settings.computerConfirmationPolicy || 'per-action';
+      configureComputerSessions({
+        enabled: computerEnabled,
+        confirmationPolicy,
+      });
+      console.log(`[STARTUP_TIMING] computer-control: ${computerEnabled ? 'ENABLED' : 'disabled (opt-in OFF)'} (+${Date.now() - t0}ms)`);
+    } catch (err: any) {
+      console.warn('[NEX AI] Computer control config failed (non-blocking):', err.message);
+    }
+  })();
+
   // ── Phase 6: Initialize Background Task Queue ───────────────────────────────
   // The task queue wraps agent tasks and arbitrary functions, running them
   // in the background without blocking the UI. It recovers any persisted
@@ -6243,6 +6301,14 @@ app.on('before-quit', (event) => {
     const { closeAllSessions } = require('./ai/tools/browser');
     closeAllSessions().catch(() => {});
   } catch { /* best-effort — browser module may not be loaded */ }
+
+  // Phase 11: Close all computer sessions — best-effort cleanup.
+  // Computer sessions are lightweight (no separate process), but we mark
+  // them dead so no further actions can use stale state.
+  try {
+    const { closeAllSessions: closeComputerSessions } = require('./ai/tools/computer');
+    closeComputerSessions().catch(() => {});
+  } catch { /* best-effort — computer module may not be loaded */ }
 
   // Phase 115: Stop the periodic snapshot cleanup timer.
   try {

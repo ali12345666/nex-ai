@@ -365,6 +365,46 @@ export function decideRecoveryHeuristic(ctx: RecoveryContext): RecoveryDecision 
     };
   }
 
+  // Phase 11: Computer error — mouse, keyboard, screenshot, native crash.
+  // RETRY once (transient native call failures, window focus changes),
+  // then REPLAN (different coordinates/approach), then ABORT.
+  // System window blocks (security) are permanent → ABORT immediately.
+  if (cls === 'computer_error') {
+    // Security system-window blocks never retry
+    if (ctx.errorMessage.toLowerCase().includes('system window')) {
+      return {
+        action: 'ABORT',
+        reason: `Computer system window blocked (security) — aborting`,
+        errorClass: cls,
+        backoffMs: 0,
+        llmAnalyzed: false,
+        confidence: 0.9,
+        ambiguous: false,
+      };
+    }
+    if (ctx.attempt < 1) {
+      return {
+        action: 'RETRY',
+        reason: `Computer error — retry once (attempt ${ctx.attempt + 1}/1, transient native failure)`,
+        errorClass: cls,
+        backoffMs: exponentialBackoff(ctx.attempt, cls),
+        llmAnalyzed: false,
+        confidence: 0.6,
+        ambiguous: true, // computer errors benefit from LLM analysis
+      };
+    }
+    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+    return {
+      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+      reason: `Computer error after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+      errorClass: cls,
+      backoffMs: 0,
+      llmAnalyzed: false,
+      confidence: 0.7,
+      ambiguous: false,
+    };
+  }
+
   // Unknown — RETRY once, then ABORT (preserves Phase 14 behavior)
   if (cls === 'unknown') {
     if (ctx.attempt < 1) {

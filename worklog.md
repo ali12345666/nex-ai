@@ -736,3 +736,127 @@ Stage Summary:
 - Tests: 136/136 PASS across 26 sections covering all Phase 10 requirements.
 - All changes additive — no breaking changes to Phase 6-9.
 - Files changed: 8 new (browser/ module: session-manager, helpers, 6 tools, index) + 8 modified (types, core, verification, error-classifier, recovery-engine, tool-registry, permissions, persistence, main, preload, electron.d.ts) + 1 new test file
+
+---
+Task ID: phase-11-1
+Agent: main
+Task: PHASE 11 — Computer Control / Desktop Automation (implementation + tests + verification)
+
+Work Log:
+- Compatibility verification for @nut-tree-fork/nut-js:
+  - npm package exists at @nut-tree-fork/nut-js@4.2.6 (NOT @nut-tree-fork/nut-js — the fork is @nut-tree-fork)
+  - N-API prebuilt binaries (libnut-linux/win32/darwin) — no rebuild needed for Electron
+  - TypeScript types available (dist/index.d.ts)
+  - electron-builder install-app-deps already in postinstall (handles native deps)
+  - Added asarUnpack config to package.json to ensure .node files + @nut-tree-fork are unpacked
+  - Verified packaging: libnut.node now correctly in app.asar.unpacked/
+- Installed @nut-tree-fork/nut-js (^4.2.6) via npm install
+- Extended Permission union (additive): added 'computer' to src/main/permissions/index.ts
+- Extended ToolPermission + ToolCategory (additive): added 'computer' to src/main/ai/tool-registry.ts
+- Extended ErrorClass (additive): added 'computer_error' (13th class) to src/main/agent/error-classifier.ts
+  - COMPUTER_ERROR_PATTERNS: coordinate out of bounds, screen not found, mouse/keyboard/screenshot failed, window not found, nut-js/libnut errors, native module load failed, hotkey invalid, scroll failed, system window blocked
+  - Checked BEFORE file_path + invalid_arguments (priority fix — computer errors contain phrases that match those patterns)
+  - System window blocks classified as permanent (neverRetry=true, retryable=false) — security
+  - Other computer errors classified as transient (retryable=true)
+  - Added COMPUTER_ERROR_PATTERNS to _PATTERNS export
+- Extended recovery-engine.ts (additive): added cls === 'computer_error' branch
+  - System window blocks → ABORT immediately (security)
+  - attempt 0 → RETRY (ambiguous=true, LLM fallback available)
+  - attempt 1 + more steps → REPLAN
+  - attempt 1 + last step → ABORT
+- Extended ExpectedOutcome (additive): added 'screenshot_captured_desktop' | 'window_focused' | 'element_clicked_at' types
+- Extended AgentError.errorClass union (additive): added 'computer_error'
+- Extended verification.ts (additive): handles computer outcomes
+  - screenshot_captured_desktop: checks toolResult.data.screenshot presence
+  - window_focused: compares expected title (substring) to toolResult.data.title
+  - element_clicked_at: checks toolResult.data.x + data.y presence
+  - All computer verification is READ-ONLY (never writes/executes)
+  - verifyStepOutcome now includes computerOutcome in "All checks passed" branch
+- Extended mapErrorClassToAgentErrorType: computer_error → 'tool_error' (legacy compat)
+- Extended PersistedSettings (additive): added computerControlEnabled (default false) + computerConfirmationPolicy ('per-action' default)
+- Created src/main/ai/tools/computer/session-manager.ts:
+  - ComputerSession interface (id, taskId, lastMouseX/Y, lastScreenshotAt, createdAt, lastActivityAt, alive)
+  - ComputerSessionInfo for safe (redacted) session info via getSessionInfo()
+  - configureComputerSessions({enabled, confirmationPolicy, systemWindowBlocklist}) — opt-in OFF by default
+  - setComputerEnabled, setConfirmationPolicy, isComputerEnabled, getConfirmationPolicy
+  - getOrCreateSession(taskId) — reuses existing session across steps
+  - getSession, closeSession, closeAllSessions, cleanupOrphanedSessions
+  - getSessionInfo redacted via redactObjectDeep
+  - updateSessionState, markSessionDead
+  - validateCoordinates(x, y, dims) — rejects negative + out-of-bounds
+  - getScreenDimensions() — via nut-js, caches result, fallback 1920x1080
+  - validateHotkey(hotkey) — allow-list for modifiers (Ctrl/Alt/Shift/Cmd) + keys (A-Z, 0-9, F1-F12, special keys)
+  - isSystemWindowBlocked(windowTitle) — case-insensitive substring match against blocklist
+  - addToBlocklist, removeFromBlocklist, getBlocklist — configurable
+  - isComputerCrashError(err) — detects libnut/nut-js/X11/native module crashes
+  - Default blocklist: Task Manager, Registry Editor, cmd.exe, PowerShell, Credential, Windows Security, UAC, Logon, Lock Screen, Security Center, Windows Defender, Firewall
+  - Playwright lazy-loaded via require() at first use
+- Created src/main/ai/tools/computer/helpers.ts:
+  - getTaskIdFromContext, acquireSession (pre-flight check)
+  - validateMouseCoordinates, validateHotkeyString
+  - withCrashRecovery (detects crashes, marks session dead)
+  - recordMousePosition, recordScreenshot, checkWindowBlocked, getPolicy
+- Created 6 computer tools (all require 'computer' permission):
+  - screenshot-desktop-tool.ts: screenshot_desktop (via desktopCapturer, memory-only, optional VisionEngine/LLaVA analysis)
+  - mouse-click-tool.ts: mouse_click (validates coordinates, left/right/middle buttons)
+  - mouse-move-tool.ts: mouse_move (validates coordinates)
+  - keyboard-type-tool.ts: keyboard_type (no raw text in data — only charCount)
+  - keyboard-hotkey-tool.ts: keyboard_hotkey (validates via allow-list, maps to nut-js Key constants)
+  - scroll-tool.ts: scroll (up/down, clamps amount 1-20)
+- Created src/main/ai/tools/computer/index.ts:
+  - registerComputerTools() — only registers if isComputerEnabled() (opt-in gate)
+  - listComputerToolDefinitions() — for settings panel
+  - re-exports session-manager functions
+- Wired tool-registry: registerComputerTools() called from ensureBuiltinToolsRegistered
+- Wired main.ts:
+  - configureComputerSessions called at startup (reads computerControlEnabled from settings)
+  - closeAllSessions called on before-quit (best-effort cleanup)
+  - Added 3 IPC handlers: computer-control-get, computer-control-set, computer-control-set-policy
+- Extended preload.ts: computerControlGet, computerControlSet, computerControlSetPolicy
+- Extended electron.d.ts: type declarations
+- Created tests/tools/test-phase-11-computer.ts: 26 test sections, 136 assertions covering:
+  1. Tool registration (files exist, registerComputerTools, tool-registry calls)
+  2. Permission enforcement (Permission union, all tools require 'computer', executeToolWithPermission)
+  3. Opt-in OFF (default OFF, registerComputerTools skips, settings field, main.ts reads)
+  4. Opt-in ON (setComputerEnabled toggle, IPC handlers, preload)
+  5. Confirmation policy (per-action default, setConfirmationPolicy, IPC)
+  6. Session isolation (keyed by taskId, no cross-task leakage)
+  7-12. Tools (screenshot uses desktopCapturer + VisionEngine, mouse validates coords, keyboard no raw text, hotkey validates, scroll validates)
+  13. Coordinate bounds checking (valid OK, negative rejected, out-of-bounds rejected, NaN rejected, hotkey validation)
+  14. Screenshot memory-only (base64 in data, NO permanent disk write, temp file for vision cleaned up)
+  15. System-window blocking (Task Manager, Registry Editor, cmd.exe, Credential blocked; normal apps not blocked; configurable)
+  16. Secret redaction (getSessionInfo redacts, keyboard_type no raw text)
+  17. Computer error classification (coordinate, screen, native module, system window)
+  18. Retry/replan (attempt 0 → RETRY, attempt 1 → REPLAN/ABORT, system window → ABORT)
+  19. Cancellation cleanup (closeAllSessions on shutdown)
+  20. Verification outcomes (ExpectedOutcome has computer types, screenshot_captured_desktop verified, verification.ts handles)
+  21. Task completion gate (computer tools + all completed → SUCCESS, failed → NOT)
+  22. Prompt-injection resistance (no eval/exposeFunction, hotkey allow-list)
+  23. Concurrent tasks isolation (sessions keyed by taskId, unique session ID)
+  24. Computer crash recovery (isComputerCrashError, withCrashRecovery, markSessionDead)
+  25. Regression (Phase 6-10 intact, Phase 11 additive)
+  26. Packaging/native-module compatibility (nut-js installed, native binary exists, electron-builder install-app-deps, TypeScript types, N-API prebuilt, asarUnpack config)
+- Fixed packaging issue: added asarUnpack to package.json for .node files + @nut-tree-fork/** to ensure native binaries are correctly unpacked from app.asar
+- Verified packaging: libnut.node now correctly in app.asar.unpacked/node_modules/@nut-tree-fork/libnut-linux/build/Release/
+- Verification:
+  - Typecheck (renderer + main): PASS
+  - Build: PASS
+  - Phase 11 tests: 136/136 PASS
+  - Phase 6/7/8/9/10 tests: ALL PASS (19 suites)
+  - Phase 116 regression: ALL PASS
+  - System tests: same pass/fail count before and after (no regressions)
+  - Packaging validation: libnut.node correctly unpacked in app.asar.unpacked/
+
+Stage Summary:
+- Architecture delivered: @nut-tree-fork/nut-js based computer control with opt-in OFF by default, memory-only screenshots, system-window blocking.
+- 6 computer tools (screenshot_desktop/mouse_click/mouse_move/keyboard_type/keyboard_hotkey/scroll) all require 'computer' permission, go through Permission Gate.
+- Session manager: per-task isolated sessions, reuse across steps, crash detection + recovery, cleanup on shutdown.
+- Coordinate validation: rejects negative + out-of-bounds x/y.
+- Hotkey validation: allow-list for modifiers + keys (no arbitrary input).
+- System window blocking: configurable blocklist (Task Manager, Registry Editor, cmd.exe, etc.) enforced in main/tool layer.
+- Security: read-only verification (never writes/executes), untrusted content (no eval/exposeFunction), redaction via existing redactObjectDeep, keyboard_type no raw text.
+- Recovery: computer_error error class with RETRY/REPLAN/ABORT policy; system window blocks never retry (security).
+- Verification: 3 computer ExpectedOutcome types (screenshot_captured_desktop/window_focused/element_clicked_at) handled in verification.ts.
+- Tests: 136/136 PASS across 26 sections covering all Phase 11 requirements.
+- Packaging: asarUnpack config added, libnut.node correctly unpacked.
+- All changes additive — no breaking changes to Phase 6-10.

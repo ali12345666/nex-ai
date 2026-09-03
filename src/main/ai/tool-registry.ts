@@ -44,6 +44,7 @@ export type ToolCategory =
   | 'cloudflare'    // Cloudflare API
   | 'web'           // web search, fetch
   | 'browser'       // browser automation
+  | 'computer'      // desktop automation (Phase 11) — screenshot, mouse, keyboard
   | 'knowledge'     // RAG / knowledge base
   | 'calculation'   // math, engineering calculations
   | 'vision'        // image analysis
@@ -69,7 +70,8 @@ export type ToolPermission =
   | 'git'         // git operations (read or write, scoped per-tool)
   | 'cloud'       // cloud provider operations (Cloudflare, GitHub, etc.)
   | 'admin'       // registry, drivers, firewall, install software
-  | 'browser';    // browser automation (Phase 10) — runs JS, stores cookies, can click
+  | 'browser'     // browser automation (Phase 10) — runs JS, stores cookies, can click
+  | 'computer';   // desktop automation (Phase 11) — controls OS mouse/keyboard/screen
 
 export interface ToolParameter {
   name: string;
@@ -377,4 +379,12 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   // tool list. User can enable via Settings → Browser Automation.
   const { registerBrowserTools } = await import('./tools/browser');
   registerBrowserTools();
+
+  // Phase 11: computer control tools (desktop automation)
+  // Only registered if computer control is enabled (opt-in OFF by default).
+  // The opt-in flag is checked inside registerComputerTools() — if OFF, no
+  // computer tools are registered, so they don't appear in the planner's
+  // tool list. User can enable via Settings → Computer Control.
+  const { registerComputerTools } = await import('./tools/computer');
+  registerComputerTools();
 }

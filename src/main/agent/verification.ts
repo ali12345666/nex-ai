@@ -261,11 +261,16 @@ export async function verifyStepOutcome(
     step.expectedOutcome.type === 'element_visible' ||
     step.expectedOutcome.type === 'screenshot_captured'
   );
+  const computerOutcome = step.expectedOutcome && (
+    step.expectedOutcome.type === 'screenshot_captured_desktop' ||
+    step.expectedOutcome.type === 'window_focused' ||
+    step.expectedOutcome.type === 'element_clicked_at'
+  );
   return {
     id, stepId: step.id,
     description: step.description,
     verifiedBy: step.expectedOutcome
-      ? (browserOutcome ? 'structural' : (step.expectedOutcome.type === 'file_contains' ? 'content' : 'structural'))
+      ? ((browserOutcome || computerOutcome) ? 'structural' : (step.expectedOutcome.type === 'file_contains' ? 'content' : 'structural'))
       : 'tool_call',
     status: 'verified',
     details: 'All verification conditions met',
@@ -274,7 +279,7 @@ export async function verifyStepOutcome(
     evidence,
     signals,
     level: step.expectedOutcome
-      ? (browserOutcome ? 2 : (step.expectedOutcome.type === 'file_contains' ? 3 : 2))
+      ? ((browserOutcome || computerOutcome) ? 2 : (step.expectedOutcome.type === 'file_contains' ? 3 : 2))
       : 1,
   };
 }
@@ -573,6 +578,84 @@ async function verifyExpectedOutcome(
         reason: 'screenshot_captured: screenshot present in toolResult.data',
         evidence,
         signals: [{ type: 'success', message: 'screenshot captured' }],
+      };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 11: Computer automation outcomes
+    // ═══════════════════════════════════════════════════════════════════════
+
+    case 'screenshot_captured_desktop': {
+      // Verified if screenshot_desktop tool succeeded — screenshot is in
+      // toolResult.data.screenshot (base64 PNG, memory-only).
+      const hasScreenshot = !!toolResult?.data?.screenshot;
+      evidence.push(`desktop screenshot present: ${hasScreenshot}`);
+      if (!hasScreenshot) {
+        return {
+          verified: false,
+          reason: 'screenshot_captured_desktop: no screenshot data in toolResult',
+          evidence,
+          signals: [{ type: 'error', message: 'desktop screenshot missing' }],
+        };
+      }
+      return {
+        verified: true,
+        reason: 'screenshot_captured_desktop: screenshot present in toolResult.data',
+        evidence,
+        signals: [{ type: 'success', message: 'desktop screenshot captured' }],
+      };
+    }
+
+    case 'window_focused': {
+      // Verified if we have an active window title in toolResult.data or
+      // if the tool reported success. We can't easily check the actual
+      // focused window without another native call, so we trust the tool
+      // result. The expected title is in outcome.content (substring match).
+      const expectedTitle = (outcome.content || '').toLowerCase();
+      const actualTitle = (toolResult?.data?.title || toolResult?.output || '').toLowerCase();
+      if (expectedTitle && actualTitle) {
+        const matches = actualTitle.includes(expectedTitle);
+        evidence.push(`window title contains "${expectedTitle}": ${matches}`);
+        if (!matches) {
+          return {
+            verified: false,
+            reason: `window_focused: expected title "${expectedTitle}" not found in "${actualTitle}"`,
+            evidence,
+            signals: [{ type: 'error', message: 'window title mismatch' }],
+          };
+        }
+      } else {
+        // No expected title — just verify the tool succeeded
+        evidence.push('window_focused: no expected title, tool success = verified');
+      }
+      return {
+        verified: true,
+        reason: 'window_focused: window focus confirmed',
+        evidence,
+        signals: [{ type: 'success', message: 'window focused' }],
+      };
+    }
+
+    case 'element_clicked_at': {
+      // Verified if the click tool succeeded. The coordinates are in
+      // toolResult.data.x + toolResult.data.y. We can't easily verify
+      // the visual effect without a screenshot, so we trust the tool.
+      const x = toolResult?.data?.x;
+      const y = toolResult?.data?.y;
+      evidence.push(`click at (${x}, ${y})`);
+      if (x === undefined || y === undefined) {
+        return {
+          verified: false,
+          reason: 'element_clicked_at: no coordinates in toolResult',
+          evidence,
+          signals: [{ type: 'error', message: 'click coordinates missing' }],
+        };
+      }
+      return {
+        verified: true,
+        reason: `element_clicked_at: click at (${x}, ${y}) confirmed`,
+        evidence,
+        signals: [{ type: 'success', message: 'click confirmed' }],
       };
     }
 

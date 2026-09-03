@@ -53,6 +53,14 @@ export interface PersistedSettings {
   // OFF by default — user must explicitly enable in Settings → Browser Automation.
   // When false, no browser tools are registered, no browser sessions created.
   browserAutomationEnabled?: boolean;
+  // Phase 11: Computer Control (Desktop Automation) opt-in flag.
+  // OFF by default — user must explicitly enable in Settings → Computer Control.
+  // When false, no computer tools are registered, no computer sessions created.
+  computerControlEnabled?: boolean;
+  // Phase 11: Confirmation policy for computer actions.
+  // 'per-action' (default) — every click/type/hotkey/scroll needs user confirmation.
+  // 'session-wide' — user approves once per session, then no per-action prompts.
+  computerConfirmationPolicy?: 'per-action' | 'session-wide';
 }
 
 export interface PersistedState {

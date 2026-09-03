@@ -1793,6 +1793,9 @@ function mapErrorClassToAgentErrorType(
     case 'browser_error':
     // Phase 10: browser errors map to 'tool_error' (browser tool didn't
     // achieve expected outcome — navigation failed, element not found, etc.).
+    case 'computer_error':
+    // Phase 11: computer errors map to 'tool_error' (computer tool didn't
+    // achieve expected outcome — mouse/keyboard/screenshot failed).
     case 'security_policy':
     case 'invalid_arguments':
     case 'file_path':
