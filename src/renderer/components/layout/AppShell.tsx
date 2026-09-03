@@ -211,11 +211,18 @@ export default function AppShell() {
       console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${ev?.source || 'conversation'}`);
 
       // Map conversation state to Orb state
+      // Phase 116 JARVIS: Extended with new states (working, success, cancelled)
       const orbStateMap: Record<string, string> = {
         idle: 'idle',
+        initializing: 'initializing',
+        ready: 'ready',
         listening: 'listening',
         thinking: 'thinking',
         speaking: 'speaking',
+        working: 'working',
+        active: 'active',
+        success: 'success',
+        cancelled: 'cancelled',
         interrupted: 'active',
         error: 'error',
       };
@@ -223,18 +230,18 @@ export default function AppShell() {
       console.log(`[ORB_TRACE_RENDERER] mapped orbState=${orbState}`);
 
       // Drive the voiceController's state machine with the main-side states.
-      // Use 'engine' as the condition key for engine states, 'main' for
-      // conversation states. The highest-priority active condition wins.
+      // Use 'engine' as the condition key for engine states.
+      // Phase 116: Map new states to VoiceState equivalents.
       if (orbState === 'listening') {
         voiceController.setCondition('engine', 'listening');
-      } else if (orbState === 'thinking' || orbState === 'active') {
+      } else if (orbState === 'thinking' || orbState === 'active' || orbState === 'working') {
         voiceController.setCondition('engine', 'thinking');
       } else if (orbState === 'speaking') {
         voiceController.setCondition('engine', 'speaking');
       } else if (orbState === 'error') {
         voiceController.setCondition('engine', 'error');
       } else {
-        // idle — clear the engine condition so Orb returns to idle
+        // idle / ready / success / cancelled — clear the engine condition
         voiceController.clearCondition('engine');
       }
 

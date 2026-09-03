@@ -341,6 +341,13 @@ export default function NexChatPanel() {
     return () => voiceController.setThinking(false);
   }, [isGenerating]);
 
+  // Phase 116 JARVIS: Drive Orb state from agent events
+  // WORKING: when agent starts executing tools (step_started, tool_call_started)
+  // SUCCESS: when task completes successfully (task_completed)
+  // CANCELLED: when user cancels (task_cancelled)
+  // THINKING: when planning starts (planning_started)
+  // This runs INSIDE the agent event listener (below) via voiceController.setCondition
+
   // ── Streaming listener ──
   useEffect(() => {
     const off = window.nexAPI.onChatToken((ev) => {
@@ -372,12 +379,22 @@ export default function NexChatPanel() {
         if (!last || last.metadata?.agentTaskId !== taskId) return prev;
 
         switch (eventType) {
+          case 'planning_started':
+            // Phase 116 JARVIS: Orb THINKING while planning
+            voiceController.setCondition('agent', 'thinking');
+            next[next.length - 1] = { ...last, content: '🧠 Agent is thinking...\n\n📋 Planning approach...' };
+            break;
           case 'planning_completed':
           case 'plan_created':
+            // Phase 116 JARVIS: Orb WORKING when tools start executing
+            voiceController.setCondition('agent', 'thinking');
             next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n📋 Plan created. Executing steps...' };
             break;
           case 'step_started':
           case 'tool_call':
+          case 'tool_call_started':
+            // Phase 116 JARVIS: Orb WORKING (tool execution)
+            voiceController.setCondition('agent', 'thinking');
             next[next.length - 1] = {
               ...last,
               content: `🧠 Agent is working...\n\n🔧 Running ${event.toolName || event.step?.toolName || 'tool'}...`,
@@ -451,6 +468,8 @@ export default function NexChatPanel() {
                 metadata: { ...last.metadata, completed: true },
               };
             }
+            // Phase 116 JARVIS: Clear agent condition → Orb returns to ready/idle
+            voiceController.clearCondition('agent');
             // Phase 110: Clear active agent task + reset UI state
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
@@ -466,6 +485,8 @@ export default function NexChatPanel() {
               status: 'error',
               metadata: { ...last.metadata, failed: true, error: event.error || event.message },
             };
+            // Phase 116 JARVIS: Orb → error state
+            voiceController.setCondition('agent', 'error');
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
@@ -482,6 +503,8 @@ export default function NexChatPanel() {
               status: 'complete',
               metadata: { ...last.metadata, cancelled: true },
             };
+            // Phase 116 JARVIS: Clear agent condition → Orb returns to idle/ready
+            voiceController.clearCondition('agent');
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);

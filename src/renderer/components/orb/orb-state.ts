@@ -1,20 +1,79 @@
 /**
- * NEX AI Orb State Types (UI-14: Cosmic Dynamic Orb)
+ * NEX AI Orb State Types (UI-14 + Phase 116 JARVIS)
  *
  * State → Visual engine. Pure function — safe to call every animation frame.
  *
- * UI-14 changes:
- *   - Extended NexOrbVisual with: cohesion, dispersion, turbulence,
- *     waveAmplitude, waveFrequency, corePulse, opacity, particleScale.
- *   - Added 17-color deterministic palette mapping (§11).
- *   - State → color is deterministic (NOT random).
- *   - Smooth interpolation handled by caller (lerp in useFrame).
+ * Phase 116 JARVIS additions:
+ *   - New states: INITIALIZING, READY, WORKING, SUCCESS, CANCELLED
+ *   - State transition validation (monotonic — no backward jumps to terminal)
+ *   - Mapping from VoiceService/Agent/Chat states → Orb states
  *
  * Architecture (§12): Orb rendering logic is decoupled from state logic.
  * computeOrbVisual() is the single source of truth for visual params.
+ *
+ * State Machine:
+ *   IDLE → INITIALIZING → READY → LISTENING → THINKING → SPEAKING → READY
+ *                     ↓                     ↓               ↓
+ *                   ERROR                 WORKING         CANCELLED
+ *                     ↓                     ↓               ↓
+ *                   IDLE                  SUCCESS          READY
+ *                                          → READY
  */
 
-export type NexOrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'active' | 'error' | 'offline' | 'installing';
+export type NexOrbState =
+  | 'idle'
+  | 'initializing'
+  | 'ready'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'active'      // Phase 116: renamed concept = WORKING
+  | 'working'     // Phase 116: WORKING (agent executing tools)
+  | 'success'     // Phase 116: task completed successfully
+  | 'error'
+  | 'cancelled'   // Phase 116: task cancelled by user
+  | 'offline'
+  | 'installing';
+
+// ─── State Transition Map ──────────────────────────────────────────────────
+// Defines valid state transitions to prevent race conditions and
+// contradictory state displays. Terminal states can't transition back
+// to active states without going through IDLE/READY first.
+const VALID_TRANSITIONS: Record<string, NexOrbState[]> = {
+  idle: ['initializing', 'ready', 'listening', 'error', 'offline'],
+  initializing: ['ready', 'error', 'idle'],
+  ready: ['listening', 'thinking', 'working', 'idle', 'offline'],
+  listening: ['thinking', 'speaking', 'idle', 'ready', 'error', 'cancelled'],
+  thinking: ['speaking', 'working', 'idle', 'ready', 'error', 'cancelled'],
+  speaking: ['ready', 'listening', 'idle', 'error', 'cancelled'],
+  active: ['ready', 'idle', 'error', 'success', 'cancelled'], // legacy alias
+  working: ['ready', 'idle', 'error', 'success', 'cancelled'],
+  success: ['idle', 'ready'],
+  error: ['idle', 'ready'],
+  cancelled: ['idle', 'ready', 'listening'],
+  offline: ['idle', 'initializing'],
+  installing: ['ready', 'idle', 'error'],
+};
+
+/**
+ * Validate a state transition. Returns true if the transition is allowed.
+ * Unknown 'from' states allow all transitions (safe fallback).
+ */
+export function isValidOrbTransition(from: NexOrbState, to: NexOrbState): boolean {
+  if (from === to) return true; // no-op transitions always allowed
+  const allowed = VALID_TRANSITIONS[from] || [];
+  return allowed.includes(to);
+}
+
+/**
+ * Safely transition to a new state. Returns the new state if valid,
+ * or the current state if the transition is invalid (logs a warning).
+ */
+export function safeOrbTransition(current: NexOrbState, to: NexOrbState): NexOrbState {
+  if (isValidOrbTransition(current, to)) return to;
+  console.warn(`[ORB_STATE] Invalid transition: ${current} → ${to} — keeping ${current}`);
+  return current;
+}
 
 export interface NexOrbVisual {
   state: NexOrbState;
@@ -46,13 +105,18 @@ export interface NexOrbVisual {
  */
 export const STATE_COLOR_PALETTE: Record<NexOrbState, string> = {
   idle: '#00e5ff',        // Cyan — calm, ready
+  initializing: '#f59e0b', // Amber — loading model, warming up
+  ready: '#10b981',       // Emerald — fully ready, AI available
   listening: '#3b82f6',   // Blue — receiving input
   thinking: '#8b5cf6',    // Violet/Purple — internal processing
   speaking: '#22c55e',    // Green — output (speaking)
   active: '#ff2d55',       // Red/Crimson — working hard
+  working: '#f97316',      // Orange — agent executing tools
+  success: '#10b981',      // Emerald — task completed successfully
   error: '#ef4444',        // Red — error (muted)
+  cancelled: '#64748b',    // Slate — cancelled by user
   offline: '#64748b',      // Slate — dormant
-  installing: '#f59e0b',   // Amber — installing/updating (Phase 50)
+  installing: '#f59e0b',   // Amber — installing/updating
 };
 
 /**
@@ -134,6 +198,114 @@ export function computeOrbVisual(state: NexOrbState, audioLevel: number): NexOrb
       waveFrequency = 0.8;
       opacity = 0.7;
       break;
+
+    // ── Phase 116 JARVIS: New states ──────────────────────────────────
+    case 'initializing':
+      // INITIALIZING: warm pulsing, amber — model loading / warming up
+      scale = 1.02 + level * 0.03;
+      particleSpeed = 1.2;
+      particleScale = 1.05;
+      colorShift = 0.3;
+      glowIntensity = 0.9 + level * 0.2;
+      coreIntensity = 0.7 + level * 0.15;
+      corePulse = 0.4;
+      ringSpeed = 0.8;
+      ambientDrift = 0.7;
+      pulseSpeed = 0.8; // slow steady pulse
+      stateColor = '#f59e0b'; // amber
+      cohesion = 0.85;
+      dispersion = 0.15;
+      turbulence = 0.1;
+      waveAmplitude = 0.04;
+      waveFrequency = 1.0;
+      opacity = 0.75;
+      break;
+
+    case 'ready':
+      // READY: emerald, stable, confident — AI is ready to respond
+      scale = 1.01 + level * 0.02;
+      particleSpeed = 1.0 + level * 0.2;
+      particleScale = 1.0;
+      colorShift = 0.1;
+      glowIntensity = 0.85;
+      coreIntensity = 0.65 + level * 0.1;
+      corePulse = 0.35;
+      ringSpeed = 0.7;
+      ambientDrift = 0.6;
+      pulseSpeed = 0;
+      stateColor = '#10b981'; // emerald
+      cohesion = 0.88;
+      dispersion = 0.12;
+      turbulence = 0.06;
+      waveAmplitude = 0.035;
+      waveFrequency = 0.9;
+      opacity = 0.72;
+      break;
+
+    case 'working':
+      // WORKING: orange, energetic, tool execution — agent is doing things
+      scale = 1.08 + level * 0.04;
+      particleSpeed = 2.5;
+      particleScale = 1.18;
+      colorShift = 0.6;
+      glowIntensity = 1.3;
+      coreIntensity = 1.1;
+      corePulse = 0.65;
+      ringSpeed = 2.0;
+      ambientDrift = 1.6;
+      pulseSpeed = 0.5;
+      stateColor = '#f97316'; // orange
+      cohesion = 0.5;
+      dispersion = 0.6;
+      turbulence = 0.5;
+      waveAmplitude = 0.09;
+      waveFrequency = 2.8;
+      opacity = 0.88;
+      break;
+
+    case 'success':
+      // SUCCESS: emerald, brief glow — task completed successfully
+      scale = 1.05;
+      particleSpeed = 1.5;
+      particleScale = 1.08;
+      colorShift = 0.15;
+      glowIntensity = 1.2;
+      coreIntensity = 1.0;
+      corePulse = 0.5;
+      ringSpeed = 1.0;
+      ambientDrift = 0.8;
+      pulseSpeed = 0;
+      stateColor = '#10b981'; // emerald
+      cohesion = 0.8;
+      dispersion = 0.2;
+      turbulence = 0.15;
+      waveAmplitude = 0.05;
+      waveFrequency = 1.2;
+      opacity = 0.85;
+      break;
+
+    case 'cancelled':
+      // CANCELLED: slate, dimmed — user stopped the task
+      scale = 0.99;
+      particleSpeed = 0.6;
+      particleScale = 0.92;
+      colorShift = 0.1;
+      glowIntensity = 0.5;
+      coreIntensity = 0.4;
+      corePulse = 0.2;
+      ringSpeed = 0.4;
+      ambientDrift = 0.5;
+      pulseSpeed = 0;
+      stateColor = '#64748b'; // slate
+      cohesion = 0.7;
+      dispersion = 0.3;
+      turbulence = 0.1;
+      waveAmplitude = 0.03;
+      waveFrequency = 0.6;
+      opacity = 0.6;
+      break;
+
+    // ── Existing states (preserved) ────────────────────────────────────
     case 'listening':
       // §8 LISTENING: slightly open, sensitive, audio wave receptive.
       // Amplified audio reactivity (was too subtle — level*0.06 scale change
