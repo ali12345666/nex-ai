@@ -1,28 +1,44 @@
 /**
- * NEX AI — Voice Service (Phase 30)
+ * NEX AI — Voice Service (Phase 30 + Phase 116 JARVIS)
  *
  * Always-ready voice system with Web Audio API microphone analysis +
  * browser SpeechRecognition for STT + SpeechSynthesis for TTS.
  *
- * Architecture (per directive):
+ * Phase 116 JARVIS additions:
+ *   - Continuous Conversation mode (auto-restart listening after TTS)
+ *   - Push-to-talk mode (manual start/stop)
+ *   - Disabled mode (no voice)
+ *   - Wake Word detection ("NEX") — simple regex-based, fully local
+ *   - VAD (Voice Activity Detection) for auto speech-end detection
+ *   - Barge-in support (stop TTS when user starts speaking)
+ *
+ * Architecture:
  *   VoiceService (this module)
  *       ├── microphone: getUserMedia + AudioContext + AnalyserNode
  *       ├── audio level: RMS → noise gate → attack/release smoothing → 0..1
- *       ├── STT: webkitSpeechRecognition (Chromium native — no cloud in Electron)
+ *       ├── VAD: speech/silence detection → auto-transcribe
+ *       ├── STT: webkitSpeechRecognition (fallback) / whisper (main process)
  *       ├── TTS: SpeechSynthesis (local OS voices — offline capable)
+ *       ├── Wake Word: regex match on partial transcripts
  *       └── state: state machine → callbacks → VoiceController
- *
- * The Orb and Chat NEVER import this directly — they receive
- * normalized values and state via the VoiceController.
  */
 
 export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'offline';
+
+// Phase 116: Voice mode controls how listening works
+export type VoiceMode = 'continuous' | 'push-to-talk' | 'disabled';
 
 export interface VoiceConfig {
   noiseFloor: number;
   attackSpeed: number;
   releaseSpeed: number;
   language: string;
+  /** Phase 116: Wake word to listen for before activating commands */
+  wakeWord: string;
+  /** Phase 116: VAD silence threshold for speech-end detection */
+  vadSilenceThreshold: number;
+  /** Phase 116: VAD silence duration (ms) before declaring speech ended */
+  vadSilenceDurationMs: number;
 }
 
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
@@ -30,6 +46,9 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   attackSpeed: 0.4,
   releaseSpeed: 0.08,
   language: 'en-US',
+  wakeWord: 'nex',
+  vadSilenceThreshold: 0.02,
+  vadSilenceDurationMs: 1200,
 };
 
 export interface VoiceCallbacks {
@@ -39,6 +58,8 @@ export interface VoiceCallbacks {
   onFinalTranscript?: (text: string) => void;
   onPermissionChange?: (granted: boolean | null) => void;
   onError?: (message: string) => void;
+  /** Phase 116: Called when wake word is detected */
+  onWakeWord?: () => void;
 }
 
 const STATE_PRIORITY: Record<VoiceState, number> = {
@@ -62,6 +83,15 @@ export class VoiceService {
   private _shouldRestartSTT = false;
   private _ttsActive = false;
 
+  // Phase 116: Voice mode + wake word + VAD + barge-in
+  private _mode: VoiceMode = 'continuous';
+  private _wakeWordDetected = false;
+  private _wakeWordBuffer = '';
+  private _vadState: 'silence' | 'speech' = 'silence';
+  private _vadSilenceStart = 0;
+  private _vadSpeechStart = 0;
+  private _bargeInEnabled = true;
+
   // PCM audio capture for LocalVoiceEngine (whisper STT)
   private _scriptProcessor: ScriptProcessorNode | null = null;
   private _chunksSent = 0;
@@ -83,31 +113,49 @@ export class VoiceService {
   get micPermission(): boolean | null { return this._micPermission; }
   get isListening(): boolean { return this._sttActive; }
   get isSpeaking(): boolean { return this._ttsActive; }
+  get mode(): VoiceMode { return this._mode; }
+
+  /** Phase 116: Set voice mode (continuous / push-to-talk / disabled) */
+  setMode(mode: VoiceMode): void {
+    const prevMode = this._mode;
+    this._mode = mode;
+    console.log(`[VOICE] Mode changed: ${prevMode} → ${mode}`);
+
+    if (mode === 'disabled') {
+      this.stopListening();
+      this.stopSpeaking();
+    } else if (mode === 'continuous' && prevMode !== 'continuous') {
+      // Auto-start continuous listening
+      this.startListening().catch(() => {});
+    } else if (mode === 'push-to-talk' && prevMode === 'continuous') {
+      // Stop continuous listening — user will push to talk
+      this.stopListening();
+    }
+  }
 
   async enableMicrophone(): Promise<boolean> {
     if (this._stream) return true;
     try {
       this._micPermission = null; // pending
-      console.log(`[VOICE_AUDIO_DEBUG] calling getUserMedia...`);
+      console.log(`[VOICE] calling getUserMedia...`);
       this._stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       this._micPermission = true;
       this.callbacks.onPermissionChange?.(true);
-      console.log(`[VOICE_AUDIO_DEBUG] getUserMedia resolved — stream tracks: ${this._stream.getTracks().length}`);
+      console.log(`[VOICE] getUserMedia resolved — stream tracks: ${this._stream.getTracks().length}`);
 
       this._audioContext = new AudioContext();
-      console.log(`[VOICE_AUDIO_DEBUG] AudioContext created — state: ${this._audioContext.state}`);
+      console.log(`[VOICE] AudioContext created — state: ${this._audioContext.state}`);
 
       // CRITICAL: AudioContext starts in 'suspended' state in Electron.
-      // Must resume it before ScriptProcessorNode will fire onaudioprocess.
       if (this._audioContext.state === 'suspended') {
-        console.log(`[VOICE_AUDIO_DEBUG] AudioContext suspended — calling resume()...`);
+        console.log(`[VOICE] AudioContext suspended — calling resume()...`);
         try {
           await this._audioContext.resume();
-          console.log(`[VOICE_AUDIO_DEBUG] AudioContext resumed — state: ${this._audioContext.state}`);
+          console.log(`[VOICE] AudioContext resumed — state: ${this._audioContext.state}`);
         } catch (err: any) {
-          console.warn(`[VOICE_AUDIO_DEBUG] AudioContext resume failed: ${err?.message}`);
+          console.warn(`[VOICE] AudioContext resume failed: ${err?.message}`);
         }
       }
 
@@ -120,20 +168,19 @@ export class VoiceService {
 
       // ── PCM audio capture for LocalVoiceEngine ──────────────────────────
       this._scriptProcessor = this._audioContext.createScriptProcessor(4096, 1, 1);
-      console.log(`[VOICE_AUDIO_DEBUG] ScriptProcessorNode created — bufferSize: ${this._scriptProcessor.bufferSize}`);
+      console.log(`[VOICE] ScriptProcessorNode created — bufferSize: ${this._scriptProcessor.bufferSize}`);
 
       this._audioProcessEventCount = 0;
       this._scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
         this._audioProcessEventCount++;
         if (!this._ipcFeedingEnabled) {
-          // Log first few events even when disabled, to prove the processor is firing
           if (this._audioProcessEventCount <= 3) {
-            console.log(`[VOICE_AUDIO_DEBUG] onaudioprocess firing (#${this._audioProcessEventCount}) but IPC feeding disabled`);
+            console.log(`[VOICE] onaudioprocess (#${this._audioProcessEventCount}) but IPC feeding disabled`);
           }
           return;
         }
         const inputBuffer = event.inputBuffer;
-        const channelData = inputBuffer.getChannelData(0); // Float32Array, mono
+        const channelData = inputBuffer.getChannelData(0);
 
         // Downsample from 48kHz to 16kHz
         const downsampled = this.downsampleTo16k(channelData);
@@ -153,18 +200,18 @@ export class VoiceService {
           const ipcAvailable = !!(window as any).nexAPI?.voiceFeedAudioChunk;
           if (!ipcAvailable) {
             if (this._chunksSent <= 3) {
-              console.warn(`[VOICE_AUDIO_DEBUG] voiceFeedAudioChunk NOT available on window.nexAPI!`);
+              console.warn(`[VOICE] voiceFeedAudioChunk NOT available on window.nexAPI!`);
             }
             return;
           }
           window.nexAPI!.voiceFeedAudioChunk!(chunkBuffer);
         } catch (err: any) {
           if (this._chunksSent <= 3) {
-            console.warn(`[VOICE_AUDIO_DEBUG] voiceFeedAudioChunk error: ${err?.message}`);
+            console.warn(`[VOICE] voiceFeedAudioChunk error: ${err?.message}`);
           }
         }
 
-        // Also send the audio level (RMS) for VAD + Orb animation
+        // Compute audio level (RMS) for VAD + Orb animation
         let sum = 0;
         for (let i = 0; i < downsampled.length; i++) {
           sum += downsampled[i] * downsampled[i];
@@ -179,17 +226,15 @@ export class VoiceService {
         try {
           window.nexAPI?.voiceFeedAudioLevel?.(this._smoothedLevel);
         } catch { /* best-effort */ }
+
+        // Phase 116: VAD (Voice Activity Detection) — detect speech start/end
+        this.processVAD(normalized);
       };
-      // Connect: source → scriptProcessor → destination
       source.connect(this._scriptProcessor);
       this._scriptProcessor.connect(this._audioContext.destination);
-      console.log(`[VOICE_AUDIO_DEBUG] ScriptProcessorNode connected — source→processor→destination`);
+      console.log(`[VOICE] ScriptProcessorNode connected — source→processor→destination`);
 
       this.startAudioLoop();
-
-      // Log the initial [VOICE_AUDIO] + [VOICE_AUDIO_DEBUG] blocks
-      this.logVoiceAudio();
-      this.logVoiceAudioDebug();
       return true;
     } catch (err: any) {
       this._micPermission = false;
@@ -197,17 +242,58 @@ export class VoiceService {
       const msg = err.name === 'NotAllowedError' ? 'Microphone access denied'
         : err.name === 'NotFoundError' ? 'No microphone found'
         : `Microphone error: ${err.message}`;
-      console.error(`[VOICE_AUDIO_DEBUG] enableMicrophone failed: ${msg} (name=${err.name})`);
+      console.error(`[VOICE] enableMicrophone failed: ${msg} (name=${err.name})`);
       this.callbacks.onError?.(msg);
-      this.logVoiceAudio();
-      this.logVoiceAudioDebug();
       return false;
     }
   }
 
   /**
+   * Phase 116: Voice Activity Detection — detects speech start and end
+   * based on audio level. When speech ends (silence after speech), we
+   * know the user finished their sentence and can process the transcript.
+   */
+  private processVAD(level: number): void {
+    const now = Date.now();
+    const isLoud = level > this.config.vadSilenceThreshold;
+
+    if (isLoud) {
+      // Speech detected
+      if (this._vadState === 'silence') {
+        this._vadState = 'speech';
+        this._vadSpeechStart = now;
+        this._vadSilenceStart = 0;
+
+        // Phase 116: Barge-in — if TTS is active and user starts speaking,
+        // immediately stop TTS to let the user interrupt
+        if (this._ttsActive && this._bargeInEnabled) {
+          console.log('[VOICE] Barge-in: user speaking during TTS — stopping TTS');
+          this.stopSpeaking();
+          // Restart STT if in continuous mode
+          if (this._mode === 'continuous' && !this._sttActive) {
+            this.startSTT();
+            this.setCondition('mic', 'listening');
+            this._shouldRestartSTT = true;
+          }
+        }
+      }
+    } else {
+      // Silence detected
+      if (this._vadState === 'speech') {
+        if (this._vadSilenceStart === 0) {
+          this._vadSilenceStart = now;
+        }
+        // If silence lasts long enough, declare speech ended
+        if (now - this._vadSilenceStart >= this.config.vadSilenceDurationMs) {
+          this._vadState = 'silence';
+          console.log('[VOICE] VAD: speech ended (silence detected)');
+        }
+      }
+    }
+  }
+
+  /**
    * Downsample Float32 audio from 48kHz to 16kHz by taking every 3rd sample.
-   * This is a simple decimation (no low-pass filter, but acceptable for STT).
    */
   private downsampleTo16k(input: Float32Array): Float32Array {
     const ratio = 3; // 48000 / 16000
@@ -221,7 +307,6 @@ export class VoiceService {
 
   /**
    * Enable/disable IPC feeding of PCM audio to the main process.
-   * When the conversation is active, this is enabled; when stopped, disabled.
    */
   setIPCFeedingEnabled(enabled: boolean): void {
     this._ipcFeedingEnabled = enabled;
@@ -229,52 +314,15 @@ export class VoiceService {
       this._chunksSent = 0;
     }
     console.log(`[VOICE_AUDIO] IPC feeding ${enabled ? 'enabled' : 'disabled'}`);
-    this.logVoiceAudio();
-  }
-
-  /**
-   * Log the [VOICE_AUDIO] diagnostic block.
-   */
-  logVoiceAudio(): void {
-    console.log(`[VOICE_AUDIO]`);
-    console.log(`  microphonePermission=${this._micPermission === null ? 'unknown' : this._micPermission ? 'granted' : 'denied'}`);
-    console.log(`  streamActive=${!!this._stream}`);
-    console.log(`  audioContextState=${this._audioContext?.state || 'none'}`);
-    console.log(`  chunksSent=${this._chunksSent}`);
-    console.log(`  lastChunkSize=${this._lastChunkSize}`);
-    console.log(`  ipcFeedingEnabled=${this._ipcFeedingEnabled}`);
-  }
-
-  /**
-   * Log the [VOICE_AUDIO_DEBUG] diagnostic block — detailed pipeline trace.
-   * Shows exactly where the audio pipeline is broken:
-   *   permission → stream → audioContext → processor → onaudioprocess → IPC
-   */
-  logVoiceAudioDebug(): void {
-    const ipcAvailable = !!(window as any).nexAPI?.voiceFeedAudioChunk;
-    const streamTracks = this._stream ? this._stream.getTracks().length : 0;
-    console.log(`[VOICE_AUDIO_DEBUG]`);
-    console.log(`  permission=${this._micPermission === null ? 'pending' : this._micPermission ? 'granted' : 'denied'}`);
-    console.log(`  streamTracks=${streamTracks}`);
-    console.log(`  audioContext=${this._audioContext?.state || 'none'}`);
-    console.log(`  processorCreated=${!!this._scriptProcessor}`);
-    console.log(`  audioProcessEvents=${this._audioProcessEventCount}`);
-    console.log(`  ipcAvailable=${ipcAvailable}`);
-    if (this._audioContext && this._audioContext.state !== 'running') {
-      console.warn(`[VOICE_AUDIO_DEBUG] WARNING: AudioContext is ${this._audioContext.state} — onaudioprocess will NOT fire until resumed`);
-    }
-    if (!ipcAvailable) {
-      console.warn(`[VOICE_AUDIO_DEBUG] WARNING: window.nexAPI.voiceFeedAudioChunk is NOT available — IPC bridge missing`);
-    }
   }
 
   async startListening(): Promise<void> {
+    if (this._mode === 'disabled') return;
     if (!this._stream) {
       const ok = await this.enableMicrophone();
       if (!ok) { this.setCondition('mic', 'error'); return; }
     }
     if (this._ttsActive) this.stopSpeaking();
-    // Enable IPC feeding so PCM audio reaches the LocalVoiceEngine
     this.setIPCFeedingEnabled(true);
     this.startSTT();
     this.setCondition('mic', 'listening');
@@ -283,7 +331,6 @@ export class VoiceService {
 
   stopListening(): void {
     this.stopSTT();
-    // Disable IPC feeding when not listening
     this.setIPCFeedingEnabled(false);
     this.clearCondition('mic');
     this._shouldRestartSTT = false;
@@ -295,32 +342,38 @@ export class VoiceService {
       return;
     }
     window.speechSynthesis.cancel();
-    // UI-14 §4: Pause STT during TTS to prevent self-hearing (ASR picking up
-    // NEX's own TTS output as a user command). _shouldRestartSTT stays true
-    // so STT auto-resumes after TTS ends (via utterance.onend → startSTT()).
+
+    // Phase 116: Pause STT during TTS to prevent self-hearing.
+    // In continuous mode, _shouldRestartSTT stays true so STT auto-resumes.
     if (this._sttActive) {
       this.stopSTT();
-      // Keep _shouldRestartSTT true so onend handler restarts listening.
-      this._shouldRestartSTT = true;
+      if (this._mode === 'continuous') {
+        this._shouldRestartSTT = true;
+      }
     }
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = this.config.language;
     utterance.onstart = () => { this._ttsActive = true; this.setCondition('tts', 'speaking'); };
     utterance.onend = () => {
       this._ttsActive = false;
       this.clearCondition('tts');
-      // UI-14 §3+§4: Auto-resume listening after TTS ends (Always-Ready Voice).
-      // _shouldRestartSTT was kept true during TTS, so startSTT() will run.
-      if (this._shouldRestartSTT && !this._sttActive) {
-        setTimeout(() => { if (this._shouldRestartSTT) this.startSTT(); }, 200);
+      // Phase 116: Auto-resume listening after TTS in continuous mode
+      if (this._mode === 'continuous' && this._shouldRestartSTT && !this._sttActive) {
+        setTimeout(() => {
+          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
+          this.setCondition('mic', 'listening');
+        }, 200);
       }
     };
     utterance.onerror = () => {
       this._ttsActive = false;
       this.clearCondition('tts');
-      // UI-14 §4: Resume listening even on TTS error (don't leave voice dead).
-      if (this._shouldRestartSTT && !this._sttActive) {
-        setTimeout(() => { if (this._shouldRestartSTT) this.startSTT(); }, 200);
+      if (this._mode === 'continuous' && this._shouldRestartSTT && !this._sttActive) {
+        setTimeout(() => {
+          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
+          this.setCondition('mic', 'listening');
+        }, 200);
       }
     };
     window.speechSynthesis.speak(utterance);
@@ -395,10 +448,9 @@ export class VoiceService {
         ? this.config.attackSpeed : this.config.releaseSpeed;
       this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
       this.callbacks.onAudioLevel?.(this._smoothedLevel);
-      // [ORB_AUDIO_DEBUG] — log audio level every 60 frames (~1/sec)
       this._audioLevelLogCount++;
       if (this._audioLevelLogCount % 60 === 0) {
-        console.log(`[ORB_AUDIO_DEBUG] VoiceService: rms=${rms.toFixed(4)} smoothed=${this._smoothedLevel.toFixed(4)} normalized=${normalized.toFixed(4)}`);
+        console.log(`[ORB_AUDIO] VoiceService: rms=${rms.toFixed(4)} smoothed=${this._smoothedLevel.toFixed(4)}`);
       }
       this._rafId = requestAnimationFrame(loop);
     };
@@ -415,24 +467,11 @@ export class VoiceService {
   private startSTT(): void {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
-      // Phase 116: Browser SpeechRecognition is NOT available in Electron
-      // (Google removed the cloud speech API from Chromium). Previously this
-      // failed silently with 'Speech recognition unavailable'. Now we log
-      // clearly and rely on the main-side whisper STT path instead.
-      //
-      // The whisper path works as follows:
-      //   1. Audio is captured by this VoiceService (getUserMedia + ScriptProcessor)
-      //   2. PCM chunks are sent via voiceFeedAudioChunk IPC to the main process
-      //   3. LocalVoiceEngine.feedAudioChunk() forwards to whisper provider
-      //   4. Whisper transcribes → onFinalTranscript → conversation.feedTranscript()
-      //   5. AppShell.tsx listens to voice-conversation-user IPC → dispatches
-      //      nex:voice-transcript → NexChatPanel sends to AI
-      //
-      // So we DON'T fail here — we just don't start browser STT. The mic
-      // capture + IPC feeding (already enabled in startListening) handles
-      // the audio path. The whisper STT runs in the main process.
-      console.log('[VOICE] Browser SpeechRecognition not available — using main-side whisper STT path');
-      this._sttActive = true; // mark as active so state shows 'listening'
+      // Phase 116: Browser SpeechRecognition is NOT available in Electron.
+      // Use the main-side whisper STT path instead.
+      // The whisper path: mic → IPC → whisper → transcript → voice-conversation-user IPC
+      console.log('[VOICE] Browser STT not available — using main-side whisper STT');
+      this._sttActive = true;
       this.setCondition('mic', 'listening');
       return;
     }
@@ -449,10 +488,32 @@ export class VoiceService {
         if (result.isFinal) final += result[0].transcript;
         else interim += result[0].transcript;
       }
-      if (interim) this.callbacks.onPartialTranscript?.(interim);
+      if (interim) {
+        // Phase 116: Check for wake word in interim results
+        this.checkWakeWord(interim);
+        this.callbacks.onPartialTranscript?.(interim);
+      }
       if (final) {
         console.log(`[VOICE] browser STT transcript: "${final.trim().substring(0, 100)}"`);
-        this.callbacks.onFinalTranscript?.(final.trim());
+        // Phase 116: Check for wake word in final results
+        const wakeWordFound = this.checkWakeWord(final);
+        if (wakeWordFound) {
+          // Strip the wake word from the transcript
+          const stripped = final.trim().replace(
+            new RegExp(`\\b${this.config.wakeWord}\\b`, 'i'),
+            ''
+          ).trim();
+          if (stripped) {
+            this.callbacks.onFinalTranscript?.(stripped);
+          } else {
+            // Just the wake word — signal that NEX should respond "بله؟"
+            this.callbacks.onWakeWord?.();
+          }
+        } else if (this._wakeWordDetected || this._mode === 'continuous') {
+          // In continuous mode or after wake word, send all transcripts
+          this.callbacks.onFinalTranscript?.(final.trim());
+        }
+        this._wakeWordDetected = wakeWordFound;
       }
     };
     recognition.onerror = (event: any) => {
@@ -464,8 +525,10 @@ export class VoiceService {
     };
     recognition.onend = () => {
       this._sttActive = false;
-      if (this._shouldRestartSTT) {
-        setTimeout(() => { if (this._shouldRestartSTT) this.startSTT(); }, 100);
+      if (this._mode === 'continuous' && this._shouldRestartSTT) {
+        setTimeout(() => {
+          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
+        }, 100);
       }
     };
     try {
@@ -474,6 +537,26 @@ export class VoiceService {
       this._sttActive = true;
       console.log('[VOICE] browser STT started');
     } catch { /* already started */ }
+  }
+
+  /**
+   * Phase 116: Check if the wake word ("NEX") appears in the transcript.
+   * If found, sets _wakeWordDetected = true and calls onWakeWord callback.
+   * Returns true if wake word was found.
+   */
+  private checkWakeWord(text: string): boolean {
+    const lower = text.toLowerCase().trim();
+    const wakeWord = this.config.wakeWord.toLowerCase();
+
+    // Check if the wake word appears as a standalone word
+    const regex = new RegExp(`\\b${wakeWord}\\b`, 'i');
+    if (regex.test(lower)) {
+      console.log(`[VOICE] Wake word detected: "${this.config.wakeWord}"`);
+      this._wakeWordDetected = true;
+      this.callbacks.onWakeWord?.();
+      return true;
+    }
+    return false;
   }
 
   private stopSTT(): void {

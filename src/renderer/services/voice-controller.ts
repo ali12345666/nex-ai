@@ -1,13 +1,18 @@
 /**
- * NEX AI — Voice Controller (Phase 30)
+ * NEX AI — Voice Controller (Phase 30 + Phase 116 JARVIS)
  *
  * Connects VoiceService to NexOrb and NexChatPanel.
  * This is the ONLY module that knows about both voice + UI.
  * Orb receives: state + audioLevel (via ref, not React state).
  * Chat receives: final transcripts (same pipeline as typed input).
+ *
+ * Phase 116 JARVIS additions:
+ *   - VoiceMode management (continuous / push-to-talk / disabled)
+ *   - Wake word callback forwarding
+ *   - Barge-in coordination
  */
 
-import { voiceService, type VoiceState } from './voice-service';
+import { voiceService, type VoiceState, type VoiceMode } from './voice-service';
 import type { NexOrbState } from '../components/orb/orb-state';
 
 /** Map VoiceState to NexOrbState (they share the same names). */
@@ -28,6 +33,8 @@ export interface VoiceControllerCallbacks {
   onVoiceError?: (message: string) => void;
   /** Permission change */
   onPermissionChange?: (granted: boolean | null) => void;
+  /** Phase 116: Wake word detected — NEX should respond "بله?" */
+  onWakeWord?: () => void;
 }
 
 export class VoiceController {
@@ -46,6 +53,7 @@ export class VoiceController {
       onPartialTranscript: (text) => this.callbacks.onPartialTranscript?.(text),
       onError: (msg) => this.callbacks.onVoiceError?.(msg),
       onPermissionChange: (granted) => this.callbacks.onPermissionChange?.(granted),
+      onWakeWord: () => this.callbacks.onWakeWord?.(),
     });
   }
 
@@ -95,6 +103,16 @@ export class VoiceController {
     } else {
       await this.start();
     }
+  }
+
+  /** Phase 116: Set voice mode (continuous / push-to-talk / disabled) */
+  setMode(mode: VoiceMode): void {
+    voiceService.setMode(mode);
+  }
+
+  /** Phase 116: Get current voice mode */
+  get mode(): VoiceMode {
+    return voiceService.mode;
   }
 
   /** Speak text (TTS). */
@@ -150,11 +168,11 @@ export class VoiceController {
     this.orbAudioRef.current = level;
     this.orbAudioCallbacks.forEach((cb) => cb(level));
     this.callbacks.onOrbAudioLevel?.(level);
-    // [ORB_AUDIO_DEBUG] — log when controller receives audio level (throttled)
+    // [ORB_AUDIO] — log when controller receives audio level (throttled)
     if (!this._audioLogCount) this._audioLogCount = 0;
     this._audioLogCount++;
     if (this._audioLogCount % 60 === 0) {
-      console.log(`[ORB_AUDIO_DEBUG] VoiceController: level=${level.toFixed(4)} orbAudioRef=${this.orbAudioRef.current.toFixed(4)} subscribers=${this.orbAudioCallbacks.size}`);
+      console.log(`[ORB_AUDIO] VoiceController: level=${level.toFixed(4)} orbAudioRef=${this.orbAudioRef.current.toFixed(4)} subscribers=${this.orbAudioCallbacks.size}`);
     }
   }
 }
