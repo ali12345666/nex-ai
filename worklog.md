@@ -519,3 +519,95 @@ Stage Summary:
 - Tests: 100/100 PASS across 33 sections covering all Phase 9 §16 requirements.
 - Files changed: 7 new/modified (verification.ts, types.ts, core.ts, error-classifier.ts, recovery-engine.ts, AgentStateDisplay.tsx, NexChatPanel.tsx) + 1 new test file
 - Next: commit + push to main (hold for Phase 10 approval per user instruction)
+
+---
+Task ID: phase-10-audit
+Agent: main
+Task: PHASE 10 — Architecture Audit + Gap Analysis (BEFORE implementation)
+
+Work Log:
+- Verified clean state: commit d0b98ee, working tree clean
+- Audited existing browser/web-related code:
+  - src/main/ai/tools/web-tool.ts: WebFetchTool + WebSearchTool (HTTP-only via Electron net module)
+    - HTTPS-only, URL allow-list (blocks private IPs/localhost), 10s timeout, 5MB limit, HTML stripped
+    - Returns text content (no DOM interaction, no JavaScript execution)
+  - ToolCategory type already includes 'browser' (line 46) — placeholder for future
+  - ToolPermission has 'network' (line 67) — used by web_fetch/web_search
+  - NO playwright/puppeteer installed in package.json
+  - NO browser automation tools registered in tool-registry.ts
+  - NO BrowserWindow used for automation (only the main app window, with strict security: will-navigate blocks external URLs, will-attach-webview blocks webviews, setWindowOpenHandler denies new windows)
+- Audited integration points for Phase 10:
+  - Tool interface (src/main/ai/tool-registry.ts): registerTool(), ToolDefinition, ToolContext, ToolResult — browser tools would implement this interface
+  - Permission Gate (src/main/permissions/index.ts): 'network' permission exists; 'browser' not in Permission union (would need extension OR reuse 'network')
+  - Planner (src/main/agent/planner.ts): generatePlan() picks tools from listToolDefinitions() — browser tools auto-appear if registered
+  - ReAct loop (src/main/agent/react-loop.ts): rePlanAfterObservation uses tool list — browser tools auto-available
+  - Recovery (src/main/agent/recovery-engine.ts): 10+1 error classes — browser errors (navigation timeout, element not found) need classification
+  - Verification (src/main/agent/verification.ts): ExpectedOutcome types — browser outcomes (page contains text, URL changed) need new types
+  - Context (src/main/agent/context-contract.ts): safeContextSnapshot — browser context (URL, page title) would be in executionMetadata
+  - Task Queue (src/main/tasks/): function-kind tasks could run browser automation scripts; agent-kind tasks would use browser tools via planner
+  - Orb/UI: existing 'working' state for tool execution; browser tools would use it automatically
+  - Memory: TaskMemory.set could record browser automation results
+- Identified Phase 10 scope (from original roadmap: "Browser Automation (Playwright)"):
+  Goal: NEX agent should be able to automate browser interactions — navigate to URLs, click elements, fill forms, extract data, take screenshots, run multi-step workflows on web pages.
+
+  Capabilities needed:
+  1. Browser session management (open, close, switch tabs)
+  2. Navigation (goto URL, back, forward, reload, wait for load)
+  3. Element interaction (click, type, select, scroll, hover)
+  4. Element queries (find by CSS/XPath/text, get text, get attribute, check visible)
+  5. Page inspection (get title, get URL, get HTML, screenshot)
+  6. Form filling (input, textarea, select, checkbox, radio)
+  7. Multi-step workflows (scripted sequences with waits + assertions)
+  8. Screenshot capture (for vision-based verification + UI feedback)
+  9. Cookie/session persistence (login flows that survive across steps)
+
+- Identified gaps (9) for Phase 10:
+  G1. NO browser automation library installed. Playwright is the roadmap choice (mature, cross-browser, Electron-compatible via headless Chromium).
+  G2. NO BrowserWindow/session manager for automation. The main app window has strict security (blocks external nav, blocks webviews). Browser automation needs a SEPARATE headless or offscreen BrowserWindow with permissive security for the target URL.
+  G3. NO browser tools registered. Need: browser_navigate, browser_click, browser_type, browser_extract, browser_screenshot, browser_close, etc.
+  G4. Permission system has 'network' but NOT 'browser'. Browser automation is more powerful than simple HTTP fetch (runs JS, stores cookies, can click). Need either a new 'browser' permission OR extend 'network' with a sub-permission. Minimal fix: reuse 'network' (browser is a superset of network) + add a 'browser' category tag for UI clarity.
+  G5. Error classifier lacks browser-specific error classes. Playwright throws: navigation timeout, element not found, selector timeout, etc. These map to existing classes (timeout → 'timeout', element not found → 'file_path' is wrong, should be a new 'browser_error' class OR reuse 'tool_failure'). Minimal: reuse 'tool_failure' for browser errors (retryable) + add specific patterns for timeout/selector.
+  G6. Verification lacks browser outcome types. ExpectedOutcome has file_exists/file_gone/file_contains/exit_code/output_contains/directory_exists. Need: url_changed, page_contains_text, element_visible, screenshot_captured. Minimal: extend ExpectedOutcome with browser types (additive).
+  G7. Context contract doesn't capture browser session state. safeContextSnapshot has executionMetadata (free-form) — browser URL/title could go there. No new field needed (use existing executionMetadata).
+  G8. NO UI feedback for browser automation. Orb uses 'working' for tool execution (automatic). But screenshots need a way to show in UI — could use agent_token event with base64 image, or a new 'browser_screenshot' event. Minimal: use existing agent_token with phase='browser-screenshot'.
+  G9. NO test isolation for browser tools. Browser tools need a real browser (Playwright launches Chromium). Tests can either: (a) mock Playwright (no real browser — fast but limited), (b) use Playwright's headed mode in CI (slow, needs display). Minimal: mock-based tests for logic + source-inspection tests for integration (same pattern as Phase 6-9).
+
+- Designed Phase 10 architecture (minimal, additive — NO new parallel system):
+  - NEW module: src/main/ai/tools/browser/ with:
+    - browser-session-manager.ts: manages headless BrowserWindow instances (1 per browser task). Uses Electron BrowserWindow (offscreen mode) OR Playwright (if installed). Falls back to "browser not available" if neither.
+    - browser-navigate-tool.ts: browser_navigate (goto URL, wait for load)
+    - browser-click-tool.ts: browser_click (click element by selector)
+    - browser-type-tool.ts: browser_type (fill input by selector)
+    - browser-extract-tool.ts: browser_extract (get text/HTML/attribute by selector)
+    - browser-screenshot-tool.ts: browser_screenshot (capture page as PNG, return base64)
+    - browser-close-tool.ts: browser_close (close session)
+    - index.ts: barrel + registerBrowserTools()
+  - EXTEND ToolCategory (additive): 'browser' already exists in the type — no change needed.
+  - EXTEND Permission (additive): add 'browser' to Permission union (more powerful than 'network' — runs JS, stores cookies). UI shows a distinct permission prompt for browser ops.
+  - EXTEND ExpectedOutcome (additive): add 'url_changed' | 'page_contains_text' | 'element_visible' | 'screenshot_captured' types.
+  - EXTEND error-classifier (additive): add 'browser_error' class (retryable — element not found is often transient due to page load timing).
+  - EXTEND recovery-engine (additive): browser_error → RETRY once (page may still be loading) → REPLAN (different selector/approach) → ABORT.
+  - EXTEND verification.ts (additive): handle new browser ExpectedOutcome types via the browser session (check current URL, page text, element visibility).
+  - WIRE into tool-registry: registerBrowserTools() called from ensureBuiltinToolsRegistered().
+  - WIRE into planner: browser tools auto-appear in listToolDefinitions() (no planner change needed).
+  - Security: browser tools require 'browser' permission (new) — goes through existing Permission Gate (executeToolWithPermission). NEVER bypass.
+  - Screenshot safety: screenshots are base64-encoded PNG, returned in ToolResult.data. UI shows via agent_token event with phase='browser-screenshot'. Screenshots are NOT persisted to disk by default (memory-only) unless user explicitly saves.
+  - Context: browser session ID + current URL stored in executionMetadata (via safeContextSnapshot). Redacted if URL contains secrets (e.g. ?token=...).
+  - Memory: record browser automation outcomes (URL visited, actions taken, result) for future planning. Filter noise (intermediate screenshots).
+  - Tests: mock-based tests for tool logic + source-inspection tests for integration. NO real browser needed for unit tests.
+
+- Open questions for user (before implementation):
+  Q1. Use Playwright (external dependency, ~300MB Chromium download) OR Electron's built-in BrowserWindow (offscreen mode, no extra download, but limited API — no selector queries, no click simulation)?
+     Recommendation: Start with Electron BrowserWindow + webContents.executeJavaScript for DOM queries (zero new dependencies). Add Playwright as OPTIONAL upgrade later if more power is needed.
+  Q2. Should browser automation be enabled by default or require explicit user opt-in (settings toggle)?
+     Recommendation: Require explicit opt-in (security — browser automation is powerful). Default OFF.
+  Q3. Screenshot storage: memory-only (default) OR save to disk for debugging?
+     Recommendation: Memory-only by default, with a settings toggle to save to <userData>/browser-screenshots/ for debugging.
+
+Stage Summary:
+- Architecture audit complete. Phase 10 = Browser Automation (Playwright per roadmap).
+- 9 gaps identified. All fixes ADDITIVE (new module, new permission, new error class, new ExpectedOutcome types — no breaking changes).
+- Recommendation: Use Electron BrowserWindow (zero new deps) for v1; Playwright as optional upgrade.
+- Browser tools go through existing Permission Gate (new 'browser' permission) — NEVER bypass.
+- Integration: planner auto-picks browser tools; recovery handles browser_error; verification checks browser outcomes; context captures URL/title in executionMetadata.
+- AWAITING USER APPROVAL before implementation.
