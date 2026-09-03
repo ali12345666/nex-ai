@@ -15,9 +15,20 @@
 import { voiceService, type VoiceState, type VoiceMode } from './voice-service';
 import type { NexOrbState } from '../components/orb/orb-state';
 
-/** Map VoiceState to NexOrbState (they share the same names). */
+/** Map VoiceState to NexOrbState. Phase 116: Extended with working/success/cancelled. */
 function toOrbState(state: VoiceState): NexOrbState {
-  return state; // 1:1 mapping — same state names
+  // Direct mapping for states that exist in both
+  if (state === 'idle') return 'idle';
+  if (state === 'listening') return 'listening';
+  if (state === 'thinking') return 'thinking';
+  if (state === 'speaking') return 'speaking';
+  if (state === 'error') return 'error';
+  if (state === 'offline') return 'offline';
+  // Phase 116 JARVIS: New states
+  if (state === 'working') return 'working';
+  if (state === 'success') return 'success';
+  if (state === 'cancelled') return 'cancelled';
+  return 'idle'; // fallback
 }
 
 export interface VoiceControllerCallbacks {

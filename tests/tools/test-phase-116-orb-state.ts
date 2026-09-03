@@ -146,11 +146,17 @@ async function runTests() {
     'AppShell should map new states (initializing, ready, working, success, cancelled)'
   );
 
-  console.log('\nTest 36: AppShell maps WORKING to thinking');
+  console.log('\nTest 36: AppShell maps WORKING to working state');
   assert(
     appShellSource.includes("orbState === 'working'") &&
-    appShellSource.includes("'thinking'"),
-    'AppShell should map WORKING to thinking state'
+    appShellSource.includes("'working'"),
+    'AppShell should map WORKING to working VoiceState'
+  );
+
+  console.log('\nTest 36b: THINKING is separate from WORKING in AppShell');
+  assert(
+    !appShellSource.includes("orbState === 'thinking' || orbState === 'active' || orbState === 'working'"),
+    'AppShell should NOT combine thinking and working — they are distinct states'
   );
 
   // ════════════════════════════════════════════════════════════════════════
@@ -177,16 +183,69 @@ async function runTests() {
     'ChatPanel should clear agent condition on task_completed'
   );
 
-  console.log('\nTest 39: ChatPanel sets error on task_failed');
+  console.log('\nTest 39: ChatPanel sets WORKING on step_started');
   assert(
-    chatSource.includes("voiceController.setCondition('agent', 'error')"),
-    'ChatPanel should set error state on task_failed'
+    chatSource.includes("voiceController.setCondition('agent', 'working')"),
+    'ChatPanel should set WORKING state on step_started/tool_call'
+  );
+
+  console.log('\nTest 39b: ChatPanel sets SUCCESS on task_completed');
+  assert(
+    chatSource.includes("voiceController.setCondition('agent', 'success')"),
+    'ChatPanel should set SUCCESS state on task_completed'
+  );
+
+  console.log('\nTest 39c: ChatPanel sets CANCELLED on task_cancelled');
+  assert(
+    chatSource.includes("voiceController.setCondition('agent', 'cancelled')"),
+    'ChatPanel should set CANCELLED state on task_cancelled'
+  );
+
+  console.log('\nTest 39d: ChatPanel does NOT use thinking for tool execution');
+  assert(
+    !chatSource.includes("case 'step_started'") ||
+    !chatSource.substring(chatSource.indexOf("case 'step_started'"), chatSource.indexOf("case 'step_completed'")).includes("'thinking'"),
+    'ChatPanel should NOT use thinking for step_started/tool_call'
   );
 
   console.log('\nTest 40: ChatPanel clears agent condition on task_cancelled');
   assert(
     chatSource.includes("voiceController.clearCondition('agent')"),
     'ChatPanel should clear agent condition on task_cancelled'
+  );
+
+  console.log('\nTest 40b: VoiceState includes working/success/cancelled');
+  const voiceServiceSource = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'renderer', 'services', 'voice-service.ts'),
+    'utf-8'
+  );
+  assert(
+    voiceServiceSource.includes("'working'") &&
+    voiceServiceSource.includes("'success'") &&
+    voiceServiceSource.includes("'cancelled'"),
+    'VoiceState should include working, success, cancelled'
+  );
+
+  console.log('\nTest 40c: VoiceController maps working → working');
+  const voiceControllerSource = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'renderer', 'services', 'voice-controller.ts'),
+    'utf-8'
+  );
+  assert(
+    voiceControllerSource.includes("if (state === 'working') return 'working'"),
+    'VoiceController should map working → working'
+  );
+
+  console.log('\nTest 40d: VoiceController maps success → success');
+  assert(
+    voiceControllerSource.includes("if (state === 'success') return 'success'"),
+    'VoiceController should map success → success'
+  );
+
+  console.log('\nTest 40e: VoiceController maps cancelled → cancelled');
+  assert(
+    voiceControllerSource.includes("if (state === 'cancelled') return 'cancelled'"),
+    'VoiceController should map cancelled → cancelled'
   );
 
   // ════════════════════════════════════════════════════════════════════════

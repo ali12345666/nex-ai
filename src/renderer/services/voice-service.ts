@@ -23,7 +23,7 @@
  *       └── state: state machine → callbacks → VoiceController
  */
 
-export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'offline';
+export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'offline' | 'working' | 'success' | 'cancelled';
 
 // Phase 116: Voice mode controls how listening works
 export type VoiceMode = 'continuous' | 'push-to-talk' | 'disabled';
@@ -63,7 +63,7 @@ export interface VoiceCallbacks {
 }
 
 const STATE_PRIORITY: Record<VoiceState, number> = {
-  error: 6, offline: 5, speaking: 4, thinking: 3, listening: 2, idle: 1,
+  error: 8, offline: 7, speaking: 6, working: 5, thinking: 4, listening: 3, success: 2, cancelled: 2, idle: 1,
 };
 
 export class VoiceService {

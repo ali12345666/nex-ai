@@ -234,14 +234,16 @@ export default function AppShell() {
       // Phase 116: Map new states to VoiceState equivalents.
       if (orbState === 'listening') {
         voiceController.setCondition('engine', 'listening');
-      } else if (orbState === 'thinking' || orbState === 'active' || orbState === 'working') {
+      } else if (orbState === 'thinking') {
         voiceController.setCondition('engine', 'thinking');
       } else if (orbState === 'speaking') {
         voiceController.setCondition('engine', 'speaking');
+      } else if (orbState === 'working' || orbState === 'active') {
+        voiceController.setCondition('engine', 'working');
       } else if (orbState === 'error') {
         voiceController.setCondition('engine', 'error');
       } else {
-        // idle / ready / success / cancelled — clear the engine condition
+        // idle / ready / success / cancelled / initializing — clear engine condition
         voiceController.clearCondition('engine');
       }
 
