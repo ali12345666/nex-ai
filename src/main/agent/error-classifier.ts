@@ -38,6 +38,7 @@ export type ErrorClass =
   | 'user_cancellation'
   | 'security_policy'
   | 'verification_failed'  // Phase 9: tool succeeded but expected outcome not observed
+  | 'browser_error'        // Phase 10: browser automation error (navigation, element, crash)
   | 'unknown';
 
 export const ALL_ERROR_CLASSES: ErrorClass[] = [
@@ -51,6 +52,7 @@ export const ALL_ERROR_CLASSES: ErrorClass[] = [
   'user_cancellation',
   'security_policy',
   'verification_failed',
+  'browser_error',
   'unknown',
 ];
 
@@ -137,6 +139,20 @@ const SECURITY_POLICY_PATTERNS: RegExp[] = [
   /path not allowed|path outside/i,
   /unsafe (operation|path|command)/i,
   /policy .* (denied|blocked|rejected)/i,
+];
+
+/** Browser automation errors (Phase 10) — navigation, element, crash.
+ * Most are retryable (page may still be loading, selector timing). */
+const BROWSER_ERROR_PATTERNS: RegExp[] = [
+  /navigation (failed|timeout|took too long)/i,
+  /element .* (not found|not visible|not actionable|detached)/i,
+  /selector .* (timeout|not found|didn't match)/i,
+  /page\.waitForSelector.*timeout/i,
+  /playwright.*(timeout|error)/i,
+  /target closed|browser has been closed|page has been closed/i,
+  /protocol error.*target/i,
+  /browser.*(crashed|disconnected|not responding)/i,
+  /url validation failed/i,
 ];
 
 // ─── Cancellation code ───────────────────────────────────────────────────────
@@ -247,6 +263,26 @@ export function classifyError(
       neverRetry: false,
       reason: `Verification failed: ${truncate(errorMessage)}`,
     };
+  }
+
+  // 4c. Browser error (Phase 10) — navigation, element, crash.
+  // Checked BEFORE file_path because browser navigation failures can
+  // contain "not found" phrases that would otherwise match file_path.
+  // Most browser errors are retryable (page may still be loading, selector
+  // timing, transient browser crash). URL validation failures are NOT
+  // retryable (security — caller passed a blocked URL).
+  for (const re of BROWSER_ERROR_PATTERNS) {
+    if (re.test(errorMessage)) {
+      const isSecurity = /url validation failed/i.test(errorMessage);
+      return {
+        class: 'browser_error',
+        legacyClass: isSecurity ? 'permanent' : 'transient',
+        retryable: !isSecurity,  // retryable unless URL validation (security)
+        neverRetry: isSecurity,  // security URL blocks never auto-retry
+        reason: `Browser error: ${truncate(errorMessage)}`,
+        matchedPattern: re.source,
+      };
+    }
   }
 
   // 5. File/path

@@ -68,7 +68,8 @@ export type ToolPermission =
   | 'system'      // system info / process inspection
   | 'git'         // git operations (read or write, scoped per-tool)
   | 'cloud'       // cloud provider operations (Cloudflare, GitHub, etc.)
-  | 'admin';      // registry, drivers, firewall, install software
+  | 'admin'       // registry, drivers, firewall, install software
+  | 'browser';    // browser automation (Phase 10) — runs JS, stores cookies, can click
 
 export interface ToolParameter {
   name: string;
@@ -368,4 +369,12 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   // Phase 116: open_file_in_editor — bridge Agent → Monaco Editor
   const { OpenFileInEditorTool } = await import('./tools/open-file-in-editor-tool');
   registerTool(new OpenFileInEditorTool());
+
+  // Phase 10: browser automation tools (Playwright)
+  // Only registered if browser automation is enabled (opt-in OFF by default).
+  // The opt-in flag is checked inside registerBrowserTools() — if OFF, no
+  // browser tools are registered, so they don't appear in the planner's
+  // tool list. User can enable via Settings → Browser Automation.
+  const { registerBrowserTools } = await import('./tools/browser');
+  registerBrowserTools();
 }

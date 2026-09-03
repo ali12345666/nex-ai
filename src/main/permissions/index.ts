@@ -33,7 +33,7 @@ import { loadState, updateState } from '../persistence';
 
 // ─── Permission Types ────────────────────────────────────────────────────────
 
-export type Permission = 'read' | 'write' | 'execute' | 'delete' | 'network' | 'system' | 'git' | 'cloud' | 'admin';
+export type Permission = 'read' | 'write' | 'execute' | 'delete' | 'network' | 'system' | 'git' | 'cloud' | 'admin' | 'browser';
 
 export type PermissionScope = 'once' | 'session' | 'project' | 'global';
 export type PermissionDecision = 'allow' | 'deny' | 'pending';

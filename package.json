@@ -45,6 +45,7 @@
     "mammoth": "^1.12.1",
     "node-llama-cpp": "^3.20.0",
     "node-pty": "^1.0.0",
+    "playwright": "^1.62.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "three": "^0.185.1",
