@@ -589,6 +589,22 @@ export interface NexAPI {
   onNewTerminal: (callback: () => void) => () => void;
   onKillTerminal: (callback: () => void) => () => void;
   onOpenSettings: (callback: () => void) => () => void;
+
+  // ── Phase 6: Background Task Queue ──
+  taskQueueEnqueueAgent: (agentTaskId: string, opts?: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
+  taskQueueEnqueueFunction: (functionKey: string, opts?: any) => Promise<{ success: boolean; taskId?: string; error?: string }>;
+  taskQueueCreateAgentTask: (request: any) => Promise<{ success: boolean; taskId?: string; agentTaskId?: string; error?: string }>;
+  taskQueueCancel: (taskId: string, reason?: string) => Promise<{ success: boolean }>;
+  taskQueueCancelAll: (reason?: string) => Promise<{ success: boolean; count: number }>;
+  taskQueuePause: (taskId: string) => Promise<{ success: boolean }>;
+  taskQueueResume: (taskId: string) => Promise<{ success: boolean }>;
+  taskQueueGet: (taskId: string) => Promise<any | null>;
+  taskQueueList: (filter?: { status?: string | string[]; kind?: string }) => Promise<any[]>;
+  taskQueueState: () => Promise<{ config: any; counts: Record<string, number>; items: any[] }>;
+  taskQueueUpdateConfig: (patch: any) => Promise<{ success: boolean; config: any }>;
+  taskQueuePrune: () => Promise<{ success: boolean; pruned: number }>;
+  taskQueueSnapshot: () => Promise<{ success: boolean }>;
+  onTaskQueueEvent: (callback: (event: any) => void) => () => void;
 }
 
 declare global {

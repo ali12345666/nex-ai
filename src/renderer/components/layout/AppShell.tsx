@@ -194,6 +194,54 @@ export default function AppShell() {
     return () => { voiceController.dispose(); };
   }, []);
 
+  // ── Phase 6: Background Task Queue → Orb wiring ─────────────────────────────
+  // Listen for task-queue events from main and drive the Orb via a NEW
+  // condition key 'queue'. This is intentionally SEPARATE from 'agent'
+  // (chat-driven) so background tasks don't fight the chat's Orb state.
+  //
+  // The Orb state priority resolution in voice-service.ts picks the highest
+  // priority across all condition keys, so a running queue task ('working'=5)
+  // will show through even if the chat is idle, but chat 'thinking' (4) or
+  // 'speaking' (6) takes precedence as appropriate.
+  //
+  // Mapping (mirrors main-side tasks/orb-bridge.ts):
+  //   task_started/progress → 'working'
+  //   task_completed        → 'success' (brief flash, then clear after 1.5s)
+  //   task_failed/recovered → 'error'   (brief flash, then clear after 1.5s)
+  //   task_cancelled        → 'cancelled' (brief flash, then clear)
+  //   task_enqueued/paused  → no change (keep idle/ready)
+  useEffect(() => {
+    if (!window.nexAPI?.onTaskQueueEvent) return;
+
+    const queueTimers: number[] = [];
+    const off = window.nexAPI.onTaskQueueEvent((event: any) => {
+      const type = event?.type as string;
+      if (!type) return;
+
+      if (type === 'task_started' || type === 'task_progress') {
+        voiceController.setCondition('queue', 'working');
+      } else if (type === 'task_completed') {
+        voiceController.setCondition('queue', 'success');
+        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+        queueTimers.push(t);
+      } else if (type === 'task_failed' || type === 'task_recovered') {
+        voiceController.setCondition('queue', 'error');
+        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+        queueTimers.push(t);
+      } else if (type === 'task_cancelled') {
+        voiceController.setCondition('queue', 'cancelled');
+        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+        queueTimers.push(t);
+      }
+      // task_enqueued, task_paused, queue_state → no Orb change
+    });
+
+    return () => {
+      off();
+      for (const t of queueTimers) clearTimeout(t);
+    };
+  }, []);
+
   // ── Bridge: main-side voice conversation state → Orb animation ────────────
   // The LocalVoiceEngine (whisper + piper) emits 'voice-conversation-state'
   // events from the main process. Without this bridge, the Orb only reflects

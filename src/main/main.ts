@@ -41,6 +41,25 @@ import {
 } from './agent/core';
 import { setPermissionRequestHandler, respondToPermissionRequest } from './permissions';
 import { onAgentEvent as onAgentEventLogger } from './agent/logger';
+// Phase 6: Background Task Queue
+import {
+  initTaskQueue,
+  shutdownTaskQueue,
+  enqueueAgentTask,
+  enqueueFunction,
+  registerTaskFunction,
+  cancelTask as queueCancelTask,
+  cancelAllTasks as queueCancelAllTasks,
+  pauseTask as queuePauseTask,
+  resumeTask as queueResumeTask,
+  getTask as queueGetTask,
+  listTasks as queueListTasks,
+  getQueueState,
+  updateConfig as queueUpdateConfig,
+  onTaskQueueEvent,
+  emitStateSnapshot as queueEmitStateSnapshot,
+  pruneHistory as queuePruneHistory,
+} from './tasks';
 
 // Phase 28: Terminal + Filesystem services
 import { terminalService } from './services/terminal-service';
@@ -5091,6 +5110,190 @@ async function setupIPC(): Promise<void> {
     return listPendingDiffs(taskId);
   });
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // Phase 6: Background Task Queue — IPC handlers
+  //
+  // All queue operations go through these handlers. The queue itself wraps
+  // agent tasks (kind='agent') and registered functions (kind='function').
+  // Permission enforcement: agent tasks still call executeToolWithPermission
+  // internally — the queue NEVER bypasses the permission gate.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  // Helper: derive a human-readable name from an agent task request.
+  function opts_nameFromRequest(request: any): string {
+    if (!request) return 'Agent task';
+    const req = request.userRequest || request.title || request.name;
+    if (!req) return 'Agent task';
+    const trimmed = String(req).trim();
+    return trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed;
+  }
+
+  // Forward task-queue events to the renderer via 'task-queue-event' IPC.
+  // (Registered once at setupIPC time; components subscribe via nexAPI.onTaskQueueEvent.)
+  onTaskQueueEvent((event) => {
+    try {
+      mainWindow?.webContents.send('task-queue-event', event);
+    } catch { /* best effort */ }
+  });
+
+  // Enqueue an existing agent task for background execution.
+  // The agent task must already be created via 'agent-create-task' IPC.
+  // Returns the TaskQueueItem's id for tracking.
+  ipcMain.handle('task-queue-enqueue-agent', async (_event, agentTaskId: string, opts?: any) => {
+    try {
+      const item = enqueueAgentTask(agentTaskId, opts);
+      return { success: true, taskId: item.id };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Enqueue a function task. The function must be pre-registered on the main
+  // side via registerTaskFunction (typically during initTaskQueue setup).
+  ipcMain.handle('task-queue-enqueue-function', async (_event, functionKey: string, opts?: any) => {
+    try {
+      const item = enqueueFunction(functionKey, opts);
+      return { success: true, taskId: item.id };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Create a new agent task AND enqueue it for background execution in one call.
+  // Combines agent-create-task + task-queue-enqueue-agent. This is the
+  // recommended path for long-running tasks that shouldn't block the chat.
+  ipcMain.handle('task-queue-create-agent-task', async (_event, request: any) => {
+    try {
+      // Reuse the same knowledge-wiring logic as agent-create-task.
+      if (request?.projectPath && !request.knowledgePort) {
+        try {
+          const { getKnowledgeService, disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
+          const { projectIdFromPath } = await import('./knowledge/project-id');
+          const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+          const pid = projectIdFromPath(request.projectPath);
+          const svc = getKnowledgeService({
+            userDataDir: userDataPath,
+            projectId: pid,
+            embedder: (await createConfiguredEmbedder()).embedder,
+            roots: [request.projectPath],
+          });
+          void disposeKnowledgeServices;
+          request.knowledgePort = {
+            available: () => true,
+            retrieve: async (query: string, _pp?: string, limit?: number) => {
+              const { results } = await svc.retrieveForPrompt(query, limit ?? 3);
+              return results.map((r: any) => ({
+                documentId: r.document.id,
+                documentTitle: r.document.title,
+                chunkId: r.chunk.id,
+                content: r.chunk.content,
+                score: r.score,
+                source: r.document.sourcePath,
+                startLine: r.chunk.metadata?.startLine,
+                endLine: r.chunk.metadata?.endLine,
+              }));
+            },
+          };
+          request.toolContextExtras = { ...(request.toolContextExtras || {}), knowledgeService: svc };
+        } catch (err: any) {
+          console.warn('[NEX AI] Knowledge wiring unavailable for queued agent task:', err.message);
+        }
+      }
+      const task = await createTask(request);
+      const item = enqueueAgentTask(task.id, {
+        name: opts_nameFromRequest(request),
+        priority: request?.priority,
+        tags: request?.tags,
+        metadata: request?.metadata,
+        maxRetries: request?.maxRetries,
+        estimatedDurationMs: request?.estimatedDurationMs,
+      });
+      return { success: true, taskId: item.id, agentTaskId: task.id };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Cancel a queued or running task.
+  ipcMain.handle('task-queue-cancel', async (_event, taskId: string, reason?: string) => {
+    const ok = queueCancelTask(taskId, reason);
+    return { success: ok };
+  });
+
+  // Cancel all queued + running tasks.
+  ipcMain.handle('task-queue-cancel-all', async (_event, reason?: string) => {
+    const count = queueCancelAllTasks(reason);
+    return { success: true, count };
+  });
+
+  // Pause a queued task (only valid for 'queued' status — not 'running').
+  ipcMain.handle('task-queue-pause', async (_event, taskId: string) => {
+    const ok = queuePauseTask(taskId);
+    return { success: ok };
+  });
+
+  // Resume a paused task (re-enqueue at original priority).
+  ipcMain.handle('task-queue-resume', async (_event, taskId: string) => {
+    const ok = queueResumeTask(taskId);
+    return { success: ok };
+  });
+
+  // Get a single task by id.
+  ipcMain.handle('task-queue-get', async (_event, taskId: string) => {
+    return queueGetTask(taskId);
+  });
+
+  // List all tasks (optionally filtered by status/kind).
+  ipcMain.handle('task-queue-list', async (_event, filter?: any) => {
+    return queueListTasks(filter);
+  });
+
+  // Get the full queue state (config + counts + items).
+  ipcMain.handle('task-queue-state', async () => {
+    return getQueueState();
+  });
+
+  // Update queue configuration (maxConcurrent, historyLimit, etc.).
+  ipcMain.handle('task-queue-update-config', async (_event, patch: any) => {
+    const config = queueUpdateConfig(patch || {});
+    return { success: true, config };
+  });
+
+  // Manually prune the history (terminal items beyond historyLimit).
+  ipcMain.handle('task-queue-prune', async () => {
+    const count = queuePruneHistory();
+    return { success: true, pruned: count };
+  });
+
+  // Request a full state snapshot (UI uses this on connect to sync).
+  ipcMain.handle('task-queue-snapshot', async () => {
+    queueEmitStateSnapshot();
+    return { success: true };
+  });
+
+  // Register a built-in function (for testing + a few simple built-ins).
+  // Renderer-side code can't register functions directly (they live in main),
+  // but we expose a couple of safe built-ins for diagnostics.
+  registerTaskFunction('noop:echo', async (ctx) => {
+    return { echoed: ctx.metadata, ts: Date.now() };
+  });
+  registerTaskFunction('test:delay', async (ctx) => {
+    const ms = (ctx.metadata?.ms as number) || 100;
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      if (ctx.cancellationToken.cancelled) {
+        return { cancelled: true, elapsed: Date.now() - start };
+      }
+      ctx.reportProgress(Math.min(100, ((Date.now() - start) / ms) * 100));
+      await new Promise((r) => setTimeout(r, Math.min(20, ms)));
+    }
+    return { cancelled: false, elapsed: Date.now() - start };
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // End Phase 6 IPC handlers
+  // ════════════════════════════════════════════════════════════════════════════
+
   // ── Knowledge / Local RAG (Phase 9) ──
   // All endpoints are project-scoped: projectId derives from projectPath;
   // isolation is enforced inside KnowledgeService/LocalVectorStore.
@@ -5798,6 +6001,57 @@ app.whenReady().then(async () => {
   initPersistence(userDataPath);
   console.log(`[STARTUP_TIMING] persistence-init: +${Date.now() - t0}ms`);
 
+  // ── Phase 6: Initialize Background Task Queue ───────────────────────────────
+  // The task queue wraps agent tasks and arbitrary functions, running them
+  // in the background without blocking the UI. It recovers any persisted
+  // queue state from disk (queued/paused/running items), wiring to agent
+  // core for runTask/cancelTask and listening to agent events for completion.
+  (async () => {
+    try {
+      // Defer agent core import to avoid circular dependency at module load time
+      const { onAgentEvent } = await import('./agent/core');
+      initTaskQueue({
+        userDataDir: userDataPath,
+        agentRunTask: (taskId: string) => runTask(taskId),
+        agentCancelTask: (taskId: string, reason?: string) => cancelTask(taskId, reason),
+        agentGetTaskStatus: (taskId: string) => {
+          const t = getTask(taskId);
+          return t ? t.status : null;
+        },
+        agentOnEvent: (listener) => onAgentEvent((event) => listener(event)),
+        onInterruptedRecovery: (taskId: string) => {
+          console.warn(`[NEX TaskQueue] Recovered interrupted task: ${taskId} (marked failed — was running at process exit)`);
+        },
+        memoryRecord: (item) => {
+          // Record important task results to memory (only agent + tagged function tasks)
+          // Skip transient/noisy tasks (those tagged 'no-mem').
+          if (item.tags?.includes('no-mem')) return;
+          if (item.kind !== 'agent' && !item.tags?.includes('mem')) return;
+          if (item.status !== 'completed' && item.status !== 'failed') return;
+          try {
+            const { TaskMemory } = require('./memory');
+            TaskMemory.set(`task-queue-${item.id}`, {
+              id: item.id,
+              name: item.name,
+              kind: item.kind,
+              status: item.status,
+              priority: item.priority,
+              enqueuedAt: item.enqueuedAt,
+              completedAt: item.completedAt,
+              error: item.error?.message,
+              tags: item.tags,
+            });
+          } catch (err: any) {
+            console.warn('[NEX TaskQueue] Memory record failed:', err.message);
+          }
+        },
+      });
+      console.log(`[STARTUP_TIMING] task-queue-init: +${Date.now() - t0}ms`);
+    } catch (err: any) {
+      console.warn('[NEX AI] Task queue init failed (non-blocking):', err.message);
+    }
+  })();
+
   // Phase 116 PERF: Move snapshot init to background — was blocking createWindow.
   // loadSnapshotIndex uses synchronous fs ops (readdirSync, readFileSync, statSync)
   // that can take 50ms-2s on large snapshot directories. Now runs in background.
@@ -5925,6 +6179,13 @@ app.on('before-quit', (event) => {
   try {
     const { cancelAllActiveTasks } = require('./agent/core');
     cancelAllActiveTasks('Application shutting down');
+  } catch { /* best-effort */ }
+
+  // Phase 6: Shut down the task queue — cancels running items and saves state.
+  // Must run BEFORE the agent cancel above so the queue can propagate
+  // cancellation to in-progress agent tasks.
+  try {
+    shutdownTaskQueue();
   } catch { /* best-effort */ }
 
   // Phase 115: Stop the periodic snapshot cleanup timer.

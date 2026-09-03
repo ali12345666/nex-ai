@@ -757,6 +757,38 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('open-settings', handler);
     return () => ipcRenderer.removeListener('open-settings', handler);
   },
+
+  // ── Phase 6: Background Task Queue ──
+  // All operations are async (return Promise). Event subscriptions return a
+  // cleanup function. Mirrors the main-side task-queue IPC handlers.
+  taskQueueEnqueueAgent: (agentTaskId: string, opts?: any) =>
+    ipcRenderer.invoke('task-queue-enqueue-agent', agentTaskId, opts),
+  taskQueueEnqueueFunction: (functionKey: string, opts?: any) =>
+    ipcRenderer.invoke('task-queue-enqueue-function', functionKey, opts),
+  taskQueueCreateAgentTask: (request: any) =>
+    ipcRenderer.invoke('task-queue-create-agent-task', request),
+  taskQueueCancel: (taskId: string, reason?: string) =>
+    ipcRenderer.invoke('task-queue-cancel', taskId, reason),
+  taskQueueCancelAll: (reason?: string) =>
+    ipcRenderer.invoke('task-queue-cancel-all', reason),
+  taskQueuePause: (taskId: string) =>
+    ipcRenderer.invoke('task-queue-pause', taskId),
+  taskQueueResume: (taskId: string) =>
+    ipcRenderer.invoke('task-queue-resume', taskId),
+  taskQueueGet: (taskId: string) =>
+    ipcRenderer.invoke('task-queue-get', taskId),
+  taskQueueList: (filter?: any) =>
+    ipcRenderer.invoke('task-queue-list', filter),
+  taskQueueState: () => ipcRenderer.invoke('task-queue-state'),
+  taskQueueUpdateConfig: (patch: any) =>
+    ipcRenderer.invoke('task-queue-update-config', patch),
+  taskQueuePrune: () => ipcRenderer.invoke('task-queue-prune'),
+  taskQueueSnapshot: () => ipcRenderer.invoke('task-queue-snapshot'),
+  onTaskQueueEvent: (callback: (event: any) => void) => {
+    const handler = (_event: any, ev: any) => callback(ev);
+    ipcRenderer.on('task-queue-event', handler);
+    return () => ipcRenderer.removeListener('task-queue-event', handler);
+  },
 });
 
 export {};
