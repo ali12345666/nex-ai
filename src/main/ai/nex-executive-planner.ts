@@ -109,6 +109,11 @@ export interface PlannerPlan {
   summary: string;
   summaryFa: string;
   log: string[];
+  // Phase 12: context for agent/core.ts delegation
+  /** The project path to pass to agent tasks (from the create request). */
+  projectPath?: string;
+  /** Recent conversation history to pass to agent tasks for context. */
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export type PlanStatus = 'planning' | 'ready' | 'executing' | 'completed' | 'failed' | 'aborted';
@@ -260,6 +265,9 @@ export class NexExecutivePlanner {
       summary: `Plan: ${subTasks.length} sub-tasks across ${swarmDomains.size} expert domain(s)`,
       summaryFa: `برنامه: ${subTasks.length} زیر-وظیفه در ${swarmDomains.size} حوزه تخصصی`,
       log: [`Plan created: ${subTasks.length} sub-tasks`],
+      // Phase 12: context for agent/core.ts delegation
+      projectPath: opts?.projectId,
+      conversationHistory: [],
     };
 
     this.currentPlan = plan;
@@ -298,10 +306,16 @@ export class NexExecutivePlanner {
       plan.log.push(`Sub-task ${subTask.index + 1}: executing — ${subTask.description}`);
 
       try {
-        // Delegate to the Agent Executor (Phase 54) — which itself gates every
-        // permission-requiring step through PermissionGate (Phase 43).
+        // Phase 12: Delegate to the Agent Executor which now connects to the
+        // REAL agent pipeline (agent/core.ts: createTask + runTask + ReAct
+        // loop + Permission Gate + Verification + Recovery + Completion Gate).
+        // The executor's PermissionGate gives a high-level confirmation; the
+        // per-tool permission gating happens inside agent/core.ts.
         const execPlan: ExecutionPlan = executor.createPlan(subTask.description);
-        const execResult: ExecutionResult = await executor.executePlan(execPlan);
+        const execResult: ExecutionResult = await executor.executePlan(execPlan, {
+          projectPath: plan.projectPath,
+          recentConversation: plan.conversationHistory,
+        });
 
         if (execResult.success) {
           subTask.status = 'completed';

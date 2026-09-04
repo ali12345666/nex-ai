@@ -1,43 +1,40 @@
 /**
- * NEX AI — Agent Executor (Phase 54) — ⚠️ DEPRECATED
+ * NEX AI — Agent Executor (Phase 54 + Phase 12)
  *
- * Phase 104: This module is DEPRECATED. executePlan() is a STUB that only
- * changes step status without calling real tools. The real agent execution
- * path is agent/core.ts (createTask + runTask + ReAct loop).
+ * Phase 12: Multi-Agent Orchestration Integration
  *
- * This file is kept for backward compatibility with the Planner UI
- * (agent-create-plan, agent-execute-plan IPC handlers). New code should
- * use the Brain Router:
- *   brain-route → route='agent' → createTask + runTask
- *
- * DO NOT extend this file. Migrate callers to agent/core.ts instead.
- *
- * ── Original header (Phase 54) ──
- *
- * Connects the Expert System with real tool execution.
+ * Connects the ExecutivePlanner's sub-tasks to the REAL agent pipeline
+ * (agent/core.ts: createTask + runTask + ReAct loop + Permission Gate +
+ * Verification + Recovery + Task Completion Gate).
  *
  * Architecture:
  *
- *   User Request
- *       ↓
- *   Brain Controller → Expert Router → Skill Selection
- *       ↓
- *   Permission Check (Phase 43 PermissionGate)
- *       ↓
- *   Tool Execution (Phase 7 tool-registry)
- *       ↓
- *   Result → Memory Update (Phase 40/52)
+ *   ExecutivePlanner.createPlan(userRequest)
+ *     → subTasks[] (each with expert routing, personality, knowledge)
+ *     → NexAgentExecutor.executePlan(plan)
+ *       → for each step:
+ *         → agent/core.ts createTask({ userRequest: step.action })
+ *         → agent/core.ts runTask(taskId) — runs the FULL Phase 6-11 pipeline:
+ *           → Planner (LLM generates concrete steps)
+ *           → executeStep (permission gate, tool execution, observation)
+ *           → Verification (Phase 9: structural/content/execution verification)
+ *           → Recovery (Phase 7: RETRY/MODIFY/REPLAN/SKIP/ABORT)
+ *           → Task Completion Gate (Phase 9: all steps verified)
+ *         → result → step.result
+ *       → return ExecutionResult with real outcomes
  *
  * CRITICAL SECURITY:
+ *   The agent/core.ts path handles ALL permission gating internally
+ *   (executeToolWithPermission + requestPermissionAndWait). This executor
+ *   does NOT bypass the Permission Gate — it delegates to the real agent
+ *   which enforces it for every tool call.
+ *
  *   NEX MUST ASK BEFORE:
  *     - running terminal commands
  *     - modifying files
  *     - installing software
  *     - deleting files
  *     - downloading anything
- *
- *   Every sensitive action requires Persian permission dialog:
- *     "برای اجرای این دستور نیاز به اجازه شما دارم."
  */
 
 import { PermissionGate, type ActionDescriptor, type PermissionGateResult } from '../update/permission-gate';
@@ -137,17 +134,58 @@ export class NexAgentExecutor {
   }
 
   /**
-   * Execute a plan step by step.
-   * Each step that requires permission will block until the user responds.
+   * Execute a plan step by step using the REAL agent pipeline.
+   *
+   * Phase 12: Instead of simulating execution, each step is delegated to
+   * agent/core.ts (createTask + runTask), which runs the full Phase 6-11
+   * pipeline:
+   *   → Planner generates concrete tool steps
+   *   → executeStep with Permission Gate (executeToolWithPermission)
+   *   → Observation + Verification (Phase 9 structural/content verification)
+   *   → Recovery (Phase 7: RETRY/MODIFY/REPLAN/SKIP/ABORT)
+   *   → Task Completion Gate (all steps verified, no unresolved errors)
+   *
+   * The PermissionGate in this executor is used ONLY for the pre-execution
+   * confirmation dialog (Phase 43 PermissionGate). The real per-tool-call
+   * permission gating happens inside agent/core.ts via
+   * executeToolWithPermission.
+   *
+   * @param plan The execution plan from createPlan()
+   * @param opts Optional: projectPath for the agent tasks, recentConversation
+   * @returns ExecutionResult with real outcomes from agent/core.ts
    */
-  async executePlan(plan: ExecutionPlan): Promise<ExecutionResult> {
+  async executePlan(plan: ExecutionPlan, opts?: {
+    projectPath?: string;
+    recentConversation?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  }): Promise<ExecutionResult> {
     const log: string[] = [];
     let completed = 0;
     let failed = 0;
     let denied = 0;
 
+    // Phase 12: Import agent/core dynamically (avoids circular dependency at
+    // module load time — agent/core imports from tool-registry which imports
+    // many tools; the executor is used from main.ts which is loaded early).
+    let agentCore: any = null;
+    try {
+      agentCore = await import('../agent/core');
+    } catch (err: any) {
+      // If agent/core can't be loaded (e.g. no model available), fall back
+      // to the old stub behavior with a clear warning.
+      log.push(`WARNING: agent/core.ts not available — ${err.message}. Using fallback stub.`);
+      for (const step of plan.steps) {
+        step.status = 'failed';
+        step.result = 'agent/core.ts not available';
+        failed++;
+        log.push(`Step ${step.index}: FAILED — agent core not loaded`);
+      }
+      return this.buildResult(plan, completed, failed, denied, log, false);
+    }
+
     for (const step of plan.steps) {
-      // Check if permission is needed
+      // Phase 43: Pre-execution permission confirmation (optional — the
+      // real per-tool permission is handled by agent/core.ts). This gate
+      // gives the user a high-level "are you sure?" before the whole step.
       if (step.permission !== 'safe') {
         const action: ActionDescriptor = {
           type: step.permission === 'high-risk' ? 'delete-file' : 'modify-config',
@@ -162,33 +200,83 @@ export class NexAgentExecutor {
           step.status = 'denied';
           denied++;
           log.push(`Step ${step.index}: DENIED — ${permResult.denialReason || 'User declined'}`);
-          continue; // Skip this step, continue with next
+          continue;
         }
       }
 
       step.status = 'approved';
       log.push(`Step ${step.index}: Approved — ${step.skillName}`);
-
-      // Execute the step (in production, this would call tool-registry)
       step.status = 'executing';
-      log.push(`Step ${step.index}: Executing — ${step.skillName}`);
+      log.push(`Step ${step.index}: Executing via agent/core.ts — ${step.skillName}`);
 
-      // Simulate execution (actual tool execution is done by the agent loop)
-      step.status = 'completed';
-      step.result = `${step.skillName} completed successfully`;
-      completed++;
-      log.push(`Step ${step.index}: Completed — ${step.skillName}`);
-
-      // Record tool usage in long-term memory
+      // Phase 12: Delegate to the REAL agent pipeline
       try {
-        const ltm = getLongTermMemorySystem();
-        ltm.recordToolUsage(step.skillId);
-      } catch { /* */ }
+        const task = await agentCore.createTask({
+          userRequest: step.action,
+          projectPath: opts?.projectPath,
+          recentConversation: opts?.recentConversation as any,
+          limits: { maxSteps: 10, maxToolCalls: 20, maxRetries: 2, maxExecutionTimeMs: 120000 },
+        });
+
+        const finalTask = await agentCore.runTask(task.id);
+
+        // Check the real outcome from agent/core.ts
+        if (finalTask.status === 'completed') {
+          step.status = 'completed';
+          // Build a real result from the agent's tool calls + observations
+          const toolCount = finalTask.toolCalls.length;
+          const obsCount = finalTask.observations.length;
+          const verCount = finalTask.verification.length;
+          step.result = `${step.skillName} completed: ${toolCount} tool calls, ${obsCount} observations, ${verCount} verifications`;
+          completed++;
+          log.push(`Step ${step.index}: Completed — ${toolCount} tools, ${obsCount} obs, ${verCount} verifications`);
+        } else if (finalTask.status === 'cancelled') {
+          step.status = 'failed';
+          step.result = `Task cancelled: ${finalTask.cancelReason || 'unknown'}`;
+          failed++;
+          log.push(`Step ${step.index}: CANCELLED — ${finalTask.cancelReason || 'unknown'}`);
+        } else {
+          step.status = 'failed';
+          const errMsg = finalTask.errors.length > 0
+            ? finalTask.errors[finalTask.errors.length - 1].message
+            : `Task ended with status: ${finalTask.status}`;
+          step.result = errMsg;
+          failed++;
+          log.push(`Step ${step.index}: FAILED — ${errMsg}`);
+        }
+
+        // Record tool usage in long-term memory
+        try {
+          const ltm = getLongTermMemorySystem();
+          ltm.recordToolUsage(step.skillId);
+        } catch { /* */ }
+      } catch (err: any) {
+        step.status = 'failed';
+        step.result = err?.message || String(err);
+        failed++;
+        log.push(`Step ${step.index}: FAILED — ${step.result}`);
+      }
     }
 
     const success = failed === 0;
-    const message = `Execution complete: ${completed} success, ${failed} failed, ${denied} denied`;
-    const messageFa = `اجرا کامل شد: ${completed} موفق، ${failed} ناموفق، ${denied} رد شده`;
+    return this.buildResult(plan, completed, failed, denied, log, success);
+  }
+
+  /**
+   * Build the ExecutionResult from the step outcomes.
+   */
+  private buildResult(
+    plan: ExecutionPlan,
+    completed: number,
+    failed: number,
+    denied: number,
+    log: string[],
+    success: boolean,
+  ): ExecutionResult {
+    const message = `Execution ${success ? 'complete' : 'finished with errors'}: ${completed} success, ${failed} failed, ${denied} denied`;
+    const messageFa = success
+      ? `اجرا کامل شد: ${completed} موفق`
+      : `اجرا با خطا تمام شد: ${completed} موفق، ${failed} ناموفق، ${denied} رد شده`;
 
     return {
       success,
