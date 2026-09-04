@@ -961,11 +961,13 @@ async function setupIPC(): Promise<void> {
         const { createTask, runTask } = await import('./agent/core');
         const agentRequest = {
           userRequest: request.message,
-          workspaceRoot: request.projectPath || process.cwd(),
-          sessionId: request.sessionId || `session-${Date.now()}`,
-          modelId: request.modelId,  // Phase 116: use correct field name
+          projectPath: request.projectPath,   // Phase 13: use projectPath (not workspaceRoot)
+          sessionId: request.sessionId,
+          modelId: request.modelId,
           toolContextExtras: {},
         };
+        // Phase 13: Wire knowledge + online via shared helper (DRY)
+        await wireAgentRequest(agentRequest);
         const task = await createTask(agentRequest);
         runTask(task.id).catch((err) => {
           console.error(`[BRAIN_ROUTER] Agent task ${task.id} failed:`, err);
@@ -4727,11 +4729,9 @@ async function setupIPC(): Promise<void> {
   });
 
   // ── Phase 54: Agent Skills & Tool Execution Layer ──
-  // Phase 104: nex-agent-executor.executePlan() is a STUB — it simulates
-  // execution without calling real tools. The real agent path is
-  // agent/core.ts (createTask + runTask). These IPC handlers are kept for
-  // backward compatibility with the Planner UI but should be migrated to
-  // use brain-route → agent/core.ts.
+  // Phase 12+13: nex-agent-executor.executePlan() now uses the REAL agent
+  // pipeline (agent/core.ts createTask + runTask). These IPC handlers are
+  // kept for the Planner UI panel which creates explicit multi-agent plans.
   const { getNexAgentExecutor } = await import('./ai/nex-agent-executor');
   const { getSkillRegistry, getSkill, getSkillsByDomain } = await import('./ai/agent-skill-registry');
 
@@ -4747,11 +4747,13 @@ async function setupIPC(): Promise<void> {
   });
 
   // Agent executor: execute plan
-  // Phase 104 WARNING: This is a STUB. executePlan() only changes step status
-  // without calling real tools. For real agent execution, use:
-  //   brain-route → route='agent' → createTask + runTask
+  // Phase 12: executePlan() now uses the REAL agent pipeline (agent/core.ts
+  // createTask + runTask). This is no longer a stub — it delegates to the
+  // same execution path as brain-route → agent.
+  // For direct chat → agent routing, prefer brain-route (it handles
+  // routing logic + knowledge/online wiring). This handler is kept for
+  // the Planner UI panel which creates explicit plans.
   ipcMain.handle('agent-execute-plan', async (_event, plan: any) => {
-    console.warn('[DEPRECATED] agent-execute-plan is a stub. Use brain-route for real agent execution.');
     try {
       const executor = getNexAgentExecutor();
       const result = await executor.executePlan(plan);
@@ -5044,46 +5046,131 @@ async function setupIPC(): Promise<void> {
     mainWindow?.webContents.send('agent-event', event);
   });
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // Phase 13: Agent Request Wiring Helpers (DRY)
+  //
+  // All three agent entry points (brain-route, agent-create-task,
+  // task-queue-create-agent-task) share the same wiring logic:
+  //   1. knowledgePort injection (RAG) — if projectPath is available
+  //   2. onlineEnvironment injection — if GLM/OpenAI/Claude API key is set
+  //
+  // These helpers ensure DRY: the knowledge + online wiring is NOT duplicated
+  // across three handlers. Each handler calls wireAgentRequest(request)
+  // which returns a fully-wired request object.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Phase 13: Wire knowledgePort into an agent request.
+   * If projectPath is available AND not already wired, creates a
+   * KnowledgeService and injects it as knowledgePort + toolContextExtras.
+   * If knowledge can't be wired (no project, no embedder, etc.), the
+   * request is left unchanged — this is graceful, not an error.
+   *
+   * SECURITY: knowledgePort is an opaque port (retrieve function only).
+   * No API keys or secrets are passed through it — the service reads them
+   * internally via persistence layer.
+   */
+  async function wireKnowledgePort(request: any): Promise<void> {
+    if (!request?.projectPath || request.knowledgePort) return;
+    try {
+      const { getKnowledgeService, disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
+      const { projectIdFromPath } = await import('./knowledge/project-id');
+      const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
+      const pid = projectIdFromPath(request.projectPath);
+      const svc = getKnowledgeService({
+        userDataDir: userDataPath,
+        projectId: pid,
+        embedder: (await createConfiguredEmbedder()).embedder,
+        roots: [request.projectPath],
+      });
+      void disposeKnowledgeServices;
+      request.knowledgePort = {
+        available: () => true,
+        retrieve: async (query: string, _pp?: string, limit?: number) => {
+          const { results } = await svc.retrieveForPrompt(query, limit ?? 3);
+          return results.map((r: any) => ({
+            documentId: r.document.id,
+            documentTitle: r.document.title,
+            chunkId: r.chunk.id,
+            content: r.chunk.content,
+            score: r.score,
+            source: r.document.sourcePath,
+            startLine: r.chunk.metadata?.startLine,
+            endLine: r.chunk.metadata?.endLine,
+          }));
+        },
+      };
+      request.toolContextExtras = { ...(request.toolContextExtras || {}), knowledgeService: svc };
+    } catch (err: any) {
+      console.warn('[NEX AI] Knowledge wiring unavailable for agent task:', err.message);
+    }
+  }
+
+  /**
+   * Phase 13: Wire onlineEnvironment into an agent request.
+   * Reads the configured online provider + API key from settings/secrets.
+   * If no API key is available, onlineEnvironment = { available: false }
+   * (graceful — agent falls back to local model).
+   *
+   * SECURITY: The API key is read via getSecret() and stored in
+   * onlineEnvironment which is passed to agent/core.ts's model-router.
+   * The model-router uses it ONLY for the runtime's transport layer
+   * (online-transport.ts → routeChat). The key is NEVER logged, emitted
+   * in events, or stored in memory — redactObjectDeep strips it.
+   *
+   * NOTE: The OnlineEnvironment interface (model-router.ts) does NOT have
+   * an apiKey field — it only has available, modelName, modelId. The
+   * actual API key is read lazily by online-transport.ts at call time
+   * via getSecret(). So even if we wanted to pass the key, the interface
+   * doesn't accept it — the agent core only knows IF an online backend
+   * exists, not HOW to authenticate (that's handled by the transport).
+   */
+  function wireOnlineEnvironment(request: any): void {
+    if (request.onlineEnvironment) return; // already wired
+    try {
+      const settings = (loadState().settings || {}) as PersistedSettings;
+      const provider = settings.onlineProvider || 'glm';
+      // Check if API key exists (glmApiKey for GLM, aiApiKey for OpenAI/Claude)
+      const apiKey = provider === 'glm' ? getSecret('glmApiKey') : getSecret('aiApiKey');
+      if (!apiKey) {
+        // No API key — online not available, graceful
+        request.onlineEnvironment = { available: false };
+        return;
+      }
+      // Online is available — set the display name + model id
+      const modelName = provider === 'glm'
+        ? (settings.glmModel || 'GLM 5.3')
+        : provider === 'openai'
+          ? 'OpenAI'
+          : 'Claude';
+      const modelId = provider === 'glm'
+        ? (settings.glmModel || 'glm-5.3')
+        : provider === 'openai'
+          ? 'gpt-4o'
+          : 'claude-sonnet-4-20250514';
+      request.onlineEnvironment = { available: true, modelName, modelId };
+    } catch (err: any) {
+      console.warn('[NEX AI] Online environment wiring failed:', err.message);
+      request.onlineEnvironment = { available: false };
+    }
+  }
+
+  /**
+   * Phase 13: Wire all agent request fields (knowledge + online).
+   * This is the single entry point for all three agent paths.
+   * Mutates the request object in place — returns the same object.
+   */
+  async function wireAgentRequest(request: any): Promise<any> {
+    await wireKnowledgePort(request);
+    wireOnlineEnvironment(request);
+    return request;
+  }
+
   // Create and run an agent task
   ipcMain.handle('agent-create-task', async (_event, request: any) => {
     try {
-      // ── Phase 9 / P9-S5: composition-root knowledge wiring ──
-      // Agent core stays ignorant of the knowledge subsystem; we inject the
-      // port (initial retrieval) + the service (knowledge_search tool).
-      if (request?.projectPath && !request.knowledgePort) {
-        try {
-          const { getKnowledgeService, disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
-          const { projectIdFromPath } = await import('./knowledge/project-id');
-          const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
-          const pid = projectIdFromPath(request.projectPath);
-          const svc = getKnowledgeService({
-            userDataDir: userDataPath,
-            projectId: pid,
-            embedder: (await createConfiguredEmbedder()).embedder,
-            roots: [request.projectPath],
-          });
-          void disposeKnowledgeServices;
-          request.knowledgePort = {
-            available: () => true,
-            retrieve: async (query: string, _pp?: string, limit?: number) => {
-              const { results } = await svc.retrieveForPrompt(query, limit ?? 3);
-              return results.map((r: any) => ({
-                documentId: r.document.id,
-                documentTitle: r.document.title,
-                chunkId: r.chunk.id,
-                content: r.chunk.content,
-                score: r.score,
-                source: r.document.sourcePath,
-                startLine: r.chunk.metadata?.startLine,
-                endLine: r.chunk.metadata?.endLine,
-              }));
-            },
-          };
-          request.toolContextExtras = { ...(request.toolContextExtras || {}), knowledgeService: svc };
-        } catch (err: any) {
-          console.warn('[NEX AI] Knowledge wiring unavailable for agent task:', err.message);
-        }
-      }
+      // Phase 13: Wire knowledge + online via shared helper (DRY)
+      await wireAgentRequest(request);
       const task = await createTask(request);
       // Run asynchronously — UI subscribes to events
       runTask(task.id).catch((err) => {
@@ -5232,41 +5319,8 @@ async function setupIPC(): Promise<void> {
   // recommended path for long-running tasks that shouldn't block the chat.
   ipcMain.handle('task-queue-create-agent-task', async (_event, request: any) => {
     try {
-      // Reuse the same knowledge-wiring logic as agent-create-task.
-      if (request?.projectPath && !request.knowledgePort) {
-        try {
-          const { getKnowledgeService, disposeKnowledgeServices } = await import('./knowledge/knowledge-service');
-          const { projectIdFromPath } = await import('./knowledge/project-id');
-          const { createConfiguredEmbedder } = await import('./knowledge/embedding-select');
-          const pid = projectIdFromPath(request.projectPath);
-          const svc = getKnowledgeService({
-            userDataDir: userDataPath,
-            projectId: pid,
-            embedder: (await createConfiguredEmbedder()).embedder,
-            roots: [request.projectPath],
-          });
-          void disposeKnowledgeServices;
-          request.knowledgePort = {
-            available: () => true,
-            retrieve: async (query: string, _pp?: string, limit?: number) => {
-              const { results } = await svc.retrieveForPrompt(query, limit ?? 3);
-              return results.map((r: any) => ({
-                documentId: r.document.id,
-                documentTitle: r.document.title,
-                chunkId: r.chunk.id,
-                content: r.chunk.content,
-                score: r.score,
-                source: r.document.sourcePath,
-                startLine: r.chunk.metadata?.startLine,
-                endLine: r.chunk.metadata?.endLine,
-              }));
-            },
-          };
-          request.toolContextExtras = { ...(request.toolContextExtras || {}), knowledgeService: svc };
-        } catch (err: any) {
-          console.warn('[NEX AI] Knowledge wiring unavailable for queued agent task:', err.message);
-        }
-      }
+      // Phase 13: Wire knowledge + online via shared helper (DRY)
+      await wireAgentRequest(request);
       const task = await createTask(request);
       const item = enqueueAgentTask(task.id, {
         name: opts_nameFromRequest(request),
