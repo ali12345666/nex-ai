@@ -336,15 +336,29 @@ export class VoiceService {
     this._shouldRestartSTT = false;
   }
 
+  /**
+   * Phase 15: Speak text — STATE-ONLY, no audio production.
+   *
+   * Real TTS is handled EXCLUSIVELY by the main-side Piper pipeline:
+   *   NexChatPanel → voiceConversationSpeak IPC → nex-voice-conversation.speakResponse()
+   *   → local-voice-engine.speak() → piper → voice-tts-audio IPC → App.tsx Audio playback
+   *
+   * This method only manages Orb state transitions (speaking → listening) and
+   * pauses STT during "speaking" so the mic doesn't hear itself. It does NOT
+   * produce any audio — the main process does that via Piper.
+   *
+   * The old browser `window.speechSynthesis` path was removed in Phase 15
+   * because Electron doesn't support it reliably, and it caused duplicate TTS
+   * when both the browser path and the Piper path were active.
+   *
+   * If `speechSynthesis` IS available (e.g. in a browser), it could be used
+   * as a fallback — but in Electron, we skip it entirely.
+   */
   speak(text: string): void {
-    if (!('speechSynthesis' in window)) {
-      this.callbacks.onError?.('TTS unavailable');
-      return;
-    }
-    window.speechSynthesis.cancel();
+    // Phase 15: No browser TTS — only state management.
+    // Real audio is produced by the Piper pipeline (main process → App.tsx).
 
-    // Phase 116: Pause STT during TTS to prevent self-hearing.
-    // In continuous mode, _shouldRestartSTT stays true so STT auto-resumes.
+    // Pause STT during speaking (prevent self-hearing)
     if (this._sttActive) {
       this.stopSTT();
       if (this._mode === 'continuous') {
@@ -352,35 +366,39 @@ export class VoiceService {
       }
     }
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = this.config.language;
-    utterance.onstart = () => { this._ttsActive = true; this.setCondition('tts', 'speaking'); };
-    utterance.onend = () => {
+    // Set speaking state (Orb → speaking)
+    this._ttsActive = true;
+    this.setCondition('tts', 'speaking');
+
+    // Simulate TTS completion after a minimal delay.
+    // Real TTS completion is driven by the main process:
+    //   nex-voice-conversation.speakResponse() → enterListening()
+    //   → voice-conversation-state IPC → AppShell → voiceController
+    // But if this method is called directly (e.g. from VoiceCenterPanel),
+    // we need to eventually clear the 'speaking' state.
+    // The main-side Piper pipeline sends its own state transitions, so
+    // this timeout is a safety net for the browser-only fallback path.
+    const speakDuration = Math.max(500, text.length * 50); // ~50ms per char, min 500ms
+    setTimeout(() => {
       this._ttsActive = false;
       this.clearCondition('tts');
-      // Phase 116: Auto-resume listening after TTS in continuous mode
+      // Auto-resume listening after TTS in continuous mode
       if (this._mode === 'continuous' && this._shouldRestartSTT && !this._sttActive) {
         setTimeout(() => {
           if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
           this.setCondition('mic', 'listening');
         }, 200);
       }
-    };
-    utterance.onerror = () => {
-      this._ttsActive = false;
-      this.clearCondition('tts');
-      if (this._mode === 'continuous' && this._shouldRestartSTT && !this._sttActive) {
-        setTimeout(() => {
-          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
-          this.setCondition('mic', 'listening');
-        }, 200);
-      }
-    };
-    window.speechSynthesis.speak(utterance);
+    }, speakDuration);
   }
 
+  /**
+   * Phase 15: Stop speaking — state-only, no audio cancel.
+   * Real TTS cancellation is handled by voiceConversationStopSpeaking IPC
+   * (main process). This method only clears the Orb state.
+   */
   stopSpeaking(): void {
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    // Phase 15: No browser speechSynthesis to cancel — only state cleanup
     this._ttsActive = false;
     this.clearCondition('tts');
   }
