@@ -67,6 +67,14 @@ export interface TTSOptions {
   pitch?: number;
   /** Output file path (if not playing to speaker) */
   outputFilePath?: string;
+  /**
+   * Phase 16 (BUG-12 + BUG-26): monotonic ID identifying this TTS turn.
+   * Passed by the conversation handler (NexVoiceConversation.speakResponse)
+   * so it can match the renderer's `voice-tts-ended` signal to the
+   * correct in-flight request. When omitted, the engine auto-increments
+   * its internal counter (legacy callers).
+   */
+  requestId?: number;
 }
 
 export interface TTSResult {

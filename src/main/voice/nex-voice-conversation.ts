@@ -142,6 +142,26 @@ export class NexVoiceConversation {
   private interruptionDetected = false;
   private permissionVoiceCaptureFn: (() => Promise<string>) | null = null;
 
+  // ── Phase 16 (BUG-12 + BUG-26): TTS request coordination ──────────────
+  //
+  // `currentTtsRequestId` is the monotonic ID of the currently-in-flight TTS
+  // turn. It is incremented at the start of every speakResponse() and on
+  // every cancel (abortCurrentTurn / handleInterruption). The engine uses
+  // the same ID for its stale-detection guard (BUG-26 A), and the renderer
+  // uses it to decide which `voice-tts-audio` IPC is the "current" one
+  // (BUG-26 B + overlap protection).
+  //
+  // `ttsPlaybackResolve` / `ttsPlaybackRequestId` / `ttsPlaybackTimeout`
+  // implement `waitForTtsPlayback(requestId)` — a promise that resolves
+  // when the renderer sends `voice-tts-ended` for this requestId, OR when
+  // the request is cancelled/superseded, OR after a 30s safety timeout
+  // (BUG-12 fix: prevents hang if renderer crashes or audio element never
+  // fires `onended`).
+  private currentTtsRequestId = 0;
+  private ttsPlaybackResolve: (() => void) | null = null;
+  private ttsPlaybackRequestId: number | null = null;
+  private ttsPlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
     this.context = {
       currentUtterance: '',
@@ -431,9 +451,43 @@ export class NexVoiceConversation {
   /**
    * Speak a response (TTS). Called by the brain / chat IPC after generating
    * a personality-styled response.
+   *
+   * Phase 16 (BUG-12 + BUG-26 fix):
+   *
+   * The new lifecycle is:
+   *   1. Generate a fresh requestId (invalidates any previous in-flight TTS).
+   *   2. setState('speaking') and call engine.speak(text, { requestId }).
+   *      engine.speak returns once Piper synthesis is done (NOT once audio
+   *      playback is done — that's the bug we're fixing). It returns
+   *      `audioReady` = true iff `onTTSAudioReady` was fired.
+   *   3. If audioReady is false (synthesis failed OR stale per BUG-26 A
+   *      guard), do NOT wait — transition to idle and return.
+   *   4. If the request was superseded during synthesis (a newer
+   *      speakResponse or a Stop arrived), abort without waiting.
+   *   5. Otherwise, await `waitForTtsPlayback(requestId)` — a promise that
+   *      resolves when the renderer sends `voice-tts-ended` for this
+   *      requestId (audio element's `onended` / `onerror`), with a 30s
+   *      safety timeout.
+   *   6. After the wait resolves, re-check the requestId — if a Stop or
+   *      newer request arrived during playback, do NOT enterListening.
+   *   7. Only if still current, enterListening() (which transitions to
+   *      'listening' and restarts STT).
+   *
+   * Race protection (TTS #1 → Stop → TTS #1 late → TTS #2):
+   *   - Stop bumps currentTtsRequestId, so engine.speak's BUG-26 A guard
+   *     discards the late #1 synthesis result. audioReady=false, the wait
+   *     is skipped. No audio for #1.
+   *   - TTS #2 gets a fresh requestId, synthesizes normally, waits for its
+   *     own playback, and only #2 plays.
    */
   async speakResponse(text: string): Promise<void> {
     if (!text.trim()) return;
+
+    // Generate a fresh request ID. This invalidates any previous in-flight
+    // TTS — its engine stale-guard will fire, its waitForTtsPlayback will
+    // be released immediately (see releaseTtsPlaybackWait below).
+    this.currentTtsRequestId++;
+    const requestId = this.currentTtsRequestId;
 
     // Record the turn
     this.turns.push({ role: 'nex', text, timestamp: Date.now(), state: 'speaking' });
@@ -441,17 +495,58 @@ export class NexVoiceConversation {
 
     // Transition to speaking
     this.setState('speaking');
+
+    let audioReady = false;
     try {
       const engine = getLocalVoiceEngine();
-      await engine.speak(text);
+      // Pass requestId so engine uses it for stale detection and tags the
+      // voice-tts-audio IPC. The renderer uses it to discard stale audio.
+      audioReady = await engine.speak(text, { requestId });
     } catch (err: any) {
       this.callbacks.onError?.(`TTS failed: ${err?.message || err}`);
-      this.setState('error' as any);
       this.setState('idle');
+      this.releaseTtsPlaybackWait();
       return;
     }
 
-    // After speaking, return to listening (continuous conversation) or idle
+    // GUARD 1: if a newer request or Stop superseded this one during
+    // synthesis, do NOT wait for playback and do NOT enterListening.
+    if (this.currentTtsRequestId !== requestId) {
+      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} superseded during synthesis — not waiting for playback`);
+      return;
+    }
+
+    // GUARD 2: if synthesis failed or was discarded as stale (BUG-26 A),
+    // there is no audio to wait for. Transition to idle and return.
+    if (!audioReady) {
+      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} no audio ready — transitioning to idle`);
+      this.setState(this.active ? 'idle' : 'idle');
+      return;
+    }
+
+    // Wait for the renderer to confirm playback ended (BUG-12 fix).
+    // This promise resolves when:
+    //   (a) the renderer sends `voice-tts-ended` for this requestId
+    //       (audio element's `onended` fired), OR
+    //   (b) the renderer sends `voice-tts-ended` for this requestId
+    //       because `onerror` fired (defensive — release the wait), OR
+    //   (c) a newer speakResponse or Stop bumps currentTtsRequestId
+    //       (releaseTtsPlaybackWait auto-resolves the pending wait), OR
+    //   (d) the 30s safety timeout fires (defensive — prevents hang if
+    //       the renderer crashed or audio element never fires onended).
+    await this.waitForTtsPlayback(requestId);
+
+    // GUARD 3: re-check after the wait — a Stop or newer request may have
+    // arrived during playback. If so, do NOT enterListening (the new
+    // request's speakResponse will handle that, or the user explicitly
+    // cancelled).
+    if (this.currentTtsRequestId !== requestId) {
+      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} cancelled during playback — not entering listening`);
+      return;
+    }
+
+    // After playback ended, return to listening (continuous conversation)
+    // or idle.
     if (this.active && !this.interruptionDetected) {
       await this.enterListening();
     } else {
@@ -461,12 +556,104 @@ export class NexVoiceConversation {
   }
 
   /**
+   * Phase 16 (BUG-12 fix): Wait for the renderer to confirm that the audio
+   * element finished playing the TTS WAV file for the given requestId.
+   *
+   * Resolves when:
+   *   - `notifyTtsPlaybackEnded(requestId)` is called (renderer sent
+   *     `voice-tts-ended` for this requestId), OR
+   *   - `releaseTtsPlaybackWait()` is called (cancel/supersede — the
+   *     pending wait is released so the caller doesn't hang), OR
+   *   - 30s safety timeout fires (defensive — prevents permanent hang if
+   *     renderer crashes or audio element never fires `onended`).
+   *
+   * If `requestId` does not match `this.currentTtsRequestId` at call time,
+   * resolves immediately (the request was already superseded before this
+   * wait even started).
+   */
+  private waitForTtsPlayback(requestId: number): Promise<void> {
+    // If already superseded, resolve immediately.
+    if (this.currentTtsRequestId !== requestId) {
+      console.log(`[VOICE_PIPELINE] waitForTtsPlayback: req=${requestId} already superseded — resolving immediately`);
+      return Promise.resolve();
+    }
+    // If a previous wait is somehow still pending, release it first
+    // (defensive — should not normally happen because speakResponse is
+    // serialized, but protects against reentrancy).
+    this.releaseTtsPlaybackWait();
+    return new Promise<void>((resolve) => {
+      this.ttsPlaybackRequestId = requestId;
+      this.ttsPlaybackResolve = resolve;
+      this.ttsPlaybackTimeout = setTimeout(() => {
+        if (this.ttsPlaybackRequestId === requestId) {
+          console.warn(`[VOICE_PIPELINE] TTS playback wait timeout for req=${requestId} — releasing (renderer may have crashed)`);
+          this.releaseTtsPlaybackWait();
+        }
+      }, 30000);
+    });
+  }
+
+  /**
+   * Phase 16 (BUG-12 fix): Called by the main process `voice-tts-ended`
+   * IPC handler when the renderer's audio element fires `onended` (or
+   * `onerror`). Resolves the pending `waitForTtsPlayback(requestId)`
+   * promise iff the signal matches the current pending wait.
+   *
+   * If the signal is for a stale requestId (already superseded), it is
+   * ignored — the wait was already released by `releaseTtsPlaybackWait`
+   * when the supersede happened.
+   */
+  notifyTtsPlaybackEnded(requestId: number): void {
+    if (this.ttsPlaybackRequestId === requestId) {
+      console.log(`[VOICE_PIPELINE] TTS playback ended signal for req=${requestId} — releasing wait`);
+      this.releaseTtsPlaybackWait();
+    } else {
+      // Stale signal — ignore. Could be:
+      //   - a late `onended` for a previously-cancelled request, OR
+      //   - a duplicate `onended` after the wait was already released.
+      console.log(`[VOICE_PIPELINE] TTS playback ended signal for req=${requestId} but current wait is for req=${this.ttsPlaybackRequestId} — ignoring (stale)`);
+    }
+  }
+
+  /**
+   * Phase 16 (BUG-12 + BUG-26): Release the pending `waitForTtsPlayback`
+   * promise (if any). Called by:
+   *   - `notifyTtsPlaybackEnded` when the matching signal arrives, OR
+   *   - `abortCurrentTurn` / `handleInterruption` when the user cancels, OR
+   *   - `speakResponse` when a newer request supersedes the previous one
+   *     (the previous wait is released so the previous speakResponse can
+   *     finish and exit without hanging).
+   *
+   * Also bumps `currentTtsRequestId` so the engine's stale-guard discards
+   * any in-flight synthesis for the cancelled request (BUG-26 A).
+   */
+  private releaseTtsPlaybackWait(): void {
+    if (this.ttsPlaybackResolve) {
+      const resolve = this.ttsPlaybackResolve;
+      this.ttsPlaybackResolve = null;
+      this.ttsPlaybackRequestId = null;
+      if (this.ttsPlaybackTimeout) {
+        clearTimeout(this.ttsPlaybackTimeout);
+        this.ttsPlaybackTimeout = null;
+      }
+      resolve();
+    }
+  }
+
+  /**
    * Handle a barge-in: the user spoke while NEX was speaking.
    * Stops TTS immediately and transitions to listening.
+   *
+   * Phase 16 (BUG-26 fix): bumps currentTtsRequestId and releases any
+   * pending playback wait so the cancelled speakResponse doesn't hang,
+   * and the engine's stale-guard discards any in-flight synthesis.
    */
   private handleInterruption(text: string): void {
     this.interruptionDetected = true;
     this.callbacks.onInterruption?.();
+    // Phase 16: invalidate any in-flight TTS (synthesis + playback).
+    this.currentTtsRequestId++;
+    this.releaseTtsPlaybackWait();
     try {
       const engine = getLocalVoiceEngine();
       engine.stopSpeaking();
@@ -504,8 +691,25 @@ export class NexVoiceConversation {
 
   /**
    * Abort the current turn (cancel thinking / speaking).
+   *
+   * Phase 16 (BUG-12 + BUG-26 fix):
+   *   - Bump `currentTtsRequestId` so the engine's stale-guard (BUG-26 A)
+   *     discards any in-flight Piper synthesis. The renderer also uses the
+   *     bumped ID via the `voice-tts-stop-playback` IPC to pause any
+   *     currently-playing audio element (BUG-26 B).
+   *   - Release the pending `waitForTtsPlayback` promise (BUG-12) so the
+   *     speakResponse that's awaiting playback doesn't hang waiting for a
+   *     `voice-tts-ended` signal that will never come (the renderer pauses
+   *     the audio, so `onended` may not fire).
    */
   abortCurrentTurn(): void {
+    // Invalidate any in-flight TTS request (both engine synthesis and
+    // renderer playback). The bumped ID causes:
+    //   - engine.speak's stale-guard to discard late synthesis (BUG-26 A)
+    //   - speakResponse's GUARD 1/3 to skip enterListening (BUG-12)
+    this.currentTtsRequestId++;
+    // Release any pending playback wait so speakResponse doesn't hang.
+    this.releaseTtsPlaybackWait();
     try {
       const engine = getLocalVoiceEngine();
       if (engine.isSpeaking) engine.stopSpeaking();

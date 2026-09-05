@@ -3221,3 +3221,44 @@ Stage Summary:
   * 5 instrumentation gaps that block E2E verification (no [KNOWLEDGE_INJECT] log, no live VRAM telemetry, no agent-cancel → inference abort, queue.ts has zero logs, voice-conversation-partial sent but never listened to)
 - Minimum P0 set for "Phase 16 green" defined: 8 tests (P0-A through P0-H) covering local LLM, agent tool exec, recovery, voice STT, voice→TTS, cancellation, orb state, error handling.
 - Full report delivered inline to the user.
+
+
+---
+Task ID: PHASE16-BUG12-BUG26-IMPL
+Agent: main (Z.ai Code orchestrator)
+Task: Implement fixes for BUG-12 (STT restarts before real WAV playback ends → mic feedback loop) and BUG-26 (stale TTS plays after Stop). Scope: voice lifecycle + IPC only. No new features. Phase 14/15 architecture preserved.
+
+Work Log:
+- Re-read all 6 target files + NexChatPanel handleStop + InteractionLoopManager.speakText (legacy caller of engine.speak)
+- Designed TTS request-ID based coordination: single monotonic counter travels through engine → main IPC → renderer → audio element → IPC back → conversation handler, enabling stale detection at every layer
+- BUG-12 fix: LocalVoiceEngine.speak() no longer transitions state / restarts STT after synthesis (only sets ttsActive=false). NexVoiceConversation.speakResponse awaits new waitForTtsPlayback(requestId) promise which resolves on renderer's voice-tts-ended IPC, then transitions to listening. 30s safety timeout prevents hang.
+- BUG-26 A fix: engine.speak has stale-guard after synthesize: if ttsActive=false (Stop called) OR currentTtsRequestId !== myRequestId (newer request), discard result, do NOT fire onTTSAudioReady. stopSpeaking bumps currentTtsRequestId to invalidate in-flight synthesis.
+- BUG-26 B fix: voice-conversation-stop-speaking handler now broadcasts voice-tts-stop-playback IPC to renderer. App.tsx subscribes, pauses currentAudioRef.current.pause() immediately. No stale audio continues through speakers.
+- Race protection: requestId travels in voice-tts-audio IPC payload. App.tsx tracks currentAudioRequestIdRef. Late-arriving audio with smaller requestId than current is discarded. Overlap protection: starting new audio pauses the old one.
+- Abort path: abortCurrentTurn and handleInterruption both bump currentTtsRequestId + release pending playback wait + call stopSpeaking.
+- Defensive: audio.onerror and audio.play().catch() both call voiceTtsEnded IPC so speakResponse doesn't hang on playback failure.
+
+Files changed:
+- src/main/ai/voice-types.ts (+8): added requestId?: number to TTSOptions
+- src/main/voice/local-voice-engine.ts (+127/-12): onTTSAudioReady signature gains requestId; _currentTtsRequestId field + getter/setter; speak() rewritten to return Promise<boolean>, use requestId, add BUG-26 A stale guard, NO auto state transition / startListening (BUG-12 fix); stopSpeaking bumps requestId
+- src/main/voice/nex-voice-conversation.ts (+210/-13): added currentTtsRequestId, ttsPlaybackResolve, ttsPlaybackRequestId, ttsPlaybackTimeout fields; speakResponse rewritten with 3 guards (supersede-during-synthesis, no-audio, cancel-during-playback) + waitForTtsPlayback await; new waitForTtsPlayback(requestId) with 30s timeout; new notifyTtsPlaybackEnded(requestId) public method; new releaseTtsPlaybackWait private method; abortCurrentTurn + handleInterruption now bump requestId + release wait
+- src/main/main.ts (+46/-3): onTTSAudioReady callback passes requestId in voice-tts-audio IPC payload; voice-conversation-stop-speaking handler broadcasts voice-tts-stop-playback; new voice-tts-ended ipcMain.handle → notifyTtsPlaybackEnded
+- src/main/preload.ts (+26/-2): onVoiceTTSAudio callback receives requestId; new voiceTtsEnded invoke; new onVoiceTtsStopPlayback listener
+- src/renderer/App.tsx (+132/-12): imports useRef; added currentAudioRef + currentAudioRequestIdRef; onVoiceTTSAudio callback rewritten with stale-check (requestId < current), pause-old-before-new (overlap protection), audio.onended/onerror/play().catch all call voiceTtsEnded; new useEffect subscribing to onVoiceTtsStopPlayback → pauses currentAudioRef
+- src/renderer/types/electron.d.ts (+14/-1): onVoiceTTSAudio signature with requestId; new voiceTtsEnded + onVoiceTtsStopPlayback types
+- tests/tools/test-phase-15-voice-unification.ts (+5/-2): relaxed "calls engine.speak" assertion to accept new { requestId } arg (Phase 15 invariant — speakResponse uses engine.speak, not browser TTS — preserved)
+
+New test files:
+- tests/tools/test-phase-16-bug12.ts (50 assertions): source-level + runtime semantics. Runtime tests mirror speakResponse lifecycle with fake engine, verify STT does NOT restart before playback signal, cancel during playback releases wait (no STT restart), 30s timeout prevents hang.
+- tests/tools/test-phase-16-bug26.ts (60 assertions): source-level + runtime semantics. Runtime tests verify Stop during synthesis → onTTSAudioReady NOT fired; Stop during playback → audio paused; race protection (TTS #1 late discarded, only #2 plays); overlap protection (no two audios at once).
+
+Stage Summary:
+- BUG-12 root cause fixed: engine.speak no longer auto-restarts STT. speakResponse waits for renderer's voice-tts-ended signal (audio.onended) before transitioning to listening. 30s defensive timeout prevents hang.
+- BUG-26 A root cause fixed: stopSpeaking bumps requestId → engine's stale-guard discards late synthesis result → onTTSAudioReady NOT fired → no voice-tts-audio IPC → renderer never plays stale audio.
+- BUG-26 B root cause fixed: stop-speaking handler broadcasts voice-tts-stop-playback → App.tsx pauses currentAudioRef immediately → no audio continues through speakers after Stop.
+- Race protection: requestId travels through whole pipeline. Late-arriving TTS with smaller requestId than current is discarded at renderer. Overlapping TTS calls pause the old audio before starting new.
+- Phase 14/15 architecture preserved: wasVoiceInputRef, ttsCancelledRef, speakResponseIfVoice, voiceConversationSpeak IPC all intact. Phase 15 voice-service.ts has no browser TTS (unchanged).
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: Phase 6 (149/149), 7 (165/165), 8 (151/151), 9 (100/100), 10 (136/136), 11 (136/136), 12 (56/56), 13 (51/51), 14 (43/43), 15 (34/34), 116 (26+48+12+19+19+19+60+30+34+30+19 = 326/326) all green.
+- New: Phase 16 BUG-12 (50/50), Phase 16 BUG-26 (60/60).
+- No commits made. No pushes made. Working tree changes ready for review. Awaiting user approval before commit.

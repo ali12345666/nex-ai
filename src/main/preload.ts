@@ -196,13 +196,33 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('voice-conversation-state', listener);
     return () => ipcRenderer.removeListener('voice-conversation-state', listener);
   },
-  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string) => void) => {
+  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string, requestId: number) => void) => {
     const listener = (_e: any, ev: any) => {
-      console.log(`[VOICE_PIPELINE] preload received TTS audio: ${ev?.audioFilePath}`);
-      callback(ev?.audioFilePath, ev?.text || '');
+      console.log(`[VOICE_PIPELINE] preload received TTS audio (req=${ev?.requestId}): ${ev?.audioFilePath}`);
+      callback(ev?.audioFilePath, ev?.text || '', ev?.requestId ?? 0);
     };
     ipcRenderer.on('voice-tts-audio', listener);
     return () => ipcRenderer.removeListener('voice-tts-audio', listener);
+  },
+  // Phase 16 (BUG-12 fix): renderer → main signal that the audio element
+  // finished playing (onended or onerror). The main process forwards this
+  // to NexVoiceConversation.notifyTtsPlaybackEnded(requestId), which
+  // releases the pending waitForTtsPlayback promise that speakResponse
+  // is awaiting. Without this, speakResponse would hang waiting for an
+  // `onended` signal that never reaches main, and STT would never restart
+  // (or, with the 30s safety timeout, would restart too late).
+  voiceTtsEnded: (requestId: number) => ipcRenderer.invoke('voice-tts-ended', requestId),
+  // Phase 16 (BUG-26 B fix): main → renderer broadcast that the user
+  // clicked Stop (or cancelled). App.tsx subscribes via this listener and
+  // pauses the currently-playing <audio> element immediately, so the
+  // audio doesn't continue playing through the speakers after Stop.
+  onVoiceTtsStopPlayback: (callback: () => void) => {
+    const listener = () => {
+      console.log('[VOICE_PIPELINE] preload received voice-tts-stop-playback');
+      callback();
+    };
+    ipcRenderer.on('voice-tts-stop-playback', listener);
+    return () => ipcRenderer.removeListener('voice-tts-stop-playback', listener);
   },
   onVoiceConversationWake: (callback: (ev: any) => void) => {
     const listener = (_e: any, ev: any) => callback(ev);

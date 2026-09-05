@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, useRef } from 'react';
 import { useStore } from './store/useStore';
 import CommandPalette from './components/CommandPalette';
 import PermissionPrompt from './components/agent/PermissionPrompt';
@@ -58,25 +58,143 @@ function App() {
   // ── TTS audio playback: play WAV file when engine sends it ────────────────
   // The LocalVoiceEngine synthesizes text to a WAV file via Piper, then sends
   // the file path here. We create an <audio> element and play it.
+  //
+  // Phase 16 (BUG-12 + BUG-26 fix):
+  //
+  // Two refs are tracked:
+  //   - `currentAudioRef` — the currently-playing <audio> element. We keep a
+  //     reference so we can call `audio.pause()` on it when:
+  //       (a) a newer TTS request arrives (BUG-26 overlap protection —
+  //           the old audio is paused before the new one starts), OR
+  //       (b) the user clicks Stop (the main process broadcasts
+  //           `voice-tts-stop-playback` via IPC, and we subscribe here).
+  //   - `currentAudioRequestIdRef` — the requestId of the audio currently
+  //     playing. Used to decide whether to play a newly-arrived audio:
+  //       - If the new requestId > current, the old audio is stale — pause
+  //         it and play the new one.
+  //       - If the new requestId < current, the new audio is stale (from
+  //         an older, already-cancelled request) — DO NOT play it.
+  //       - This is the race protection for "TTS #1 → Stop → TTS #1 late
+  //         → TTS #2": the late #1 audio has a smaller requestId than the
+  //         current #2, so it is discarded.
+  //
+  // BUG-12 fix: when the audio element fires `onended` (or `onerror`), we
+  // send the `voice-tts-ended` IPC to main with the requestId. Main
+  // forwards it to NexVoiceConversation.notifyTtsPlaybackEnded(requestId),
+  // which releases the pending waitForTtsPlayback promise that
+  // speakResponse is awaiting. Only then does speakResponse transition
+  // to 'listening' and restart STT — preventing the mic from hearing
+  // the still-playing TTS audio (the original feedback loop bug).
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const currentAudioRequestIdRef = useRef<number | null>(null);
+
   useEffect(() => {
-    const off = window.nexAPI?.onVoiceTTSAudio?.((audioFilePath: string, text: string) => {
-      console.log(`[VOICE_PIPELINE] Renderer received TTS audio: ${audioFilePath}`);
+    const off = window.nexAPI?.onVoiceTTSAudio?.((audioFilePath: string, text: string, requestId: number) => {
+      console.log(`[VOICE_PIPELINE] Renderer received TTS audio (req=${requestId}): ${audioFilePath}`);
+
+      // ── BUG-26 race protection ──────────────────────────────────────
+      // If a newer audio is already playing (currentAudioRequestIdRef >
+      // requestId), this audio is from a stale (older) request — discard
+      // it entirely. Do NOT play. This handles the case where:
+      //   TTS #1 → Stop → TTS #1 late → TTS #2 starts → TTS #1 arrives
+      // The late #1 has requestId < #2, so we skip it.
+      if (currentAudioRequestIdRef.current !== null && requestId < currentAudioRequestIdRef.current) {
+        console.log(`[VOICE_PIPELINE] TTS audio (req=${requestId}) is stale (current=${currentAudioRequestIdRef.current}) — not playing`);
+        return;
+      }
+
+      // Pause any currently-playing audio before starting a new one
+      // (overlap protection — BUG-30 side-effect).
+      if (currentAudioRef.current) {
+        try {
+          currentAudioRef.current.pause();
+        } catch { /* */ }
+        currentAudioRef.current = null;
+      }
+
       // Play the audio file using a file:// URL
       try {
         // Convert path to file:// URL (handle Windows backslashes)
+        // Note: on Windows, paths like C:\Users\...\file.wav become
+        // file://C:/Users/.../file.wav — most browsers accept this form.
         const fileUrl = `file://${audioFilePath.replace(/\\/g, '/')}`;
         const audio = new Audio(fileUrl);
+        currentAudioRef.current = audio;
+        currentAudioRequestIdRef.current = requestId;
+
+        // BUG-12 fix: notify main when playback ends so speakResponse can
+        // resume STT. Also clear refs so the next audio can play.
         audio.onended = () => {
-          console.log('[VOICE_PIPELINE] TTS audio playback completed');
+          console.log(`[VOICE_PIPELINE] TTS audio playback completed (req=${requestId})`);
+          if (currentAudioRef.current === audio) {
+            currentAudioRef.current = null;
+            currentAudioRequestIdRef.current = null;
+          }
+          // Notify main to release waitForTtsPlayback(requestId).
+          // Use a defensive try/catch so a missing IPC never blocks the
+          // state transition (the 30s safety timeout in main would
+          // eventually release, but we prefer immediate release).
+          try {
+            window.nexAPI?.voiceTtsEnded?.(requestId);
+          } catch (err) {
+            console.warn('[VOICE_PIPELINE] voiceTtsEnded IPC failed:', err);
+          }
         };
+        // BUG-12 defensive: if audio playback errors out (e.g. file not
+        // found, codec issue), still notify main so speakResponse doesn't
+        // hang waiting for an `onended` that will never fire.
         audio.onerror = (e) => {
-          console.warn('[VOICE_PIPELINE] TTS audio playback error:', e);
+          console.warn(`[VOICE_PIPELINE] TTS audio playback error (req=${requestId}):`, e);
+          if (currentAudioRef.current === audio) {
+            currentAudioRef.current = null;
+            currentAudioRequestIdRef.current = null;
+          }
+          try {
+            window.nexAPI?.voiceTtsEnded?.(requestId);
+          } catch (err) {
+            console.warn('[VOICE_PIPELINE] voiceTtsEnded IPC failed:', err);
+          }
         };
         audio.play().catch((err) => {
-          console.warn('[VOICE_PIPELINE] TTS audio play() failed:', err?.message);
+          console.warn(`[VOICE_PIPELINE] TTS audio play() failed (req=${requestId}):`, err?.message);
+          // If play() rejects (e.g. not-allowed user gesture requirement),
+          // still notify main so speakResponse doesn't hang.
+          if (currentAudioRef.current === audio) {
+            currentAudioRef.current = null;
+            currentAudioRequestIdRef.current = null;
+          }
+          try {
+            window.nexAPI?.voiceTtsEnded?.(requestId);
+          } catch { /* */ }
         });
       } catch (err: any) {
-        console.warn('[VOICE_PIPELINE] TTS audio playback error:', err?.message);
+        console.warn(`[VOICE_PIPELINE] TTS audio playback error (req=${requestId}):`, err?.message);
+        // Defensive: even on setup failure, notify main.
+        try {
+          window.nexAPI?.voiceTtsEnded?.(requestId);
+        } catch { /* */ }
+      }
+    });
+    return () => { if (off) off(); };
+  }, []);
+
+  // ── BUG-26 B: subscribe to Stop signal from main ────────────────────────
+  // When the user clicks Stop (NexChatPanel.handleStop), the main process's
+  // `voice-conversation-stop-speaking` handler broadcasts
+  // `voice-tts-stop-playback` to the renderer. We subscribe here and pause
+  // the currently-playing audio element immediately. Without this, audio
+  // that was already sent to the renderer (Piper synthesis completed
+  // before Stop was clicked) would continue playing through the speakers
+  // despite Stop — the original BUG-26 B.
+  useEffect(() => {
+    const off = window.nexAPI?.onVoiceTtsStopPlayback?.(() => {
+      console.log('[VOICE_PIPELINE] Renderer pausing current TTS audio (stop signal received)');
+      if (currentAudioRef.current) {
+        try {
+          currentAudioRef.current.pause();
+        } catch { /* */ }
+        currentAudioRef.current = null;
+        currentAudioRequestIdRef.current = null;
       }
     });
     return () => { if (off) off(); };

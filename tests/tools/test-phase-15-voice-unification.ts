@@ -100,7 +100,10 @@ async function runTests() {
     assert(conversationSource.includes('async speakResponse'), 'speakResponse exists');
 
     console.log('\nTest 3.2: speakResponse calls local-voice-engine.speak');
-    assert(conversationSource.includes('engine.speak(text)'), 'calls engine.speak');
+    // Phase 16: speakResponse may pass an additional { requestId } arg for
+    // BUG-12 / BUG-26 race protection. The Phase 15 invariant — that
+    // speakResponse calls engine.speak (NOT browser TTS) — is preserved.
+    assert(conversationSource.includes('engine.speak(text'), 'calls engine.speak');
 
     console.log('\nTest 3.3: voiceConversationSpeak IPC exists in main.ts');
     const mainSource = fs.readFileSync(

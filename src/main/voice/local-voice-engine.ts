@@ -153,8 +153,16 @@ export interface VoiceEngineCallbacks {
   onFinalTranscript?: (text: string) => void;
   onError?: (message: string) => void;
   onPermissionChange?: (granted: boolean | null) => void;
-  /** Called when TTS has synthesized audio — the renderer should play this file */
-  onTTSAudioReady?: (audioFilePath: string, text: string) => void;
+  /**
+   * Called when TTS has synthesized audio — the renderer should play this file.
+   *
+   * Phase 16: `requestId` is a monotonic ID identifying this TTS turn. It
+   * travels through the whole pipeline (engine → main IPC → renderer →
+   * audio element → renderer IPC back → main → conversation handler) so that
+   * stale TTS (cancelled by Stop or superseded by a newer request) can be
+   * discarded at every layer. See BUG-12 / BUG-26 fixes.
+   */
+  onTTSAudioReady?: (audioFilePath: string, text: string, requestId: number) => void;
 }
 
 export class LocalVoiceEngine {
@@ -166,6 +174,13 @@ export class LocalVoiceEngine {
   private sttActive = false;
   private ttsActive = false;
   private micEnabled = false;
+
+  // Phase 16: monotonic TTS request ID for stale detection / race protection
+  // (BUG-12 + BUG-26). Incremented on every speak() call and on every stopSpeaking().
+  // The conversation handler (NexVoiceConversation) reads/sets this via the
+  // `currentTtsRequestId` getter/setter so it can match the renderer's
+  // `voice-tts-ended` signal to the correct in-flight request.
+  private _currentTtsRequestId = 0;
 
   // Pipeline diagnostics
   private audioFramesCaptured = 0;
@@ -200,6 +215,15 @@ export class LocalVoiceEngine {
   get currentState(): VoiceEngineState { return this.state; }
   get isListening(): boolean { return this.sttActive; }
   get isSpeaking(): boolean { return this.ttsActive; }
+
+  /**
+   * Phase 16: The current TTS request ID. The conversation handler sets this
+   * to its own counter before calling speak(), and reads it to match the
+   * renderer's `voice-tts-ended` signal. Stop/cancel bumps this to
+   * invalidate any in-flight synthesis.
+   */
+  get currentTtsRequestId(): number { return this._currentTtsRequestId; }
+  set currentTtsRequestId(value: number) { this._currentTtsRequestId = value; }
 
   private setState(state: VoiceEngineState): void {
     if (this.state !== state) {
@@ -318,41 +342,114 @@ export class LocalVoiceEngine {
     return result;
   }
 
-  async speak(text: string, opts?: TTSOptions): Promise<void> {
-    if (!text.trim()) return;
+  /**
+   * Speak text via TTS (Piper).
+   *
+   * Phase 16 (BUG-12 + BUG-26 fixes):
+   *
+   * - `opts` may carry an optional `requestId` (via the `TTSOptions.requestId`
+   *   field added in Phase 16). When the conversation handler passes one,
+   *   it is used as the monotonic ID for this TTS turn. When omitted
+   *   (legacy callers like InteractionLoopManager.speakText), the engine
+   *   auto-increments its internal counter.
+   *
+   * - BUG-12: This method NO LONGER transitions state back to
+   *   `listening`/`idle` and NO LONGER calls `startListening()` after
+   *   synthesis completes. The conversation handler owns the post-speak
+   *   state transition: it awaits the renderer's `voice-tts-ended` signal
+   *   (via the `voice-tts-ended` IPC) and only then transitions to
+   *   `listening` and restarts STT. This prevents the mic from hearing
+   *   the still-playing TTS audio (feedback loop).
+   *
+   * - BUG-26 A: After `synthesize()` resolves, we check both `ttsActive`
+   *   (false if `stopSpeaking()` was called during synthesis) and the
+   *   request ID (bumped by `stopSpeaking()` or a newer `speak()` call).
+   *   If either indicates this request is stale, we DISCARD the result
+   *   — `onTTSAudioReady` is NOT fired, no audio file path is sent to the
+   *   renderer, no audio plays.
+   *
+   * Returns `true` if audio was successfully synthesized and handed to the
+   * renderer (`onTTSAudioReady` fired). Returns `false` if synthesis failed
+   * OR if the result was discarded as stale.
+   */
+  async speak(text: string, opts?: TTSOptions): Promise<boolean> {
+    if (!text.trim()) return false;
     this.lastTTS = text;
-    if (!this.ttsProvider) { this.callbacks.onError?.('No TTS provider registered'); return; }
+    if (!this.ttsProvider) { this.callbacks.onError?.('No TTS provider registered'); return false; }
     if (!this.ttsProvider.isAvailable()) {
       try { await this.ttsProvider.init(); }
-      catch (err: any) { this.callbacks.onError?.(`TTS init failed: ${err.message}`); return; }
+      catch (err: any) { this.callbacks.onError?.(`TTS init failed: ${err.message}`); return false; }
     }
     const wasListening = this.sttActive;
     if (wasListening) await this.stopListening();
     this.ttsActive = true;
+
+    // Phase 16: assign the request ID for this turn.
+    // If the caller passed opts.requestId, use it (the conversation handler
+    // owns the ID space so it can match it later). Otherwise auto-increment.
+    const requestId = opts?.requestId ?? (++this._currentTtsRequestId);
+    this._currentTtsRequestId = requestId;
+
     this.setState('speaking');
-    console.log(`[VOICE_PIPELINE] TTS speaking: "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
+    console.log(`[VOICE_PIPELINE] TTS speaking (req=${requestId}): "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
+
+    let audioReady = false;
     try {
       const result = await this.ttsProvider.synthesize(text, opts);
-      // CRITICAL: emit the audio file path so the renderer can play it.
-      // Previously the result was ignored — TTS synthesized the WAV file
-      // but nobody played it.
+
+      // ── BUG-26 A FIX: stale-detection guard ───────────────────────────
+      // If stopSpeaking() was called during synthesis, ttsActive is false.
+      // If a newer speak() or stopSpeaking() ran, the request ID was bumped.
+      // In either case, this synthesis result is stale — DISCARD it. Do NOT
+      // fire onTTSAudioReady. The renderer never receives the audio path.
+      if (!this.ttsActive || this._currentTtsRequestId !== requestId) {
+        console.log(`[VOICE_PIPELINE] TTS synthesis completed for req=${requestId} but stale (ttsActive=${this.ttsActive}, current=${this._currentTtsRequestId}) — discarding`);
+        this.ttsActive = false;
+        return false;
+      }
+
       if (result.success && result.audioFilePath) {
-        console.log(`[VOICE_PIPELINE] TTS audio ready: ${result.audioFilePath}`);
-        this.callbacks.onTTSAudioReady?.(result.audioFilePath, text);
+        // CRITICAL: emit the audio file path so the renderer can play it.
+        // The requestId travels to the renderer so it can decide whether
+        // to actually play (a newer request would supersede this one).
+        console.log(`[VOICE_PIPELINE] TTS audio ready (req=${requestId}): ${result.audioFilePath}`);
+        this.callbacks.onTTSAudioReady?.(result.audioFilePath, text, requestId);
+        audioReady = true;
       } else if (!result.success) {
         console.warn(`[VOICE_PIPELINE] TTS synthesis failed: ${result.error}`);
         this.callbacks.onError?.(`TTS synthesis failed: ${result.error}`);
       }
     }
-    catch (err: any) { this.callbacks.onError?.(`TTS failed: ${err.message}`); }
+    catch (err: any) {
+      this.callbacks.onError?.(`TTS failed: ${err.message}`);
+    }
+
     this.ttsActive = false;
-    this.setState(wasListening ? 'listening' : 'idle');
-    if (wasListening) await this.startListening();
+
+    // ── BUG-12 FIX ──────────────────────────────────────────────────────
+    // Do NOT transition state back to `listening`/`idle` here, and do NOT
+    // call `startListening()`. The conversation handler owns the post-speak
+    // state transition — it awaits `waitForTtsPlayback(requestId)` (which
+    // resolves when the renderer sends `voice-tts-ended` after the audio
+    // element fires `onended`), THEN transitions to `listening` and restarts
+    // STT. This prevents the mic from hearing the still-playing TTS audio.
+    //
+    // Legacy callers (InteractionLoopManager.speakText) that don't go
+    // through the conversation handler will leave the engine in the
+    // `speaking` state until they explicitly call `setThinking(false)` or
+    // `startListening()`. This matches the old behavior closely enough
+    // for the legacy debug panel (BasicInteractionPanel) and is the
+    // cleanest separation of concerns.
+    return audioReady;
   }
 
   stopSpeaking(): void {
     if (this.ttsProvider) this.ttsProvider.stop();
     this.ttsActive = false;
+    // Phase 16 (BUG-26 A): bump the request ID so any in-flight synthesis
+    // (Piper still running) is invalidated. When synthesize() resolves,
+    // the stale guard in speak() will discard its result.
+    this._currentTtsRequestId++;
     if (this.state === 'speaking') this.setState('idle');
   }
 

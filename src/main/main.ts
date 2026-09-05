@@ -1630,9 +1630,21 @@ async function setupIPC(): Promise<void> {
   });
 
   // Voice conversation: abort current turn (cancel)
+  //
+  // Phase 16 (BUG-26 B): like `voice-conversation-stop-speaking`, this
+  // handler also broadcasts `voice-tts-stop-playback` to the renderer so
+  // any currently-playing `<audio>` element is paused immediately. The
+  // `abortCurrentTurn` method bumps the request ID and releases the
+  // playback wait (see NexVoiceConversation.abortCurrentTurn), but the
+  // broadcast is needed for the case where audio is mid-playback when
+  // the user aborts (e.g. via the "cancel" voice command).
   ipcMain.handle('voice-conversation-abort', async () => {
     try {
       getNexVoiceConversation().abortCurrentTurn();
+      // Phase 16 (BUG-26 B): pause any currently-playing audio in the renderer.
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        mainWindow.webContents.send('voice-tts-stop-playback', {});
+      }
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1640,10 +1652,44 @@ async function setupIPC(): Promise<void> {
   });
 
   // Voice conversation: stop speaking (interrupt TTS)
+  //
+  // Phase 16 (BUG-26 B): in addition to stopping the engine's TTS
+  // synthesis (which invalidates any in-flight Piper subprocess via the
+  // engine's stale-guard), this handler also broadcasts a
+  // `voice-tts-stop-playback` IPC to the renderer so it can pause any
+  // currently-playing `<audio>` element. Without this, audio that was
+  // already sent to the renderer (synthesis completed before Stop) would
+  // continue playing through the speakers despite Stop being clicked.
   ipcMain.handle('voice-conversation-stop-speaking', async () => {
     try {
       const engine = getLocalVoiceEngine();
       engine.stopSpeaking();
+      // Phase 16 (BUG-26 B): broadcast to renderer to pause the
+      // currently-playing `<audio>` element. The renderer's App.tsx
+      // subscribes via `onVoiceTtsStopPlayback` and calls
+      // `audio.pause()` on the current audio ref.
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        mainWindow.webContents.send('voice-tts-stop-playback', {});
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Phase 16 (BUG-12 fix): renderer → main signal that the audio element
+  // finished playing the TTS WAV file (audio.onended or audio.onerror).
+  // The conversation handler uses this to release `waitForTtsPlayback`,
+  // which is what blocks `speakResponse` from restarting STT until the
+  // audio has actually finished playing (preventing the mic-feedback
+  // loop where STT heard the still-playing TTS).
+  //
+  // The `requestId` matches the one carried through `voice-tts-audio` so
+  // the conversation handler can ignore stale signals from cancelled or
+  // superseded TTS turns.
+  ipcMain.handle('voice-tts-ended', async (_event, requestId: number) => {
+    try {
+      getNexVoiceConversation().notifyTtsPlaybackEnded(requestId);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1824,12 +1870,18 @@ async function setupIPC(): Promise<void> {
           mainWindow.webContents.send('voice-conversation-state', { state, source: 'engine' });
         }
       },
-      onTTSAudioReady: (audioFilePath: string, text: string) => {
+      onTTSAudioReady: (audioFilePath: string, text: string, requestId: number) => {
         // Send the TTS audio file path to the renderer for playback.
         // The renderer creates an <audio> element and plays the file.
-        console.log(`[VOICE_PIPELINE] Sending TTS audio to renderer: ${audioFilePath}`);
+        //
+        // Phase 16: include requestId so the renderer can decide whether
+        // to actually play this audio. If a newer TTS request has arrived
+        // (or Stop was clicked), the renderer's App.tsx discards or
+        // pauses the old audio element and only plays the current one.
+        // See BUG-26 B + overlap protection in App.tsx.
+        console.log(`[VOICE_PIPELINE] Sending TTS audio to renderer (req=${requestId}): ${audioFilePath}`);
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-          mainWindow.webContents.send('voice-tts-audio', { audioFilePath, text });
+          mainWindow.webContents.send('voice-tts-audio', { audioFilePath, text, requestId });
         }
       },
       onError: (message: string) => {

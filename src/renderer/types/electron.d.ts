@@ -171,7 +171,19 @@ export interface NexAPI {
   wakeWordStatus: () => Promise<{ success: boolean; lastMatch?: any; matchCount?: number; config?: any; error?: string }>;
   voiceCommandParse: (text: string) => Promise<{ success: boolean; result?: any; error?: string }>;
   onVoiceConversationState: (callback: (ev: any) => void) => () => void;
-  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string) => void) => () => void;
+  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string, requestId: number) => void) => () => void;
+  // Phase 16 (BUG-12 fix): renderer → main signal that the audio element
+  // finished playing (onended or onerror). The main process forwards this
+  // to NexVoiceConversation.notifyTtsPlaybackEnded(requestId) which
+  // releases the pending waitForTtsPlayback promise that speakResponse
+  // is awaiting. Without this, speakResponse would hang and STT would
+  // never restart after TTS.
+  voiceTtsEnded: (requestId: number) => Promise<{ success: boolean; error?: string }>;
+  // Phase 16 (BUG-26 B fix): main → renderer broadcast that the user
+  // clicked Stop (or cancelled). App.tsx subscribes and pauses the
+  // currently-playing <audio> element so audio doesn't continue through
+  // the speakers after Stop.
+  onVoiceTtsStopPlayback: (callback: () => void) => () => void;
   onVoiceConversationWake: (callback: (ev: any) => void) => () => void;
   onVoiceConversationUser: (callback: (ev: any) => void) => () => void;
   onVoiceConversationNex: (callback: (ev: any) => void) => () => void;
