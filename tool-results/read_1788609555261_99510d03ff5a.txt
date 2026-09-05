@@ -1,0 +1,860 @@
+     1→/**
+     2→ * NEX AI — Phase 6: Task Queue — Core Implementation
+     3→ *
+     4→ * Priority queue + concurrency-limited worker pool.
+     5→ *
+     6→ * Lifecycle of a TaskQueueItem:
+     7→ *
+     8→ *   enqueue()      → status='queued', emit task_enqueued, persist
+     9→ *   worker picks  → status='running', emit task_started, persist
+    10→ *                  → run task (agent: runTask + wait terminal; function: call fn)
+    11→ *                  → on success: status='completed', emit task_completed
+    12→ *                  → on failure (retryable, retries left): status='queued', retryCount++
+    13→ *                  → on failure (no retries): status='failed', emit task_failed
+    14→ *                  → on cancel: status='cancelled', emit task_cancelled
+    15→ *   cancelTask()  → set token; if running, propagate to agent/worker; status='cancelled'
+    16→ *   pauseTask()   → status='paused' (only valid for 'queued' items — never running)
+    17→ *   resumeTask()  → status='queued' (re-enqueue at original priority)
+    18→ *
+    19→ * Concurrency:
+    20→ *   At most `maxConcurrent` items run simultaneously. Workers are spawned
+    21→ *   lazily when items are enqueued and exit when the queue is drained.
+    22→ *
+    23→ * Cancellation propagation:
+    24→ *   - kind='agent': cancelTask(agentTaskId) is called — the agent core
+    25→ *     cancels its loop and any in-progress tool (via the tool's cancellationToken).
+    26→ *   - kind='function': the function's CancellationToken is set. The function
+    27→ *     MUST check `cancellationToken.cancelled` or call `throwIfCancelled`
+    28→ *     at safe points. If the function ignores the token, the worker waits
+    29→ *     for it to finish naturally (cooperative cancellation, not force-kill).
+    30→ *
+    31→ * Failure isolation:
+    32→ *   Each task runs in its own try/catch. A failure (even an unhandled
+    33→ *   rejection) marks only THAT task as 'failed' — the worker pool continues
+    34→ *   processing other items. The worker itself never crashes.
+    35→ */
+    36→
+    37→import * as crypto from 'crypto';
+    38→import {
+    39→  DEFAULT_QUEUE_CONFIG,
+    40→  PRIORITY_WEIGHT,
+    41→  isTerminalStatus,
+    42→  isValidPriority,
+    43→  type EnqueueOptions,
+    44→  type TaskExecutionContext,
+    45→  type TaskFunction,
+    46→  type TaskQueueConfig,
+    47→  type TaskQueueEvent,
+    48→  type TaskQueueEventListener,
+    49→  type TaskQueueItem,
+    50→  type TaskQueueStatus,
+    51→  type TaskKind,
+    52→} from './types';
+    53→import { createCancellationToken, type CancellationToken } from '../agent/types';
+    54→import {
+    55→  initTaskQueuePersistence,
+    56→  loadQueueConfig,
+    57→  recoverQueueState,
+    58→  saveQueueState,
+    59→} from './persistence';
+    60→
+    61→// ─── Module State ────────────────────────────────────────────────────────────
+    62→
+    63→const _items = new Map<string, TaskQueueItem>();
+    64→const _queue: TaskQueueItem[] = [];          // pending items (queued/paused), priority-sorted
+    65→const _running = new Map<string, TaskQueueItem>();  // taskId → running item
+    66→const _cancellationTokens = new Map<string, CancellationToken>();
+    67→const _listeners = new Set<TaskQueueEventListener>();
+    68→const _registeredFunctions = new Map<string, TaskFunction>();
+    69→
+    70→let _config: TaskQueueConfig = { ...DEFAULT_QUEUE_CONFIG };
+    71→let _workerCount = 0;
+    72→let _persistenceInitialized = false;
+    73→let _recoverInterruptedHandler: ((taskId: string) => void) | null = null;
+    74→let _agentRunTaskFn: ((taskId: string) => Promise<unknown>) | null = null;
+    75→let _agentCancelTaskFn: ((taskId: string, reason?: string) => boolean) | null = null;
+    76→let _agentGetTaskStatusFn: ((taskId: string) => string | null) | null = null;
+    77→let _agentOnEventUnsub: (() => void) | null = null;
+    78→let _memoryRecordFn: ((item: TaskQueueItem) => void) | null = null;
+    79→let _persistDebounce: NodeJS.Timeout | null = null;
+    80→
+    81→// ─── Initialization ───────────────────────────────────────────────────────────
+    82→
+    83→/**
+    84→ * Initialize the task queue. Call once on app startup (after initPersistence).
+    85→ *
+    86→ * Wires agent integration callbacks and recovers persisted state.
+    87→ */
+    88→export function initTaskQueue(opts?: {
+    89→  userDataDir?: string;
+    90→  config?: Partial<TaskQueueConfig>;
+    91→  agentRunTask?: (taskId: string) => Promise<unknown>;
+    92→  agentCancelTask?: (taskId: string, reason?: string) => boolean;
+    93→  agentGetTaskStatus?: (taskId: string) => string | null;
+    94→  agentOnEvent?: (listener: (event: { type: string; taskId: string }) => void) => () => void;
+    95→  onInterruptedRecovery?: (taskId: string) => void;
+    96→  memoryRecord?: (item: TaskQueueItem) => void;
+    97→}): void {
+    98→  if (opts?.userDataDir) {
+    99→    initTaskQueuePersistence(opts.userDataDir);
+   100→    _persistenceInitialized = true;
+   101→  }
+   102→  if (opts?.config) {
+   103→    _config = { ...DEFAULT_QUEUE_CONFIG, ...opts.config };
+   104→  } else {
+   105→    const persisted = loadQueueConfig();
+   106→    _config = { ...DEFAULT_QUEUE_CONFIG, ...persisted };
+   107→  }
+   108→
+   109→  // Wire agent integration
+   110→  _agentRunTaskFn = opts?.agentRunTask || null;
+   111→  _agentCancelTaskFn = opts?.agentCancelTask || null;
+   112→  _agentGetTaskStatusFn = opts?.agentGetTaskStatus || null;
+   113→  _recoverInterruptedHandler = opts?.onInterruptedRecovery || null;
+   114→  _memoryRecordFn = opts?.memoryRecord || null;
+   115→
+   116→  // Subscribe to agent events to detect when agent-kind tasks finish.
+   117→  // This is the bridge between agent core's event stream and the queue.
+   118→  if (opts?.agentOnEvent) {
+   119→    _agentOnEventUnsub = opts.agentOnEvent((event) => {
+   120→      handleAgentEvent(event);
+   121→    });
+   122→  }
+   123→
+   124→  // Recover persisted state
+   125→  const { items, recoveredInterruptedIds } = recoverQueueState();
+   126→  for (const item of items) {
+   127→    _items.set(item.id, item);
+   128→    // Re-create cancellation tokens for non-terminal items (queued/paused/running).
+   129→    // Running items are marked failed by recovery (so they won't need a token),
+   130→    // but queued/paused items need fresh tokens for when they run.
+   131→    // Terminal items don't need tokens (they're done).
+   132→    if (!isTerminalStatus(item.status)) {
+   133→      _cancellationTokens.set(item.cancellationKey, createCancellationToken());
+   134→    }
+   135→    if (item.status === 'queued') {
+   136→      _queue.push(item);
+   137→    } else if (item.status === 'paused') {
+   138→      // Paused items stay in _items but are NOT in _queue (until resumed)
+   139→    }
+   140→    // terminal items (completed/failed/cancelled) stay in _items for history
+   141→  }
+   142→  // Re-sort the queue by priority (stable: preserve enqueuedAt for FIFO within priority)
+   143→  _queue.sort((a, b) => comparePriority(a, b));
+   144→
+   145→  // Emit recovery events for interrupted items
+   146→  for (const id of recoveredInterruptedIds) {
+   147→    emit({
+   148→      type: 'task_recovered',
+   149→      taskId: id,
+   150→      data: { reason: 'interrupted_by_restart' },
+   151→    });
+   152→    _recoverInterruptedHandler?.(id);
+   153→  }
+   154→
+   155→  // Persist initial state
+   156→  schedulePersist();
+   157→
+   158→  // Start workers if there are queued items
+   159→  if (_queue.length > 0) spawnWorkers();
+   160→}
+   161→
+   162→/**
+   163→ * Shut down the task queue. Cancels all running tasks and saves state.
+   164→ * Called on app quit / before-quit.
+   165→ */
+   166→export function shutdownTaskQueue(): void {
+   167→  // Cancel all running tasks
+   168→  for (const [taskId, item] of _running) {
+   169→    const token = _cancellationTokens.get(item.cancellationKey);
+   170→    token?.cancel('Task queue shutdown');
+   171→    if (item.kind === 'agent' && item.agentTaskId) {
+   172→      _agentCancelTaskFn?.(item.agentTaskId, 'Task queue shutdown');
+   173→    }
+   174→  }
+   175→  // Unsubscribe from agent events
+   176→  _agentOnEventUnsub?.();
+   177→  _agentOnEventUnsub = null;
+   178→  // Flush pending persist
+   179→  if (_persistDebounce) {
+   180→    clearTimeout(_persistDebounce);
+   181→    _persistDebounce = null;
+   182→  }
+   183→  saveQueueState(Array.from(_items.values()), _config);
+   184→}
+   185→
+   186→// ─── Public API: Enqueue ────────────────────────────────────────────────────
+   187→
+   188→/**
+   189→ * Enqueue an existing AgentTask for background execution.
+   190→ * The task must already be created via createTask() (status='pending').
+   191→ * The queue will call runTask(agentTaskId) when a worker is free.
+   192→ */
+   193→export function enqueueAgentTask(
+   194→  agentTaskId: string,
+   195→  opts?: EnqueueOptions
+   196→): TaskQueueItem {
+   197→  const id = crypto.randomUUID();
+   198→  const cancellationKey = id;
+   199→  _cancellationTokens.set(cancellationKey, createCancellationToken());
+   200→
+   201→  const item: TaskQueueItem = {
+   202→    id,
+   203→    name: opts?.name || `Agent task ${agentTaskId.slice(0, 8)}`,
+   204→    description: opts?.description,
+   205→    priority: opts?.priority || _config.defaultPriority,
+   206→    status: 'queued',
+   207→    kind: 'agent',
+   208→    agentTaskId,
+   209→    enqueuedAt: Date.now(),
+   210→    progress: 0,
+   211→    cancellationKey,
+   212→    tags: opts?.tags,
+   213→    metadata: opts?.metadata,
+   214→    maxRetries: opts?.maxRetries ?? _config.defaultMaxRetries,
+   215→    retryCount: 0,
+   216→    estimatedDurationMs: opts?.estimatedDurationMs,
+   217→  };
+   218→
+   219→  _items.set(id, item);
+   220→  _queue.push(item);
+   221→  _queue.sort((a, b) => comparePriority(a, b));
+   222→
+   223→  emit({
+   224→    type: 'task_enqueued',
+   225→    taskId: id,
+   226→    data: { kind: 'agent', agentTaskId, priority: item.priority },
+   227→  });
+   228→
+   229→  schedulePersist();
+   230→  spawnWorkers();
+   231→  return item;
+   232→}
+   233→
+   234→/**
+   235→ * Enqueue a function for background execution.
+   236→ * The function must be registered via registerTaskFunction(key, fn) first.
+   237→ */
+   238→export function enqueueFunction(
+   239→  functionKey: string,
+   240→  opts?: EnqueueOptions
+   241→): TaskQueueItem {
+   242→  if (!_registeredFunctions.has(functionKey)) {
+   243→    throw new Error(`Task function not registered: ${functionKey}`);
+   244→  }
+   245→  const id = crypto.randomUUID();
+   246→  const cancellationKey = id;
+   247→  _cancellationTokens.set(cancellationKey, createCancellationToken());
+   248→
+   249→  const item: TaskQueueItem = {
+   250→    id,
+   251→    name: opts?.name || functionKey,
+   252→    description: opts?.description,
+   253→    priority: opts?.priority || _config.defaultPriority,
+   254→    status: 'queued',
+   255→    kind: 'function',
+   256→    functionKey,
+   257→    enqueuedAt: Date.now(),
+   258→    progress: 0,
+   259→    cancellationKey,
+   260→    tags: opts?.tags,
+   261→    metadata: opts?.metadata,
+   262→    maxRetries: opts?.maxRetries ?? _config.defaultMaxRetries,
+   263→    retryCount: 0,
+   264→    estimatedDurationMs: opts?.estimatedDurationMs,
+   265→  };
+   266→
+   267→  _items.set(id, item);
+   268→  _queue.push(item);
+   269→  _queue.sort((a, b) => comparePriority(a, b));
+   270→
+   271→  emit({
+   272→    type: 'task_enqueued',
+   273→    taskId: id,
+   274→    data: { kind: 'function', functionKey, priority: item.priority },
+   275→  });
+   276→
+   277→  schedulePersist();
+   278→  spawnWorkers();
+   279→  return item;
+   280→}
+   281→
+   282→/**
+   283→ * Register a task function (for kind='function' tasks).
+   284→ * Must be called on startup before enqueueFunction() can reference it.
+   285→ */
+   286→export function registerTaskFunction(key: string, fn: TaskFunction): void {
+   287→  _registeredFunctions.set(key, fn);
+   288→}
+   289→
+   290→// ─── Public API: Cancellation ────────────────────────────────────────────────
+   291→
+   292→/**
+   293→ * Cancel a queued or running task.
+   294→ * - queued  → removed from queue, status='cancelled'
+   295→ * - running → cancellation token set; for agent tasks, cancelTask(agentTaskId) called
+   296→ * - paused  → status='cancelled' (never started)
+   297→ * - terminal → no-op (already done)
+   298→ *
+   299→ * Returns true if the task was cancelled by this call (i.e. it was not
+   300→ * already in a terminal state).
+   301→ */
+   302→export function cancelTask(taskId: string, reason?: string): boolean {
+   303→  const item = _items.get(taskId);
+   304→  if (!item) return false;
+   305→  if (isTerminalStatus(item.status)) return false;
+   306→
+   307→  // Set the cancellation token (propagates to function-kind tasks immediately;
+   308→  // for agent tasks, also call cancelTask() to interrupt the agent loop).
+   309→  const token = _cancellationTokens.get(item.cancellationKey);
+   310→  token?.cancel(reason || 'Cancelled by user');
+   311→
+   312→  if (item.kind === 'agent' && item.agentTaskId && _agentCancelTaskFn) {
+   313→    _agentCancelTaskFn(item.agentTaskId, reason);
+   314→  }
+   315→
+   316→  // Remove from queue if queued
+   317→  const qIdx = _queue.findIndex((q) => q.id === taskId);
+   318→  if (qIdx >= 0) _queue.splice(qIdx, 1);
+   319→
+   320→  // Remove from running map (the worker will detect cancellation and exit)
+   321→  _running.delete(taskId);
+   322→
+   323→  item.status = 'cancelled';
+   324→  item.completedAt = Date.now();
+   325→  item.cancelReason = reason || 'Cancelled by user';
+   326→  item.progress = Math.max(item.progress, 0);
+   327→
+   328→  emit({
+   329→    type: 'task_cancelled',
+   330→    taskId,
+   331→    data: { reason: item.cancelReason },
+   332→  });
+   333→
+   334→  schedulePersist();
+   335→  spawnWorkers(); // spawn replacement worker for any freed slot
+   336→  return true;
+   337→}
+   338→
+   339→/**
+   340→ * Cancel all tasks (queued + running). Returns the count of cancelled tasks.
+   341→ */
+   342→export function cancelAllTasks(reason?: string): number {
+   343→  let count = 0;
+   344→  for (const item of Array.from(_items.values())) {
+   345→    if (!isTerminalStatus(item.status)) {
+   346→      if (cancelTask(item.id, reason || 'Cancel all')) count++;
+   347→    }
+   348→  }
+   349→  return count;
+   350→}
+   351→
+   352→// ─── Public API: Pause / Resume ──────────────────────────────────────────────
+   353→
+   354→/**
+   355→ * Pause a queued task. Only 'queued' items can be paused (running items
+   356→ * cannot be paused — cancel them instead).
+   357→ */
+   358→export function pauseTask(taskId: string): boolean {
+   359→  const item = _items.get(taskId);
+   360→  if (!item) return false;
+   361→  if (item.status !== 'queued') return false;
+   362→
+   363→  item.status = 'paused';
+   364→  const qIdx = _queue.findIndex((q) => q.id === taskId);
+   365→  if (qIdx >= 0) _queue.splice(qIdx, 1);
+   366→
+   367→  emit({
+   368→    type: 'task_paused',
+   369→    taskId,
+   370→    data: {},
+   371→  });
+   372→  schedulePersist();
+   373→  return true;
+   374→}
+   375→
+   376→/**
+   377→ * Resume a paused task (re-enqueue at original priority).
+   378→ */
+   379→export function resumeTask(taskId: string): boolean {
+   380→  const item = _items.get(taskId);
+   381→  if (!item) return false;
+   382→  if (item.status !== 'paused') return false;
+   383→
+   384→  item.status = 'queued';
+   385→  _queue.push(item);
+   386→  _queue.sort((a, b) => comparePriority(a, b));
+   387→
+   388→  emit({
+   389→    type: 'task_enqueued',
+   390→    taskId,
+   391→    data: { resumed: true, priority: item.priority },
+   392→  });
+   393→  schedulePersist();
+   394→  spawnWorkers();
+   395→  return true;
+   396→}
+   397→
+   398→// ─── Public API: Queries ─────────────────────────────────────────────────────
+   399→
+   400→export function getTask(taskId: string): TaskQueueItem | null {
+   401→  return _items.get(taskId) || null;
+   402→}
+   403→
+   404→export function listTasks(filter?: {
+   405→  status?: TaskQueueStatus | TaskQueueStatus[];
+   406→  kind?: TaskKind;
+   407→}): TaskQueueItem[] {
+   408→  let items = Array.from(_items.values());
+   409→  if (filter?.status) {
+   410→    const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
+   411→    items = items.filter((it) => statuses.includes(it.status));
+   412→  }
+   413→  if (filter?.kind) {
+   414→    items = items.filter((it) => it.kind === filter.kind);
+   415→  }
+   416→  // Sort: queued/running/paused first (by priority), then terminal (by completedAt desc)
+   417→  items.sort((a, b) => {
+   418→    const aActive = !isTerminalStatus(a.status);
+   419→    const bActive = !isTerminalStatus(b.status);
+   420→    if (aActive && !bActive) return -1;
+   421→    if (!aActive && bActive) return 1;
+   422→    if (aActive && bActive) return comparePriority(a, b);
+   423→    return (b.completedAt || 0) - (a.completedAt || 0);
+   424→  });
+   425→  return items;
+   426→}
+   427→
+   428→export function getQueueState(): {
+   429→  config: TaskQueueConfig;
+   430→  counts: Record<TaskQueueStatus, number>;
+   431→  items: TaskQueueItem[];
+   432→} {
+   433→  const counts: Record<TaskQueueStatus, number> = {
+   434→    queued: 0,
+   435→    running: 0,
+   436→    completed: 0,
+   437→    failed: 0,
+   438→    cancelled: 0,
+   439→    paused: 0,
+   440→  };
+   441→  for (const item of _items.values()) {
+   442→    counts[item.status]++;
+   443→  }
+   444→  return {
+   445→    config: _config,
+   446→    counts,
+   447→    items: listTasks(),
+   448→  };
+   449→}
+   450→
+   451→export function updateConfig(patch: Partial<TaskQueueConfig>): TaskQueueConfig {
+   452→  _config = { ..._config, ...patch };
+   453→  schedulePersist();
+   454→  // If maxConcurrent increased, spawn more workers
+   455→  spawnWorkers();
+   456→  return _config;
+   457→}
+   458→
+   459→export function getConfig(): TaskQueueConfig {
+   460→  return _config;
+   461→}
+   462→
+   463→// ─── Public API: Events ──────────────────────────────────────────────────────
+   464→
+   465→export function onTaskQueueEvent(listener: TaskQueueEventListener): () => void {
+   466→  _listeners.add(listener);
+   467→  return () => _listeners.delete(listener);
+   468→}
+   469→
+   470→/**
+   471→ * Emit a full state snapshot (used by UI to sync on connect).
+   472→ */
+   473→export function emitStateSnapshot(): void {
+   474→  emit({
+   475→    type: 'queue_state',
+   476→    taskId: '',
+   477→    data: getQueueState() as unknown as Record<string, unknown>,
+   478→  });
+   479→}
+   480→
+   481→// ─── Worker Pool ─────────────────────────────────────────────────────────────
+   482→
+   483→/**
+   484→ * Spawn workers until maxConcurrent is reached or the queue is empty.
+   485→ * Idempotent — safe to call repeatedly.
+   486→ */
+   487→function spawnWorkers(): void {
+   488→  while (_workerCount < _config.maxConcurrent && _queue.length > 0) {
+   489→    const item = dequeue();
+   490→    if (!item) break;
+   491→    _workerCount++;
+   492→    runItem(item).finally(() => {
+   493→      _workerCount--;
+   494→      spawnWorkers(); // spawn next worker if queue still has items
+   495→    });
+   496→  }
+   497→}
+   498→
+   499→/**
+   500→ * Dequeue the highest-priority queued item. Returns null if queue is empty.
+   501→ */
+   502→function dequeue(): TaskQueueItem | null {
+   503→  if (_queue.length === 0) return null;
+   504→  // The queue is kept sorted on push; pop the first item.
+   505→  return _queue.shift() || null;
+   506→}
+   507→
+   508→/**
+   509→ * Run a single item. Handles agent and function kinds, retries, and
+   510→ * failure isolation.
+   511→ */
+   512→async function runItem(item: TaskQueueItem): Promise<void> {
+   513→  item.status = 'running';
+   514→  item.startedAt = Date.now();
+   515→  item.progress = 0;
+   516→  _running.set(item.id, item);
+   517→
+   518→  emit({
+   519→    type: 'task_started',
+   520→    taskId: item.id,
+   521→    data: { kind: item.kind, agentTaskId: item.agentTaskId, functionKey: item.functionKey },
+   522→  });
+   523→  schedulePersist();
+   524→
+   525→  try {
+   526→    if (item.kind === 'agent') {
+   527→      await runAgentItem(item);
+   528→    } else if (item.kind === 'function') {
+   529→      await runFunctionItem(item);
+   530→    }
+   531→    // If we got here and the item isn't terminal, the agent loop completed
+   532→    // without emitting a terminal event — mark completed.
+   533→    if (!isTerminalStatus(item.status)) {
+   534→      completeItem(item, undefined);
+   535→    }
+   536→  } catch (err) {
+   537→    handleItemError(item, err);
+   538→  } finally {
+   539→    _running.delete(item.id);
+   540→  }
+   541→}
+   542→
+   543→/**
+   544→ * Run an agent-kind item by calling runTask(agentTaskId) and waiting for
+   545→ * the agent's terminal event (task_completed/failed/cancelled).
+   546→ */
+   547→async function runAgentItem(item: TaskQueueItem): Promise<void> {
+   548→  if (!item.agentTaskId) throw new Error('Agent item missing agentTaskId');
+   549→  if (!_agentRunTaskFn) throw new Error('Agent runTask not wired (initTaskQueue.agentRunTask)');
+   550→
+   551→  // Check cancellation before starting
+   552→  const token = _cancellationTokens.get(item.cancellationKey);
+   553→  token?.throwIfCancelled();
+   554→
+   555→  // Watch for the agent's terminal event. We register a one-shot listener
+   556→  // that resolves/rejects the promise below.
+   557→  const finished = new Promise<void>((resolve, reject) => {
+   558→    const checkEvent = (event: { type: string; taskId: string }) => {
+   559→      if (event.taskId !== item.agentTaskId) return;
+   560→      if (event.type === 'task_completed') {
+   561→        cleanup();
+   562→        resolve();
+   563→      } else if (event.type === 'task_failed') {
+   564→        cleanup();
+   565→        reject(Object.assign(new Error('Agent task failed'), { code: 'AGENT_FAILED' }));
+   566→      } else if (event.type === 'task_cancelled') {
+   567→        cleanup();
+   568→        // Mark cancelled via handleAgentEvent — but also resolve so the
+   569→        // worker doesn't double-handle.
+   570→        resolve();
+   571→      }
+   572→    };
+   573→    const cleanup = () => {
+   574→      const listeners = _agentEventListeners.get(item.agentTaskId!);
+   575→      if (listeners) {
+   576→        listeners.delete(checkEvent);
+   577→        if (listeners.size === 0) _agentEventListeners.delete(item.agentTaskId!);
+   578→      }
+   579→    };
+   580→    if (!_agentEventListeners.has(item.agentTaskId!)) {
+   581→      _agentEventListeners.set(item.agentTaskId!, new Set());
+   582→    }
+   583→    _agentEventListeners.get(item.agentTaskId!)!.add(checkEvent);
+   584→  });
+   585→
+   586→  // Run the agent (async — events will fire via handleAgentEvent)
+   587→  _agentRunTaskFn(item.agentTaskId).catch((err) => {
+   588→    // If runTask throws, the agent loop crashed. Mark failed.
+   589→    handleItemError(item, err);
+   590→  });
+   591→
+   592→  // Wait for the terminal event (or cancellation token)
+   593→  const cancelCheck = new Promise<void>((resolve) => {
+   594→    token?.onCancel(() => resolve());
+   595→    if (!token) resolve();
+   596→  });
+   597→
+   598→  await Promise.race([finished, cancelCheck]);
+   599→
+   600→  // If cancelled, the cancelTask() call already set status='cancelled'.
+   601→  // If finished, check the agent task status to confirm.
+   602→  if (!isTerminalStatus(item.status)) {
+   603→    const agentStatus = _agentGetTaskStatusFn?.(item.agentTaskId);
+   604→    if (agentStatus === 'completed') {
+   605→      completeItem(item, undefined);
+   606→    } else if (agentStatus === 'failed') {
+   607→      throw new Error('Agent task failed');
+   608→    } else if (agentStatus === 'cancelled') {
+   609→      item.status = 'cancelled';
+   610→      item.completedAt = Date.now();
+   611→      item.cancelReason = item.cancelReason || 'Agent task cancelled';
+   612→      emit({
+   613→        type: 'task_cancelled',
+   614→        taskId: item.id,
+   615→        data: { reason: item.cancelReason },
+   616→      });
+   617→      schedulePersist();
+   618→    } else {
+   619→      // Agent status unknown or still running — but the finished promise
+   620→      // resolved, so the agent must have emitted a terminal event. Mark
+   621→      // completed as a safe default (the agent event handler set the
+   622→      // status already if it was failed/cancelled).
+   623→      if (!isTerminalStatus(item.status)) completeItem(item, undefined);
+   624→    }
+   625→  }
+   626→}
+   627→
+   628→/**
+   629→ * Run a function-kind item.
+   630→ */
+   631→async function runFunctionItem(item: TaskQueueItem): Promise<void> {
+   632→  if (!item.functionKey) throw new Error('Function item missing functionKey');
+   633→  const fn = _registeredFunctions.get(item.functionKey);
+   634→  if (!fn) throw new Error(`Task function not registered: ${item.functionKey}`);
+   635→
+   636→  const token = _cancellationTokens.get(item.cancellationKey);
+   637→  if (!token) throw new Error(`Missing cancellation token for task ${item.id}`);
+   638→
+   639→  const ctx: TaskExecutionContext = {
+   640→    taskId: item.id,
+   641→    cancellationToken: token,
+   642→    reportProgress: (percent: number, _message?: string) => {
+   643→      item.progress = Math.max(0, Math.min(100, percent));
+   644→      emit({
+   645→        type: 'task_progress',
+   646→        taskId: item.id,
+   647→        data: { progress: item.progress },
+   648→      });
+   649→    },
+   650→    metadata: item.metadata || {},
+   651→  };
+   652→
+   653→  const result = await fn(ctx);
+   654→  if (token.cancelled) {
+   655→    // Function completed after cancellation — treat as cancelled.
+   656→    item.status = 'cancelled';
+   657→    item.completedAt = Date.now();
+   658→    item.cancelReason = item.cancelReason || 'Cancelled during function execution';
+   659→    emit({
+   660→      type: 'task_cancelled',
+   661→      taskId: item.id,
+   662→      data: { reason: item.cancelReason },
+   663→    });
+   664→    schedulePersist();
+   665→    return;
+   666→  }
+   667→  completeItem(item, result);
+   668→}
+   669→
+   670→/**
+   671→ * Handle an error during item execution. Implements the retry policy:
+   672→ *   - If retries remaining AND error is retryable → re-enqueue with retryCount++
+   673→ *   - Else → mark failed
+   674→ */
+   675→function handleItemError(item: TaskQueueItem, err: unknown): void {
+   676→  // If the item was cancelled, don't override the cancelled status.
+   677→  if (item.status === 'cancelled') return;
+   678→
+   679→  const errMsg = err instanceof Error ? err.message : String(err);
+   680→  const errStack = err instanceof Error ? err.stack : undefined;
+   681→  const errCode = (err as { code?: string })?.code;
+   682→
+   683→  // Check retry eligibility
+   684→  const canRetry = item.retryCount < item.maxRetries && errCode !== 'AGENT_CANCELLED';
+   685→  if (canRetry) {
+   686→    item.retryCount++;
+   687→    item.status = 'queued';
+   688→    item.progress = 0;
+   689→    item.startedAt = undefined;
+   690→    _queue.push(item);
+   691→    _queue.sort((a, b) => comparePriority(a, b));
+   692→    emit({
+   693→      type: 'task_enqueued',
+   694→      taskId: item.id,
+   695→      data: { retry: true, retryCount: item.retryCount, error: errMsg },
+   696→    });
+   697→    schedulePersist();
+   698→    return;
+   699→  }
+   700→
+   701→  item.status = 'failed';
+   702→  item.completedAt = Date.now();
+   703→  item.error = {
+   704→    message: errMsg,
+   705→    code: errCode,
+   706→    stack: errStack,
+   707→    retryable: false,
+   708→  };
+   709→  emit({
+   710→    type: 'task_failed',
+   711→    taskId: item.id,
+   712→    data: { error: item.error },
+   713→  });
+   714→  schedulePersist();
+   715→}
+   716→
+   717→/**
+   718→ * Mark an item as completed successfully.
+   719→ */
+   720→function completeItem(item: TaskQueueItem, result: unknown): void {
+   721→  if (item.status === 'cancelled') return;
+   722→  item.status = 'completed';
+   723→  item.completedAt = Date.now();
+   724→  item.progress = 100;
+   725→  item.result = result as never;
+   726→  emit({
+   727→    type: 'task_completed',
+   728→    taskId: item.id,
+   729→    data: { result: result as Record<string, unknown> },
+   730→  });
+   731→  // Record important task results to memory (only agent + function with tag)
+   732→  if (_memoryRecordFn) {
+   733→    try { _memoryRecordFn(item); } catch { /* best effort */ }
+   734→  }
+   735→  schedulePersist();
+   736→}
+   737→
+   738→// ─── Agent Event Bridge ─────────────────────────────────────────────────────
+   739→
+   740→/**
+   741→ * Map of agentTaskId → listeners waiting for that agent's terminal event.
+   742→ */
+   743→const _agentEventListeners = new Map<string, Set<(event: { type: string; taskId: string }) => void>>();
+   744→
+   745→/**
+   746→ * Handle an agent event from the agent core. Used to detect when agent-kind
+   747→ * queue items finish (the agent emits task_completed/failed/cancelled events).
+   748→ *
+   749→ * Also forwards progress events: step_started → progress=10%, step_completed →
+   750→ * progress = (stepIndex/totalSteps)*100, etc.
+   751→ */
+   752→function handleAgentEvent(event: { type: string; taskId: string }): void {
+   753→  // Notify any listeners waiting on this agentTaskId
+   754→  const listeners = _agentEventListeners.get(event.taskId);
+   755→  if (listeners) {
+   756→    for (const listener of listeners) {
+   757→      try { listener(event); } catch { /* best effort */ }
+   758→    }
+   759→  }
+   760→
+   761→  // Find the queue item tracking this agent task
+   762→  let queueItem: TaskQueueItem | undefined;
+   763→  for (const item of _items.values()) {
+   764→    if (item.kind === 'agent' && item.agentTaskId === event.taskId && item.status === 'running') {
+   765→      queueItem = item;
+   766→      break;
+   767→    }
+   768→  }
+   769→  if (!queueItem) return;
+   770→
+   771→  // Map agent step events → progress
+   772→  if (event.type === 'planning_started') {
+   773→    queueItem.progress = 5;
+   774→    emitProgress(queueItem);
+   775→  } else if (event.type === 'planning_completed') {
+   776→    queueItem.progress = 15;
+   777→    emitProgress(queueItem);
+   778→  } else if (event.type === 'step_started') {
+   779→    // Approximate progress based on step index
+   780→    const stepIdx = (event as { step?: { index?: number } }).step?.index ?? 0;
+   781→    const totalSteps = queueItem.metadata?.totalSteps as number || 10;
+   782→    queueItem.progress = Math.min(95, 15 + Math.round((stepIdx / totalSteps) * 80));
+   783→    emitProgress(queueItem);
+   784→  } else if (event.type === 'step_completed') {
+   785→    const stepIdx = (event as { step?: { index?: number } }).step?.index ?? 0;
+   786→    const totalSteps = queueItem.metadata?.totalSteps as number || 10;
+   787→    queueItem.progress = Math.min(95, 20 + Math.round(((stepIdx + 1) / totalSteps) * 75));
+   788→    emitProgress(queueItem);
+   789→  }
+   790→}
+   791→
+   792→function emitProgress(item: TaskQueueItem): void {
+   793→  emit({
+   794→    type: 'task_progress',
+   795→    taskId: item.id,
+   796→    data: { progress: item.progress },
+   797→  });
+   798→}
+   799→
+   800→// ─── Event Emission ──────────────────────────────────────────────────────────
+   801→
+   802→function emit(event: Omit<TaskQueueEvent, 'timestamp'>): void {
+   803→  const fullEvent: TaskQueueEvent = { ...event, timestamp: Date.now() };
+   804→  for (const listener of _listeners) {
+   805→    try { listener(fullEvent); } catch { /* best effort — never crash the queue */ }
+   806→  }
+   807→}
+   808→
+   809→// ─── Persistence (debounced) ──────────────────────────────────────────────────
+   810→
+   811→function schedulePersist(): void {
+   812→  if (!_persistenceInitialized) return;
+   813→  if (_persistDebounce) clearTimeout(_persistDebounce);
+   814→  _persistDebounce = setTimeout(() => {
+   815→    _persistDebounce = null;
+   816→    saveQueueState(Array.from(_items.values()), _config);
+   817→  }, 200);
+   818→}
+   819→
+   820→// ─── Helpers ─────────────────────────────────────────────────────────────────
+   821→
+   822→/**
+   823→ * Compare two items for priority queue ordering.
+   824→ * Lower priority weight first; ties broken by earlier enqueuedAt (FIFO).
+   825→ */
+   826→function comparePriority(a: TaskQueueItem, b: TaskQueueItem): number {
+   827→  const pa = PRIORITY_WEIGHT[a.priority] ?? PRIORITY_WEIGHT.normal;
+   828→  const pb = PRIORITY_WEIGHT[b.priority] ?? PRIORITY_WEIGHT.normal;
+   829→  if (pa !== pb) return pa - pb;
+   830→  return a.enqueuedAt - b.enqueuedAt;
+   831→}
+   832→
+   833→/**
+   834→ * Prune terminal items beyond the history limit. Called periodically.
+   835→ */
+   836→export function pruneHistory(): number {
+   837→  const terminal = Array.from(_items.values()).filter((it) => isTerminalStatus(it.status));
+   838→  if (terminal.length <= _config.historyLimit) return 0;
+   839→  // Sort by completedAt desc, keep the most recent historyLimit items
+   840→  terminal.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+   841→  const toRemove = terminal.slice(_config.historyLimit);
+   842→  for (const item of toRemove) {
+   843→    _items.delete(item.id);
+   844→    _cancellationTokens.delete(item.cancellationKey);
+   845→  }
+   846→  schedulePersist();
+   847→  return toRemove.length;
+   848→}
+   849→
+   850→/**
+   851→ * Clear all items (for tests / reset).
+   852→ */
+   853→export function clearAllTasks(): void {
+   854→  _items.clear();
+   855→  _queue.length = 0;
+   856→  _running.clear();
+   857→  _cancellationTokens.clear();
+   858→  schedulePersist();
+   859→}
+   860→

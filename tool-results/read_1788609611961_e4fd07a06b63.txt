@@ -1,0 +1,800 @@
+     1→/**
+     2→ * NEX AI — Phase 7: Recovery Engine
+     3→ *
+     4→ * Decides how to recover from a failed Agent step or tool call.
+     5→ *
+     6→ * ════════════════════════════════════════════════════════════════════════════
+     7→ * RECOVERY DECISIONS (5)
+     8→ * ════════════════════════════════════════════════════════════════════════════
+     9→ *
+    10→ *   RETRY              — re-execute the same step (with backoff for transient)
+    11→ *   MODIFY_AND_RETRY   — modify tool params via heuristic/LLM, then re-execute
+    12→ *   REPLAN             — discard remaining steps; ask re-planner for new ones
+    13→ *   SKIP               — skip this step (mark 'skipped'); continue to next
+    14→ *   ABORT              — mark task 'failed'; exit the loop
+    15→ *
+    16→ * ════════════════════════════════════════════════════════════════════════════
+    17→ * DECISION MATRIX (heuristic-first — offline-capable)
+    18→ * ════════════════════════════════════════════════════════════════════════════
+    19→ *
+    20→ *   transient_network (retries < max)         → RETRY (exponential backoff)
+    21→ *   transient_network (retries == max)        → REPLAN or ABORT
+    22→ *   timeout (retries < max)                    → RETRY (longer backoff)
+    23→ *   timeout (retries == max)                   → REPLAN or ABORT
+    24→ *   permission_denied                          → SKIP or ABORT (NEVER auto-retry)
+    25→ *   invalid_arguments                          → MODIFY_AND_RETRY (if heuristic can fix)
+    26→ *                                              → ABORT otherwise
+    27→ *   file_path                                  → REPLAN (different path/tool)
+    28→ *   model_inference (retries < 1)              → RETRY (once)
+    29→ *   model_inference (retries == 1)             → SKIP or ABORT
+    30→ *   tool_failure (retries < max)               → RETRY (one retry)
+    31→ *   tool_failure (retries == max)              → REPLAN or ABORT
+    32→ *   user_cancellation                          → ABORT (NEVER retry)
+    33→ *   security_policy                            → SKIP or ABORT (NEVER auto-retry)
+    34→ *   unknown (retries < 1)                      → RETRY (once)
+    35→ *   unknown (retries == 1)                     → ABORT
+    36→ *
+    37→ * ════════════════════════════════════════════════════════════════════════════
+    38→ * LLM FALLBACK (optional — offline-capable)
+    39→ * ════════════════════════════════════════════════════════════════════════════
+    40→ *
+    41→ * When the heuristic decision is ambiguous (e.g. 'unknown' class on first
+    42→ * attempt, or a complex tool_failure with rich error text), the engine can
+    43→ * optionally invoke the local LLM to analyze the error and pick a decision.
+    44→ *
+    45→ * The LLM is NEVER the only path:
+    46→ *   - Heuristic path runs FIRST and decides for clear-cut errors.
+    47→ *   - LLM fallback runs ONLY when:
+    48→ *     a) the heuristic path returns 'ambiguous', AND
+    49→ *     b) a local AIRuntime is available (Qwen3-8B loaded), AND
+    50→ *     c) we're not in offline-only mode.
+    51→ *   - LLM analysis failure → fall back to heuristic decision.
+    52→ *
+    53→ * ════════════════════════════════════════════════════════════════════════════
+    54→ * SAFETY (Phase 7 §8)
+    55→ * ════════════════════════════════════════════════════════════════════════════
+    56→ *
+    57→ *   - permission_denied → NEVER auto-retry (would repeat the same denial)
+    58→ *   - security_policy   → NEVER auto-retry (security gate decision is final)
+    59→ *   - user_cancellation → NEVER retry (user explicitly stopped)
+    60→ *   - RETRY/MODIFY/REPLAN re-execute the same operation, which still goes
+    61→ *     through executeToolWithPermission — the permission gate is NEVER bypassed.
+    62→ *
+    63→ * Pure module — no side effects. The caller (core.ts) emits events and
+    64→ * executes the recovery action.
+    65→ */
+    66→
+    67→import type { AIRuntime } from '../ai/runtime';
+    68→import type { LocalModelInfo } from '../ai/model-registry';
+    69→import type { AgentStep, AgentTask, Observation } from './types';
+    70→import {
+    71→  classifyError,
+    72→  type ErrorClass,
+    73→  type ErrorClassification,
+    74→} from './error-classifier';
+    75→import { AgentLogger } from './logger';
+    76→import { redactObjectDeep } from './logger';
+    77→// Phase 8: Context Propagation — reuse the canonical snapshot helper
+    78→import { safeContextSnapshot, type AgentContextContract } from './context-contract';
+    79→
+    80→// ─── Recovery decisions ──────────────────────────────────────────────────────
+    81→
+    82→export type RecoveryAction = 'RETRY' | 'MODIFY_AND_RETRY' | 'REPLAN' | 'SKIP' | 'ABORT';
+    83→
+    84→export interface RecoveryDecision {
+    85→  action: RecoveryAction;
+    86→  /** Why this action was chosen (shown to user + logged). */
+    87→  reason: string;
+    88→  /** The error classification that drove this decision. */
+    89→  errorClass: ErrorClass;
+    90→  /** Backoff in ms before RETRY/MODIFY_AND_RETRY (0 for REPLAN/SKIP/ABORT). */
+    91→  backoffMs: number;
+    92→  /** Whether the decision came from the LLM (true) or heuristic (false). */
+    93→  llmAnalyzed: boolean;
+    94→  /** Confidence 0..1 that this is the right action. */
+    95→  confidence: number;
+    96→  /** For MODIFY_AND_RETRY: optional modified tool params. */
+    97→  modifiedParams?: Record<string, unknown>;
+    98→  /** Whether the decision is "ambiguous" — heuristic couldn't decide confidently. */
+    99→  ambiguous: boolean;
+   100→}
+   101→
+   102→// ─── Context propagation (Phase 7 §5) ────────────────────────────────────────
+   103→
+   104→export interface RecoveryContext {
+   105→  /** Agent task ID (for events). */
+   106→  taskId: string;
+   107→  /** The step that failed. */
+   108→  step: AgentStep;
+   109→  /** The agent task (for plan/step context). */
+   110→  task: AgentTask;
+   111→  /** The tool name that failed (if any). */
+   112→  toolName?: string;
+   113→  /** The error message. */
+   114→  errorMessage: string;
+   115→  /** The error code (e.g. 'AGENT_CANCELLED', 'TOOL_FAILURE'). */
+   116→  errorCode?: string;
+   117→  /** Number of retries already attempted for this step. */
+   118→  attempt: number;
+   119→  /** Max retries configured for this task. */
+   120→  maxRetries: number;
+   121→  /** The most recent observation (for context to LLM). */
+   122→  lastObservation?: Observation;
+   123→  /** Whether the task was cancelled (shortcut for cancellation check). */
+   124→  cancelled: boolean;
+   125→  /** Cancellation reason (if cancelled). */
+   126→  cancelReason?: string;
+   127→}
+   128→
+   129→// ─── Backoff policy (exponential) ─────────────────────────────────────────────
+   130→
+   131→const BASE_BACKOFF_MS = 400;
+   132→const MAX_BACKOFF_MS = 5000;
+   133→const JITTER_MAX_MS = 120;
+   134→
+   135→function exponentialBackoff(attempt: number, errorClass: ErrorClass): number {
+   136→  // timeouts get a longer base; transient network gets standard; others get standard
+   137→  const base = errorClass === 'timeout' ? BASE_BACKOFF_MS * 2 : BASE_BACKOFF_MS;
+   138→  const exponential = Math.min(base * Math.pow(2, attempt), MAX_BACKOFF_MS);
+   139→  const jitter = Math.floor(Math.random() * JITTER_MAX_MS);
+   140→  return exponential + jitter;
+   141→}
+   142→
+   143→// ─── Heuristic decision (offline-first) ──────────────────────────────────────
+   144→
+   145→/**
+   146→ * Make a recovery decision using ONLY heuristics (no LLM call).
+   147→ * This is the primary path; LLM fallback only runs for ambiguous cases.
+   148→ */
+   149→export function decideRecoveryHeuristic(ctx: RecoveryContext): RecoveryDecision {
+   150→  const classification = classifyError(ctx.errorMessage, ctx.errorCode);
+   151→  const { class: cls, retryable, neverRetry } = classification;
+   152→
+   153→  // Cancellation — always ABORT, never retry
+   154→  if (cls === 'user_cancellation' || ctx.cancelled) {
+   155→    return {
+   156→      action: 'ABORT',
+   157→      reason: `Task cancelled by user${ctx.cancelReason ? `: ${ctx.cancelReason}` : ''} — aborting recovery`,
+   158→      errorClass: cls,
+   159→      backoffMs: 0,
+   160→      llmAnalyzed: false,
+   161→      confidence: 1.0,
+   162→      ambiguous: false,
+   163→    };
+   164→  }
+   165→
+   166→  // Permission/security — NEVER auto-retry. SKIP if more steps remain,
+   167→  // ABORT if this was the last/only step or task has no other path.
+   168→  if (cls === 'permission_denied' || cls === 'security_policy') {
+   169→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   170→    const action: RecoveryAction = hasMoreSteps ? 'SKIP' : 'ABORT';
+   171→    return {
+   172→      action,
+   173→      reason: `${cls} — never auto-retry. ${action === 'SKIP' ? 'Skipping step, continuing with remaining plan.' : 'No remaining steps — aborting task.'} User confirmation required to re-attempt.`,
+   174→      errorClass: cls,
+   175→      backoffMs: 0,
+   176→      llmAnalyzed: false,
+   177→      confidence: 1.0,
+   178→      ambiguous: false,
+   179→    };
+   180→  }
+   181→
+   182→  // Invalid arguments — MODIFY_AND_RETRY if we can fix the args heuristically
+   183→  if (cls === 'invalid_arguments') {
+   184→    const fixed = tryFixArguments(ctx);
+   185→    if (fixed) {
+   186→      return {
+   187→        action: 'MODIFY_AND_RETRY',
+   188→        reason: `Invalid arguments — heuristic fixed: ${fixed.reason}`,
+   189→        errorClass: cls,
+   190→        backoffMs: 0,
+   191→        llmAnalyzed: false,
+   192→        confidence: 0.7,
+   193→        modifiedParams: fixed.params,
+   194→        ambiguous: false,
+   195→      };
+   196→    }
+   197→    // Can't auto-fix — LLM may be able to. Mark ambiguous so LLM fallback runs.
+   198→    return {
+   199→      action: 'ABORT', // tentative — LLM may override
+   200→      reason: `Invalid arguments — heuristic cannot auto-fix. LLM analysis recommended.`,
+   201→      errorClass: cls,
+   202→      backoffMs: 0,
+   203→      llmAnalyzed: false,
+   204→      confidence: 0.3,
+   205→      ambiguous: true, // triggers LLM fallback
+   206→    };
+   207→  }
+   208→
+   209→  // File/path — REPLAN (try a different path/tool)
+   210→  if (cls === 'file_path') {
+   211→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   212→    return {
+   213→      action: 'REPLAN',
+   214→      reason: `File/path error — replan to find alternative path/tool`,
+   215→      errorClass: cls,
+   216→      backoffMs: 0,
+   217→      llmAnalyzed: false,
+   218→      confidence: 0.8,
+   219→      ambiguous: false,
+   220→    };
+   221→  }
+   222→
+   223→  // Transient/timeout — RETRY with exponential backoff
+   224→  if ((cls === 'transient_network' || cls === 'timeout') && retryable) {
+   225→    if (ctx.attempt < ctx.maxRetries) {
+   226→      return {
+   227→        action: 'RETRY',
+   228→        reason: `${cls} — retry ${ctx.attempt + 1}/${ctx.maxRetries} after backoff`,
+   229→        errorClass: cls,
+   230→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   231→        llmAnalyzed: false,
+   232→        confidence: 0.8,
+   233→        ambiguous: false,
+   234→      };
+   235→    }
+   236→    // Retries exhausted — REPLAN if more steps, ABORT otherwise
+   237→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   238→    return {
+   239→      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+   240→      reason: `${cls} — retry budget exhausted (${ctx.attempt}/${ctx.maxRetries})`,
+   241→      errorClass: cls,
+   242→      backoffMs: 0,
+   243→      llmAnalyzed: false,
+   244→      confidence: 0.7,
+   245→      ambiguous: false,
+   246→    };
+   247→  }
+   248→
+   249→  // Model inference — RETRY once, then SKIP/ABORT
+   250→  if (cls === 'model_inference') {
+   251→    if (ctx.attempt < 1) {
+   252→      return {
+   253→        action: 'RETRY',
+   254→        reason: `Model inference error — retry once (attempt ${ctx.attempt + 1}/1)`,
+   255→        errorClass: cls,
+   256→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   257→        llmAnalyzed: false,
+   258→        confidence: 0.6,
+   259→        ambiguous: false,
+   260→      };
+   261→    }
+   262→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   263→    return {
+   264→      action: hasMoreSteps ? 'SKIP' : 'ABORT',
+   265→      reason: `Model inference error persisted — ${hasMoreSteps ? 'skipping step' : 'aborting task'}`,
+   266→      errorClass: cls,
+   267→      backoffMs: 0,
+   268→      llmAnalyzed: false,
+   269→      confidence: 0.6,
+   270→      ambiguous: false,
+   271→    };
+   272→  }
+   273→
+   274→  // Tool failure — RETRY once, then REPLAN/ABORT
+   275→  if (cls === 'tool_failure') {
+   276→    if (ctx.attempt < ctx.maxRetries) {
+   277→      return {
+   278→        action: 'RETRY',
+   279→        reason: `Tool failure — retry ${ctx.attempt + 1}/${ctx.maxRetries}`,
+   280→        errorClass: cls,
+   281→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   282→        llmAnalyzed: false,
+   283→        confidence: 0.6,
+   284→        ambiguous: false,
+   285→      };
+   286→    }
+   287→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   288→    return {
+   289→      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+   290→      reason: `Tool failure — retry budget exhausted (${ctx.attempt}/${ctx.maxRetries})`,
+   291→      errorClass: cls,
+   292→      backoffMs: 0,
+   293→      llmAnalyzed: false,
+   294→      confidence: 0.6,
+   295→      ambiguous: false,
+   296→    };
+   297→  }
+   298→
+   299→  // Phase 9: Verification failure — tool succeeded but expected outcome not observed.
+   300→  // RETRY once (maybe the verification was transient — file system race, etc.),
+   301→  // then REPLAN (try a different approach — the tool isn't producing the expected result),
+   302→  // then SKIP/ABORT.
+   303→  if (cls === 'verification_failed') {
+   304→    if (ctx.attempt < 1) {
+   305→      return {
+   306→        action: 'RETRY',
+   307→        reason: `Verification failed — retry once (attempt ${ctx.attempt + 1}/1) to re-check expected outcome`,
+   308→        errorClass: cls,
+   309→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   310→        llmAnalyzed: false,
+   311→        confidence: 0.6,
+   312→        ambiguous: true, // verification failures benefit from LLM analysis (maybe expected outcome was wrong)
+   313→      };
+   314→    }
+   315→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   316→    return {
+   317→      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+   318→      reason: `Verification failed after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+   319→      errorClass: cls,
+   320→      backoffMs: 0,
+   321→      llmAnalyzed: false,
+   322→      confidence: 0.7,
+   323→      ambiguous: false,
+   324→    };
+   325→  }
+   326→
+   327→  // Phase 10: Browser error — navigation, element, crash.
+   328→  // RETRY once (page may still be loading or selector timing was off),
+   329→  // then REPLAN (try different selector/approach), then SKIP/ABORT.
+   330→  // URL validation failures are permanent (security — classified as
+   331→  // legacyClass='permanent') so they hit the ABORT path immediately.
+   332→  if (cls === 'browser_error') {
+   333→    // Security URL blocks never retry (neverRetry=true from classifier)
+   334→    if (ctx.errorMessage.toLowerCase().includes('url validation failed')) {
+   335→      return {
+   336→        action: 'ABORT',
+   337→        reason: `Browser URL validation failed (security) — aborting`,
+   338→        errorClass: cls,
+   339→        backoffMs: 0,
+   340→        llmAnalyzed: false,
+   341→        confidence: 0.9,
+   342→        ambiguous: false,
+   343→      };
+   344→    }
+   345→    if (ctx.attempt < 1) {
+   346→      return {
+   347→        action: 'RETRY',
+   348→        reason: `Browser error — retry once (attempt ${ctx.attempt + 1}/1, page may still be loading)`,
+   349→        errorClass: cls,
+   350→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   351→        llmAnalyzed: false,
+   352→        confidence: 0.6,
+   353→        ambiguous: true, // browser errors benefit from LLM analysis
+   354→      };
+   355→    }
+   356→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   357→    return {
+   358→      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+   359→      reason: `Browser error after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+   360→      errorClass: cls,
+   361→      backoffMs: 0,
+   362→      llmAnalyzed: false,
+   363→      confidence: 0.7,
+   364→      ambiguous: false,
+   365→    };
+   366→  }
+   367→
+   368→  // Phase 11: Computer error — mouse, keyboard, screenshot, native crash.
+   369→  // RETRY once (transient native call failures, window focus changes),
+   370→  // then REPLAN (different coordinates/approach), then ABORT.
+   371→  // System window blocks (security) are permanent → ABORT immediately.
+   372→  if (cls === 'computer_error') {
+   373→    // Security system-window blocks never retry
+   374→    if (ctx.errorMessage.toLowerCase().includes('system window')) {
+   375→      return {
+   376→        action: 'ABORT',
+   377→        reason: `Computer system window blocked (security) — aborting`,
+   378→        errorClass: cls,
+   379→        backoffMs: 0,
+   380→        llmAnalyzed: false,
+   381→        confidence: 0.9,
+   382→        ambiguous: false,
+   383→      };
+   384→    }
+   385→    if (ctx.attempt < 1) {
+   386→      return {
+   387→        action: 'RETRY',
+   388→        reason: `Computer error — retry once (attempt ${ctx.attempt + 1}/1, transient native failure)`,
+   389→        errorClass: cls,
+   390→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   391→        llmAnalyzed: false,
+   392→        confidence: 0.6,
+   393→        ambiguous: true, // computer errors benefit from LLM analysis
+   394→      };
+   395→    }
+   396→    const hasMoreSteps = ctx.task.currentStepIndex < ctx.task.plan.length - 1;
+   397→    return {
+   398→      action: hasMoreSteps ? 'REPLAN' : 'ABORT',
+   399→      reason: `Computer error after retry — ${hasMoreSteps ? 'try different approach (REPLAN)' : 'no more steps (ABORT)'}`,
+   400→      errorClass: cls,
+   401→      backoffMs: 0,
+   402→      llmAnalyzed: false,
+   403→      confidence: 0.7,
+   404→      ambiguous: false,
+   405→    };
+   406→  }
+   407→
+   408→  // Unknown — RETRY once, then ABORT (preserves Phase 14 behavior)
+   409→  if (cls === 'unknown') {
+   410→    if (ctx.attempt < 1) {
+   411→      return {
+   412→        action: 'RETRY',
+   413→        reason: `Unknown error — retry once (attempt ${ctx.attempt + 1}/1)`,
+   414→        errorClass: cls,
+   415→        backoffMs: exponentialBackoff(ctx.attempt, cls),
+   416→        llmAnalyzed: false,
+   417→        confidence: 0.4,
+   418→        ambiguous: true, // unknown errors benefit from LLM analysis
+   419→      };
+   420→    }
+   421→    return {
+   422→      action: 'ABORT',
+   423→      reason: `Unknown error persisted after one retry — aborting`,
+   424→      errorClass: cls,
+   425→      backoffMs: 0,
+   426→      llmAnalyzed: false,
+   427→      confidence: 0.5,
+   428→      ambiguous: false,
+   429→    };
+   430→  }
+   431→
+   432→  // Fallback (shouldn't reach here — all classes handled above)
+   433→  return {
+   434→    action: 'ABORT',
+   435→    reason: `Unhandled error class '${cls}' — aborting`,
+   436→    errorClass: cls,
+   437→    backoffMs: 0,
+   438→    llmAnalyzed: false,
+   439→    confidence: 0.1,
+   440→    ambiguous: false,
+   441→  };
+   442→}
+   443→
+   444→// ─── Argument fixing heuristics ──────────────────────────────────────────────
+   445→
+   446→interface ArgFix {
+   447→  params: Record<string, unknown>;
+   448→  reason: string;
+   449→}
+   450→
+   451→/**
+   452→ * Try to fix common argument issues heuristically.
+   453→ * Returns null if no fix is available (LLM may still try).
+   454→ */
+   455→function tryFixArguments(ctx: RecoveryContext): ArgFix | null {
+   456→  const params = ctx.step.toolParams || {};
+   457→  const err = ctx.errorMessage.toLowerCase();
+   458→
+   459→  // "Missing required parameter: path"
+   460→  const missingMatch = ctx.errorMessage.match(/missing (?:required )?(?:parameter|argument|field)[:\s]+([a-z_]+)/i);
+   461→  if (missingMatch) {
+   462→    const paramName = missingMatch[1];
+   463→    // Heuristic: if 'path' missing and we have an activeFile, use it
+   464→    if (paramName === 'path' && ctx.task.context?.activeFile) {
+   465→      return {
+   466→        params: { ...params, path: ctx.task.context.activeFile },
+   467→        reason: `added missing 'path' from activeFile (${ctx.task.context.activeFile})`,
+   468→      };
+   469→    }
+   470→    // Heuristic: if 'content' missing, use empty string (write_file)
+   471→    if (paramName === 'content') {
+   472→      return {
+   473→        params: { ...params, content: '' },
+   474→        reason: `added missing 'content' as empty string`,
+   475→      };
+   476→    }
+   477→  }
+   478→
+   479→  // "Expected string but got number" — coerce type
+   480→  const typeMatch = ctx.errorMessage.match(/expected (string|number|boolean) but got (string|number|boolean|object|array)/i);
+   481→  if (typeMatch) {
+   482→    const expected = typeMatch[1].toLowerCase();
+   483→    const got = typeMatch[2].toLowerCase();
+   484→    // Find the offending param — heuristic: try 'path' first (most common)
+   485→    for (const key of ['path', 'content', 'command', 'query']) {
+   486→      if (key in params) {
+   487→        const val = params[key];
+   488→        const valType = Array.isArray(val) ? 'array' : typeof val;
+   489→        if (valType === got) {
+   490→          let coerced: unknown = val;
+   491→          if (expected === 'string' && valType !== 'string') coerced = String(val);
+   492→          else if (expected === 'number' && valType !== 'number') {
+   493→            const n = Number(val);
+   494→            if (!isNaN(n)) coerced = n;
+   495→          }
+   496→          else if (expected === 'boolean' && valType !== 'boolean') {
+   497→            if (val === 'true' || val === 1 || val === '1') coerced = true;
+   498→            else if (val === 'false' || val === 0 || val === '0') coerced = false;
+   499→          }
+   500→          if (coerced !== val) {
+   501→            return {
+   502→              params: { ...params, [key]: coerced },
+   503→              reason: `coerced '${key}' from ${got} to ${expected}`,
+   504→            };
+   505→          }
+   506→        }
+   507→      }
+   508→    }
+   509→  }
+   510→
+   511→  // Note: "path outside workspace" / "path not allowed" is classified as
+   512→  // security_policy (not invalid_arguments) by error-classifier.ts, so the
+   513→  // security_policy branch handles it (SKIP/ABORT — never auto-modify to
+   514→  // bypass security). We do NOT auto-strip "../" from paths here.
+   515→
+   516→  return null;
+   517→}
+   518→
+   519→// ─── LLM fallback (optional) ─────────────────────────────────────────────────
+   520→
+   521→export interface LLMRecoveryInput {
+   522→  context: RecoveryContext;
+   523→  classification: ErrorClassification;
+   524→  heuristicDecision: RecoveryDecision;
+   525→}
+   526→
+   527→/**
+   528→ * Ask the local LLM to analyze the error and pick a recovery action.
+   529→ * Used as a FALLBACK when the heuristic decision is 'ambiguous'.
+   530→ *
+   531→ * Returns null if:
+   532→ *   - no runtime available (offline mode)
+   533→ *   - LLM call fails
+   534→ *   - LLM response can't be parsed
+   535→ *
+   536→ * In all these cases, the caller falls back to the heuristic decision.
+   537→ */
+   538→export async function analyzeWithLLM(
+   539→  runtime: AIRuntime | null,
+   540→  model: LocalModelInfo | null,
+   541→  input: LLMRecoveryInput
+   542→): Promise<RecoveryDecision | null> {
+   543→  if (!runtime || !model) return null; // offline — heuristic only
+   544→
+   545→  const { context: ctx, classification, heuristicDecision } = input;
+   546→
+   547→  try {
+   548→    const systemPrompt = `You are an error-recovery assistant for an AI agent named NEX.
+   549→Analyze the tool/step failure below and decide the best recovery action.
+   550→
+   551→Possible actions:
+   552→- RETRY: re-run the same step with the same arguments (good for transient errors)
+   553→- MODIFY_AND_RETRY: re-run with modified arguments (good for invalid arguments)
+   554→- REPLAN: discard remaining steps and ask the planner for new ones (good for wrong approach)
+   555→- SKIP: skip this step and continue with the next one (good for non-essential steps)
+   556→- ABORT: stop the task entirely (good for unrecoverable errors)
+   557→
+   558→Respond with STRICT JSON only: {"action":"...","reason":"...","modifiedParams":{...},"confidence":0.0}
+   559→
+   560→Rules:
+   561→- NEVER retry permission/security/cancellation errors.
+   562→- Prefer RETRY for transient (network/timeout) errors.
+   563→- Prefer MODIFY_AND_RETRY for invalid arguments (suggest the fix in modifiedParams).
+   564→- Prefer REPLAN for file/path errors.
+   565→- Prefer SKIP for non-essential steps.
+   566→- Prefer ABORT only when no recovery is possible.`;
+   567→
+   568→    const userPrompt = buildLLMRecoveryPrompt(ctx, classification, heuristicDecision);
+   569→
+   570→    const result = await runtime.chat(
+   571→      [
+   572→        { role: 'system', content: systemPrompt },
+   573→        { role: 'user', content: userPrompt },
+   574→      ],
+   575→      {
+   576→        contextSize: model.contextSize,
+   577→        temperature: 0.2,
+   578→        maxTokens: 400,
+   579→        systemPrompt,
+   580→      }
+   581→    );
+   582→
+   583→    return parseLLMRecoveryResponse(result.content, classification, heuristicDecision);
+   584→  } catch (err: any) {
+   585→    AgentLogger.warn(`Recovery LLM analysis failed: ${err.message} — using heuristic decision`);
+   586→    return null;
+   587→  }
+   588→}
+   589→
+   590→function buildLLMRecoveryPrompt(
+   591→  ctx: RecoveryContext,
+   592→  classification: ErrorClassification,
+   593→  heuristic: RecoveryDecision
+   594→): string {
+   595→  // ════════════════════════════════════════════════════════════════════════
+   596→  // Phase 8: Context Propagation
+   597→  //
+   598→  // We now use safeContextSnapshot() to build a single redacted + bounded
+   599→  // snapshot of the agent context. This replaces the inline redaction logic
+   600→  // that was here before (no duplication — single source of truth).
+   601→  //
+   602→  // The snapshot includes:
+   603→  //   - taskId, conversationId, sessionId (correlation)
+   604→  //   - userRequest (truncated to 200), intent, projectPath, activeFile, language
+   605→  //   - currentPlan + currentStep summaries
+   606→  //   - toolParamsSafe (redacted, bounded JSON)
+   607→  //   - lastObservation (truncated rawOutput, signals, modifiedFiles)
+   608→  //   - error + errorClass + attempt + maxRetries
+   609→  //   - remainingSteps (max 5)
+   610→  //   - executionMetadata (backend, model, timeout)
+   611→  // ════════════════════════════════════════════════════════════════════════
+   612→  const snapshot: AgentContextContract = safeContextSnapshot(
+   613→    ctx.task,
+   614→    ctx.step,
+   615→    {
+   616→      error: ctx.errorMessage,
+   617→      errorClass: classification.class,
+   618→      attempt: ctx.attempt,
+   619→      agentTaskId: ctx.taskId,
+   620→    },
+   621→  );
+   622→
+   623→  const lines: string[] = [];
+   624→
+   625→  // ── Task ──
+   626→  lines.push('## Task');
+   627→  lines.push(`- Task ID: ${snapshot.taskId}`);
+   628→  if (snapshot.conversationId) lines.push(`- Conversation ID: ${snapshot.conversationId}`);
+   629→  if (snapshot.sessionId) lines.push(`- Session ID: ${snapshot.sessionId}`);
+   630→  lines.push(`- User request: ${snapshot.userRequest}`);
+   631→  if (snapshot.intent) lines.push(`- Intent: ${snapshot.intent}`);
+   632→  if (snapshot.projectPath) lines.push(`- Project: ${snapshot.projectPath}`);
+   633→  if (snapshot.activeFile) lines.push(`- Active file: ${snapshot.activeFile}`);
+   634→  if (snapshot.language) lines.push(`- Language: ${snapshot.language}`);
+   635→  lines.push(`- Step ${snapshot.currentStep.index + 1}/${snapshot.currentPlan.totalSteps}: ${snapshot.currentStep.description}`);
+   636→  lines.push(`- Attempt: ${snapshot.attempt ?? 0}/${snapshot.maxRetries ?? 0}`);
+   637→
+   638→  // ── Failure ──
+   639→  lines.push('');
+   640→  lines.push('## Failure');
+   641→  lines.push(`- Tool: ${snapshot.toolName || '(none)'}`);
+   642→  lines.push(`- Error class: ${snapshot.errorClass || 'unknown'}`);
+   643→  lines.push(`- Error message: ${snapshot.error || '(no message)'}`);
+   644→  if (ctx.errorCode) lines.push(`- Error code: ${ctx.errorCode}`);
+   645→
+   646→  // ── Tool arguments (REDACTED via snapshot) ──
+   647→  lines.push('');
+   648→  lines.push('## Tool arguments (redacted)');
+   649→  lines.push('```json');
+   650→  lines.push(snapshot.toolParamsSafe?._redactedJson as string || '{}');
+   651→  lines.push('```');
+   652→
+   653→  // ── Last observation (TRUNCATED via snapshot) ──
+   654→  lines.push('');
+   655→  lines.push('## Last observation');
+   656→  if (snapshot.lastObservation) {
+   657→    lines.push(`- Tool call ID: ${snapshot.lastObservation.toolCallId}`);
+   658→    lines.push(`- Signals: ${snapshot.lastObservation.signals.map((s) => `[${s.type}] ${s.message}`).join('; ') || '(none)'}`);
+   659→    if (snapshot.lastObservation.modifiedFiles.length > 0) {
+   660→      lines.push(`- Modified files: ${snapshot.lastObservation.modifiedFiles.join(', ')}`);
+   661→    }
+   662→    lines.push(`- Output (truncated): ${snapshot.lastObservation.rawOutputTruncated.slice(0, 300)}${snapshot.lastObservation.rawOutputTruncated.length > 300 ? '...' : ''}`);
+   663→  } else {
+   664→    lines.push('(no observation)');
+   665→  }
+   666→
+   667→  // ── Remaining plan (max 5 via snapshot) ──
+   668→  lines.push('');
+   669→  lines.push('## Remaining plan');
+   670→  if (snapshot.remainingSteps.length > 0) {
+   671→    snapshot.remainingSteps.forEach((s, i) => {
+   672→      lines.push(`${i + 1}. ${s.description}${s.toolName ? ` (tool: ${s.toolName})` : ''}`);
+   673→    });
+   674→  } else {
+   675→    lines.push('(this is the last step)');
+   676→  }
+   677→
+   678→  // ── Execution metadata ──
+   679→  lines.push('');
+   680→  lines.push('## Execution metadata');
+   681→  if (snapshot.executionMetadata) {
+   682→    const m = snapshot.executionMetadata;
+   683→    lines.push(`- Backend: ${m.backend || 'local'}`);
+   684→    if (m.model) lines.push(`- Model: ${m.model}`);
+   685→    if (m.timeoutMs) lines.push(`- Timeout: ${m.timeoutMs}ms`);
+   686→  }
+   687→
+   688→  // ── Heuristic decision (for LLM reference) ──
+   689→  lines.push('');
+   690→  lines.push('## Heuristic decision (for your reference)');
+   691→  lines.push(`- Action: ${heuristic.action}`);
+   692→  lines.push(`- Reason: ${heuristic.reason}`);
+   693→  lines.push(`- Confidence: ${heuristic.confidence}`);
+   694→  lines.push('');
+   695→  lines.push('## Your decision');
+   696→  lines.push('Override the heuristic ONLY if you have higher confidence. Respond with STRICT JSON.');
+   697→
+   698→  return lines.join('\n');
+   699→}
+   700→
+   701→function parseLLMRecoveryResponse(
+   702→  response: string,
+   703→  classification: ErrorClassification,
+   704→  heuristic: RecoveryDecision
+   705→): RecoveryDecision | null {
+   706→  // Extract JSON from the response (tolerate prefix/suffix text)
+   707→  const jsonMatch = response.match(/\{[\s\S]*\}/);
+   708→  if (!jsonMatch) return null;
+   709→
+   710→  let parsed: any;
+   711→  try {
+   712→    parsed = JSON.parse(jsonMatch[0]);
+   713→  } catch {
+   714→    return null;
+   715→  }
+   716→
+   717→  const action = String(parsed.action || '').toUpperCase() as RecoveryAction;
+   718→  if (!['RETRY', 'MODIFY_AND_RETRY', 'REPLAN', 'SKIP', 'ABORT'].includes(action)) {
+   719→    return null;
+   720→  }
+   721→
+   722→  // Safety: LLM is NEVER allowed to retry permission/security/cancellation errors.
+   723→  // (Phase 7 §8 — security/policy rejection must terminate or require user confirmation.)
+   724→  if (
+   725→    (classification.class === 'permission_denied' ||
+   726→      classification.class === 'security_policy' ||
+   727→      classification.class === 'user_cancellation') &&
+   728→    (action === 'RETRY' || action === 'MODIFY_AND_RETRY')
+   729→  ) {
+   730→    // Override back to the heuristic decision (which already prevented retry)
+   731→    return {
+   732→      ...heuristic,
+   733→      reason: `${heuristic.reason} (LLM suggested ${action} but safety guard overrode: never auto-retry ${classification.class})`,
+   734→    };
+   735→  }
+   736→
+   737→  return {
+   738→    action,
+   739→    reason: String(parsed.reason || `LLM decided: ${action}`),
+   740→    errorClass: classification.class,
+   741→    backoffMs: action === 'RETRY' || action === 'MODIFY_AND_RETRY'
+   742→      ? exponentialBackoff(0, classification.class)
+   743→      : 0,
+   744→    llmAnalyzed: true,
+   745→    confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.5)),
+   746→    modifiedParams: parsed.modifiedParams || undefined,
+   747→    ambiguous: false,
+   748→  };
+   749→}
+   750→
+   751→// ─── Top-level: decideRecovery ──────────────────────────────────────────────
+   752→
+   753→export interface DecideRecoveryOptions {
+   754→  context: RecoveryContext;
+   755→  runtime?: AIRuntime | null;
+   756→  model?: LocalModelInfo | null;
+   757→  /**
+   758→   * If false (default), the heuristic decision is preferred and LLM only
+   759→   * runs for 'ambiguous' cases. If true, the LLM is always asked (testing).
+   760→   */
+   761→  forceLLM?: boolean;
+   762→}
+   763→
+   764→/**
+   765→ * Top-level recovery decision: heuristic first, LLM fallback for ambiguous cases.
+   766→ *
+   767→ * Phase 7 §4: LLM is NOT the only path. Heuristic path runs first.
+   768→ */
+   769→export async function decideRecovery(opts: DecideRecoveryOptions): Promise<RecoveryDecision> {
+   770→  const heuristic = decideRecoveryHeuristic(opts.context);
+   771→
+   772→  // Always run LLM for ambiguous cases (or when forced for testing)
+   773→  if (heuristic.ambiguous || opts.forceLLM) {
+   774→    const classification = classifyError(opts.context.errorMessage, opts.context.errorCode);
+   775→    const llmDecision = await analyzeWithLLM(
+   776→      opts.runtime || null,
+   777→      opts.model || null,
+   778→      { context: opts.context, classification, heuristicDecision: heuristic }
+   779→    );
+   780→    if (llmDecision) return llmDecision;
+   781→  }
+   782→
+   783→  return heuristic;
+   784→}
+   785→
+   786→// ─── Helpers ──────────────────────────────────────────────────────────────────
+   787→
+   788→function truncate(s: string, max: number): string {
+   789→  if (s.length <= max) return s;
+   790→  return s.slice(0, max - 3) + '...';
+   791→}
+   792→
+   793→// ─── Test helpers (exported for tests) ────────────────────────────────────────
+   794→
+   795→export const _internal = {
+   796→  exponentialBackoff,
+   797→  tryFixArguments,
+   798→  buildLLMRecoveryPrompt,
+   799→};
+   800→

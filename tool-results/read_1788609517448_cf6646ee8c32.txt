@@ -1,0 +1,805 @@
+     1→     1→import { contextBridge, ipcRenderer } from 'electron';
+     2→     2→
+     3→     3→/**
+     4→     4→ * NEX AI Preload
+     5→     5→ *
+     6→     6→ * Security notes:
+     7→     7→ *  - contextIsolation: true — renderer cannot access Node globals directly
+     8→     8→ *  - Only the `nexAPI` object is exposed via contextBridge
+     9→     9→ *  - The old `execCommand` channel was REMOVED (allowed arbitrary shell exec)
+    10→    10→ *  - All IPC channels are explicitly listed here — no wildcard exposure
+    11→    11→ */
+    12→    12→
+    13→    13→contextBridge.exposeInMainWorld('nexAPI', {
+    14→    14→  // ── Window Controls ──
+    15→    15→  windowMinimize: () => ipcRenderer.send('window-minimize'),
+    16→    16→  windowMaximize: () => ipcRenderer.send('window-maximize'),
+    17→    17→  windowClose: () => ipcRenderer.send('window-close'),
+    18→    18→  windowIsMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+    19→    19→
+    20→    20→  // ── File System ──
+    21→    21→  readFile: (filePath: string) => ipcRenderer.invoke('fs-read-file', filePath),
+    22→    22→  writeFile: (filePath: string, content: string) =>
+    23→    23→    ipcRenderer.invoke('fs-write-file', filePath, content),
+    24→    24→  readDir: (dirPath: string) => ipcRenderer.invoke('fs-readdir', dirPath),
+    25→    25→  mkdir: (dirPath: string) => ipcRenderer.invoke('fs-mkdir', dirPath),
+    26→    26→  deletePath: (targetPath: string) => ipcRenderer.invoke('fs-delete', targetPath),
+    27→    27→  rename: (oldPath: string, newPath: string) =>
+    28→    28→    ipcRenderer.invoke('fs-rename', oldPath, newPath),
+    29→    29→  stat: (targetPath: string) => ipcRenderer.invoke('fs-stat', targetPath),
+    30→    30→  search: (dirPath: string, pattern: string) =>
+    31→    31→    ipcRenderer.invoke('fs-search', dirPath, pattern),
+    32→    32→
+    33→    33→  // ── Dialog ──
+    34→    34→  openFolder: () => ipcRenderer.invoke('dialog-open-folder'),
+    35→    35→  openFile: () => ipcRenderer.invoke('dialog-open-file'),
+    36→    36→
+    37→    37→  // ── System ──
+    38→    38→  systemInfo: () => ipcRenderer.invoke('system-info'),
+    39→    39→  // Phase 26: safe tsc check (replaces removed execCommand)
+    40→    40→  runTscCheck: (cwd: string) => ipcRenderer.invoke('run-tsc-check', cwd),
+    41→    41→
+    42→    42→  // ── Config (legacy, kept for backwards-compat) ──
+    43→    43→  configGet: (key: string) => ipcRenderer.invoke('config-get', key),
+    44→    44→  configSet: (key: string, value: any) => ipcRenderer.invoke('config-set', key, value),
+    45→    45→  configGetAll: () => ipcRenderer.invoke('config-get-all'),
+    46→    46→
+    47→    47→  // ── Settings (Phase 2 — proper persistence with encrypted API keys) ──
+    48→    48→  settingsLoad: () => ipcRenderer.invoke('settings-load'),
+    49→    49→  settingsSave: (settings: any, apiKey?: string, glmApiKey?: string) =>
+    50→    50→    ipcRenderer.invoke('settings-save', settings, apiKey, glmApiKey),
+    51→    51→  settingsSetApiKey: (apiKey: string) =>
+    52→    52→    ipcRenderer.invoke('settings-set-api-key', apiKey),
+    53→    53→  settingsGetApiKey: () => ipcRenderer.invoke('settings-get-api-key'),
+    54→    54→  settingsDeleteApiKey: () => ipcRenderer.invoke('settings-delete-api-key'),
+    55→    55→  persistenceInfo: () => ipcRenderer.invoke('persistence-info'),
+    56→    56→
+    57→    57→  // ── External (validated http/https only) ──
+    58→    58→  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+    59→    59→
+    60→    60→  // ── AI Chat ──
+    61→    61→  aiChat: (config: any, messages: any[]) =>
+    62→    62→    ipcRenderer.invoke('ai-chat', config, messages),
+    63→    63→  // Phase 17: streaming chat
+    64→    64→  aiChatStream: (config: any, messages: any[]) => ipcRenderer.invoke('ai-chat-stream', config, messages),
+    65→    65→  aiChatStreamCancel: () => ipcRenderer.invoke('ai-chat-stream-cancel'),
+    66→    66→  onChatToken: (callback: (ev: any) => void) => {
+    67→    67→    const listener = (_e: any, ev: any) => callback(ev);
+    68→    68→    ipcRenderer.on('chat-token', listener);
+    69→    69→    return () => ipcRenderer.removeListener('chat-token', listener);
+    70→    70→  },
+    71→    71→  aiAbort: () => ipcRenderer.invoke('ai-abort'),
+    72→    72→
+    73→    73→  // Phase 104: Unified Brain Router — single entry point for all user messages
+    74→    74→  brainRoute: (request: any) => ipcRenderer.invoke('brain-route', request),
+    75→    75→  // Phase 110: agentCancelTask already exists below in the Agent Core section
+    76→    76→  aiDefaultConfig: (provider: string) =>
+    77→    77→    ipcRenderer.invoke('ai-default-config', provider),
+    78→    78→
+    79→    79→  // ── Local Model Management (Phase 3-4) ──
+    80→    80→  modelList: () => ipcRenderer.invoke('model-list'),
+    81→    81→  modelAdd: (filePath: string, opts?: any) =>
+    82→    82→    ipcRenderer.invoke('model-add', filePath, opts),
+    83→    83→  modelRemove: (id: string) => ipcRenderer.invoke('model-remove', id),
+    84→    84→  modelUpdate: (id: string, patch: any) => ipcRenderer.invoke('model-update', id, patch),
+    85→    85→  modelGet: (id: string) => ipcRenderer.invoke('model-get', id),
+    86→    86→  modelPickFile: () => ipcRenderer.invoke('model-pick-file'),
+    87→    87→  // Phase 116: Test Load — verify a model loads without activating it
+    88→    88→  modelTestLoad: (modelId: string) => ipcRenderer.invoke('model-test-load', modelId),
+    89→    89→
+    90→    90→  // ── Phase 39: Professional Model Manager (versioning, hash, hardware, backup) ──
+    91→    91→  modelComputeHash: (modelId: string) =>
+    92→    92→    ipcRenderer.invoke('model-compute-hash', modelId),
+    93→    93→  modelVerifyIntegrity: (modelId: string) =>
+    94→    94→    ipcRenderer.invoke('model-verify-integrity', modelId),
+    95→    95→  modelVerifyAllIntegrity: () =>
+    96→    96→    ipcRenderer.invoke('model-verify-all-integrity'),
+    97→    97→  modelRegistryRollback: () =>
+    98→    98→    ipcRenderer.invoke('model-registry-rollback'),
+    99→    99→  modelRegistryBackupInfo: () =>
+   100→   100→    ipcRenderer.invoke('model-registry-backup-info'),
+   101→   101→  modelRegistryMigrate: () =>
+   102→   102→    ipcRenderer.invoke('model-registry-migrate'),
+   103→   103→  modelDetectHardware: () =>
+   104→   104→    ipcRenderer.invoke('model-detect-hardware'),
+   105→   105→  modelRecommend: (criteria?: { capability?: string; category?: string; preferSmaller?: boolean }) =>
+   106→   106→    ipcRenderer.invoke('model-recommend', criteria),
+   107→   107→  modelCanRun: (modelId: string) =>
+   108→   108→    ipcRenderer.invoke('model-can-run', modelId),
+   109→   109→
+   110→   110→  // ── Phase 41: Local Voice Engine (STT + TTS + VAD) ──
+   111→   111→  voiceStatus: () => ipcRenderer.invoke('voice-status'),
+   112→   112→  voiceSetSTTModel: (modelPath: string) => ipcRenderer.invoke('voice-set-stt-model', modelPath),
+   113→   113→  voiceSetTTSModel: (voiceModelPath: string) => ipcRenderer.invoke('voice-set-tts-model', voiceModelPath),
+   114→   114→  voiceTranscribe: (audioPath: string, opts?: any) => ipcRenderer.invoke('voice-transcribe', audioPath, opts),
+   115→   115→  voiceSynthesize: (text: string, opts?: any) => ipcRenderer.invoke('voice-synthesize', text, opts),
+   116→   116→  voiceListVoices: () => ipcRenderer.invoke('voice-list-voices'),
+   117→   117→  voiceFindBinaries: () => ipcRenderer.invoke('voice-find-binaries'),
+   118→   118→
+   119→   119→  // Voice pipeline: feed mic audio from renderer → main process
+   120→   120→  voiceFeedAudioLevel: (level: number) => {
+   121→   121→    ipcRenderer.send('voice-feed-audio-level', level);
+   122→   122→  },
+   123→   123→  voiceFeedAudioChunk: (chunk: ArrayBuffer | Uint8Array) => {
+   124→   124→    const buf = chunk instanceof ArrayBuffer ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+   125→   125→    // [VOICE_AUDIO] diagnostic — log chunk send (throttled to avoid flooding)
+   126→   126→    if (!(globalThis as any).__nexVoiceChunkCount) (globalThis as any).__nexVoiceChunkCount = 0;
+   127→   127→    (globalThis as any).__nexVoiceChunkCount++;
+   128→   128→    if ((globalThis as any).__nexVoiceChunkCount % 50 === 1) {
+   129→   129→      console.log(`[VOICE_AUDIO] sending chunk size=${buf.length} (#${(globalThis as any).__nexVoiceChunkCount})`);
+   130→   130→    }
+   131→   131→    ipcRenderer.send('voice-feed-audio-chunk', buf);
+   132→   132→  },
+   133→   133→  voicePipelineStatus: () => ipcRenderer.invoke('voice-pipeline-status'),
+   134→   134→
+   135→   135→  // Voice mic capture events: main → renderer (trigger mic capture start/stop)
+   136→   136→  onVoiceStartMicCapture: (callback: () => void) => {
+   137→   137→    const listener = () => {
+   138→   138→      console.log('[VOICE_IPC] preload received voice-start-mic-capture');
+   139→   139→      callback();
+   140→   140→    };
+   141→   141→    ipcRenderer.on('voice-start-mic-capture', listener);
+   142→   142→    console.log('[VOICE_IPC] preload registered voice-start-mic-capture listener');
+   143→   143→    return () => {
+   144→   144→      console.log('[VOICE_IPC] preload removed voice-start-mic-capture listener');
+   145→   145→      ipcRenderer.removeListener('voice-start-mic-capture', listener);
+   146→   146→    };
+   147→   147→  },
+   148→   148→  onVoiceStopMicCapture: (callback: () => void) => {
+   149→   149→    const listener = () => {
+   150→   150→      console.log('[VOICE_IPC] preload received voice-stop-mic-capture');
+   151→   151→      callback();
+   152→   152→    };
+   153→   153→    ipcRenderer.on('voice-stop-mic-capture', listener);
+   154→   154→    return () => ipcRenderer.removeListener('voice-stop-mic-capture', listener);
+   155→   155→  },
+   156→   156→
+   157→   157→  // ── Voice Manager: unified activation lifecycle ──
+   158→   158→  voiceManagerDetect: () => ipcRenderer.invoke('voice-manager-detect'),
+   159→   159→  voiceManagerActivate: () => ipcRenderer.invoke('voice-manager-activate'),
+   160→   160→  voiceManagerDeactivate: () => ipcRenderer.invoke('voice-manager-deactivate'),
+   161→   161→  voiceManagerSetMode: (mode: string) => ipcRenderer.invoke('voice-manager-set-mode', mode),
+   162→   162→  voiceManagerStartConversation: () => ipcRenderer.invoke('voice-manager-start-conversation'),
+   163→   163→  voiceManagerStopConversation: () => ipcRenderer.invoke('voice-manager-stop-conversation'),
+   164→   164→  voiceManagerToggleConversation: () => ipcRenderer.invoke('voice-manager-toggle-conversation'),
+   165→   165→  voiceManagerStatus: () => ipcRenderer.invoke('voice-manager-status'),
+   166→   166→  voiceManagerSetSTTModel: (modelPath: string) => ipcRenderer.invoke('voice-manager-set-stt-model', modelPath),
+   167→   167→  voiceManagerSetTTSVoice: (voicePath: string) => ipcRenderer.invoke('voice-manager-set-tts-voice', voicePath),
+   168→   168→  voiceManagerSetLanguage: (language: string) => ipcRenderer.invoke('voice-manager-set-language', language),
+   169→   169→
+   170→   170→  // ── Phase 56: Advanced Voice Conversation System ──
+   171→   171→  voiceConversationStart: () => ipcRenderer.invoke('voice-conversation-start'),
+   172→   172→  voiceConversationStop: () => ipcRenderer.invoke('voice-conversation-stop'),
+   173→   173→  voiceConversationToggle: () => ipcRenderer.invoke('voice-conversation-toggle'),
+   174→   174→  voiceConversationStatus: () => ipcRenderer.invoke('voice-conversation-status'),
+   175→   175→  voiceConversationFeed: (text: string) => ipcRenderer.invoke('voice-conversation-feed', text),
+   176→   176→  voiceConversationSpeak: (text: string) => ipcRenderer.invoke('voice-conversation-speak', text),
+   177→   177→  voiceConversationStartTurn: (initialText?: string) => ipcRenderer.invoke('voice-conversation-start-turn', initialText),
+   178→   178→  voiceConversationAbort: () => ipcRenderer.invoke('voice-conversation-abort'),
+   179→   179→  voiceConversationStopSpeaking: () => ipcRenderer.invoke('voice-conversation-stop-speaking'),
+   180→   180→  voiceConversationSetPersonality: (type: string) => ipcRenderer.invoke('voice-conversation-set-personality', type),
+   181→   181→  voiceConversationPersonalityPrefix: () => ipcRenderer.invoke('voice-conversation-personality-prefix'),
+   182→   182→  voiceConversationEnableWakeWord: () => ipcRenderer.invoke('voice-conversation-enable-wake-word'),
+   183→   183→  voiceConversationDisableWakeWord: () => ipcRenderer.invoke('voice-conversation-disable-wake-word'),
+   184→   184→  voiceConversationRestoreContext: () => ipcRenderer.invoke('voice-conversation-restore-context'),
+   185→   185→  voiceConversationReset: () => ipcRenderer.invoke('voice-conversation-reset'),
+   186→   186→  voiceConversationOrbColor: () => ipcRenderer.invoke('voice-conversation-orb-color'),
+   187→   187→  wakeWordDetect: (text: string) => ipcRenderer.invoke('wake-word-detect', text),
+   188→   188→  wakeWordFeed: (text: string) => ipcRenderer.invoke('wake-word-feed', text),
+   189→   189→  wakeWordStatus: () => ipcRenderer.invoke('wake-word-status'),
+   190→   190→  voiceCommandParse: (text: string) => ipcRenderer.invoke('voice-command-parse', text),
+   191→   191→  onVoiceConversationState: (callback: (ev: any) => void) => {
+   192→   192→    const listener = (_e: any, ev: any) => {
+   193→   193→      console.log(`[ORB_TRACE_PRELOAD] received state=${ev?.state} source=${ev?.source || 'conversation'}`);
+   194→   194→      callback(ev);
+   195→   195→    };
+   196→   196→    ipcRenderer.on('voice-conversation-state', listener);
+   197→   197→    return () => ipcRenderer.removeListener('voice-conversation-state', listener);
+   198→   198→  },
+   199→   199→  onVoiceTTSAudio: (callback: (audioFilePath: string, text: string) => void) => {
+   200→   200→    const listener = (_e: any, ev: any) => {
+   201→   201→      console.log(`[VOICE_PIPELINE] preload received TTS audio: ${ev?.audioFilePath}`);
+   202→   202→      callback(ev?.audioFilePath, ev?.text || '');
+   203→   203→    };
+   204→   204→    ipcRenderer.on('voice-tts-audio', listener);
+   205→   205→    return () => ipcRenderer.removeListener('voice-tts-audio', listener);
+   206→   206→  },
+   207→   207→  onVoiceConversationWake: (callback: (ev: any) => void) => {
+   208→   208→    const listener = (_e: any, ev: any) => callback(ev);
+   209→   209→    ipcRenderer.on('voice-conversation-wake', listener);
+   210→   210→    return () => ipcRenderer.removeListener('voice-conversation-wake', listener);
+   211→   211→  },
+   212→   212→  onVoiceConversationUser: (callback: (ev: any) => void) => {
+   213→   213→    const listener = (_e: any, ev: any) => callback(ev);
+   214→   214→    ipcRenderer.on('voice-conversation-user', listener);
+   215→   215→    return () => ipcRenderer.removeListener('voice-conversation-user', listener);
+   216→   216→  },
+   217→   217→  onVoiceConversationNex: (callback: (ev: any) => void) => {
+   218→   218→    const listener = (_e: any, ev: any) => callback(ev);
+   219→   219→    ipcRenderer.on('voice-conversation-nex', listener);
+   220→   220→    return () => ipcRenderer.removeListener('voice-conversation-nex', listener);
+   221→   221→  },
+   222→   222→  onVoiceConversationInterrupted: (callback: (ev: any) => void) => {
+   223→   223→    const listener = (_e: any, ev: any) => callback(ev);
+   224→   224→    ipcRenderer.on('voice-conversation-interrupted', listener);
+   225→   225→    return () => ipcRenderer.removeListener('voice-conversation-interrupted', listener);
+   226→   226→  },
+   227→   227→  onVoiceConversationCommand: (callback: (ev: any) => void) => {
+   228→   228→    const listener = (_e: any, ev: any) => callback(ev);
+   229→   229→    ipcRenderer.on('voice-conversation-command', listener);
+   230→   230→    return () => ipcRenderer.removeListener('voice-conversation-command', listener);
+   231→   231→  },
+   232→   232→  onVoiceConversationError: (callback: (ev: any) => void) => {
+   233→   233→    const listener = (_e: any, ev: any) => callback(ev);
+   234→   234→    ipcRenderer.on('voice-conversation-error', listener);
+   235→   235→    return () => ipcRenderer.removeListener('voice-conversation-error', listener);
+   236→   236→  },
+   237→   237→
+   238→   238→  // ── Phase 57: Executive Planner & Multi-Agent Orchestration ──
+   239→   239→  plannerCreate: (request: string, opts?: { projectId?: string }) => ipcRenderer.invoke('planner-create', request, opts),
+   240→   240→  plannerExecute: (plan: any, opts?: { speakResults?: boolean }) => ipcRenderer.invoke('planner-execute', plan, opts),
+   241→   241→  plannerAbort: (plan: any) => ipcRenderer.invoke('planner-abort', plan),
+   242→   242→  plannerStatus: () => ipcRenderer.invoke('planner-status'),
+   243→   243→  plannerDecompose: (request: string) => ipcRenderer.invoke('planner-decompose', request),
+   244→   244→  plannerSwarm: (plan: any) => ipcRenderer.invoke('planner-swarm', plan),
+   245→   245→  plannerEvaluate: (plan: any) => ipcRenderer.invoke('planner-evaluate', plan),
+   246→   246→  plannerSetPersonality: (type: string) => ipcRenderer.invoke('planner-set-personality', type),
+   247→   247→  plannerExperts: () => ipcRenderer.invoke('planner-experts'),
+   248→   248→  plannerSkills: () => ipcRenderer.invoke('planner-skills'),
+   249→   249→  plannerSecurityAudit: () => ipcRenderer.invoke('planner-security-audit'),
+   250→   250→  onPlannerPlanCreated: (callback: (ev: any) => void) => {
+   251→   251→    const listener = (_e: any, ev: any) => callback(ev);
+   252→   252→    ipcRenderer.on('planner-plan-created', listener);
+   253→   253→    return () => ipcRenderer.removeListener('planner-plan-created', listener);
+   254→   254→  },
+   255→   255→  onPlannerPlanUpdated: (callback: (ev: any) => void) => {
+   256→   256→    const listener = (_e: any, ev: any) => callback(ev);
+   257→   257→    ipcRenderer.on('planner-plan-updated', listener);
+   258→   258→    return () => ipcRenderer.removeListener('planner-plan-updated', listener);
+   259→   259→  },
+   260→   260→  onPlannerPlanCompleted: (callback: (ev: any) => void) => {
+   261→   261→    const listener = (_e: any, ev: any) => callback(ev);
+   262→   262→    ipcRenderer.on('planner-plan-completed', listener);
+   263→   263→    return () => ipcRenderer.removeListener('planner-plan-completed', listener);
+   264→   264→  },
+   265→   265→  onPlannerSubTaskStarted: (callback: (ev: any) => void) => {
+   266→   266→    const listener = (_e: any, ev: any) => callback(ev);
+   267→   267→    ipcRenderer.on('planner-subtask-started', listener);
+   268→   268→    return () => ipcRenderer.removeListener('planner-subtask-started', listener);
+   269→   269→  },
+   270→   270→  onPlannerSubTaskCompleted: (callback: (ev: any) => void) => {
+   271→   271→    const listener = (_e: any, ev: any) => callback(ev);
+   272→   272→    ipcRenderer.on('planner-subtask-completed', listener);
+   273→   273→    return () => ipcRenderer.removeListener('planner-subtask-completed', listener);
+   274→   274→  },
+   275→   275→  onPlannerSelfEvaluation: (callback: (ev: any) => void) => {
+   276→   276→    const listener = (_e: any, ev: any) => callback(ev);
+   277→   277→    ipcRenderer.on('planner-self-evaluation', listener);
+   278→   278→    return () => ipcRenderer.removeListener('planner-self-evaluation', listener);
+   279→   279→  },
+   280→   280→  onPlannerError: (callback: (ev: any) => void) => {
+   281→   281→    const listener = (_e: any, ev: any) => callback(ev);
+   282→   282→    ipcRenderer.on('planner-error', listener);
+   283→   283→    return () => ipcRenderer.removeListener('planner-error', listener);
+   284→   284→  },
+   285→   285→
+   286→   286→  // ── Phase 58: Local AI Runtime & Model Activation ──
+   287→   287→  localRuntimeListModels: () => ipcRenderer.invoke('local-runtime-list-models'),
+   288→   288→  localRuntimeStatus: () => ipcRenderer.invoke('local-runtime-status'),
+   289→   289→  localRuntimeLoadModel: (modelId: string, opts?: any) => ipcRenderer.invoke('local-runtime-load-model', modelId, opts),
+   290→   290→  localRuntimeUnloadModel: () => ipcRenderer.invoke('local-runtime-unload-model'),
+   291→   291→  // Phase 82: Model activation + detailed status
+   292→   292→  localRuntimeActivateModel: (modelId: string) => ipcRenderer.invoke('local-runtime-activate-model', modelId),
+   293→   293→  localRuntimeGetActiveModel: () => ipcRenderer.invoke('local-runtime-get-active-model'),
+   294→   294→  localRuntimeDetailedStatus: () => ipcRenderer.invoke('local-runtime-detailed-status'),
+   295→   295→  localRuntimeAbort: () => ipcRenderer.invoke('local-runtime-abort'),
+   296→   296→  localRuntimeRouteTask: (request: any) => ipcRenderer.invoke('local-runtime-route-task', request),
+   297→   297→  localRuntimeGenerate: (messages: any[], opts?: any) => ipcRenderer.invoke('local-runtime-generate', messages, opts),
+   298→   298→  localRuntimeProviderInfo: () => ipcRenderer.invoke('local-runtime-provider-info'),
+   299→   299→  localRuntimeHealthCheck: () => ipcRenderer.invoke('local-runtime-health-check'),
+   300→   300→  localRuntimeHardware: () => ipcRenderer.invoke('local-runtime-hardware'),
+   301→   301→  localRuntimeModelsByCategory: () => ipcRenderer.invoke('local-runtime-models-by-category'),
+   302→   302→  localRuntimeIsGguf: (filePath: string) => ipcRenderer.invoke('local-runtime-is-gguf', filePath),
+   303→   303→  localRuntimeSecurityAudit: () => ipcRenderer.invoke('local-runtime-security-audit'),
+   304→   304→
+   305→   305→  // ── Phase 59: Advanced Model Ecosystem ──
+   306→   306→  ecosystemCatalog: () => ipcRenderer.invoke('ecosystem-catalog'),
+   307→   307→  ecosystemCatalogByType: (type: string) => ipcRenderer.invoke('ecosystem-catalog-by-type', type),
+   308→   308→  ecosystemCatalogByProvider: (provider: string) => ipcRenderer.invoke('ecosystem-catalog-by-provider', provider),
+   309→   309→  ecosystemCatalogEntry: (id: string) => ipcRenderer.invoke('ecosystem-catalog-entry', id),
+   310→   310→  ecosystemModelsByTier: (tier: string) => ipcRenderer.invoke('ecosystem-models-by-tier', tier),
+   311→   311→  ecosystemPersianModels: () => ipcRenderer.invoke('ecosystem-persian-models'),
+   312→   312→  ecosystemProfiles: () => ipcRenderer.invoke('ecosystem-profiles'),
+   313→   313→  ecosystemProfile: (catalogId: string) => ipcRenderer.invoke('ecosystem-profile', catalogId),
+   314→   314→  ecosystemRecommend: (request: any) => ipcRenderer.invoke('ecosystem-recommend', request),
+   315→   315→  ecosystemCollaboration: (request: any) => ipcRenderer.invoke('ecosystem-collaboration', request),
+   316→   316→  ecosystemCompare: (modelAId: string, modelBId: string) => ipcRenderer.invoke('ecosystem-compare', modelAId, modelBId),
+   317→   317→  ecosystemInstalledWithCatalog: () => ipcRenderer.invoke('ecosystem-installed-with-catalog'),
+   318→   318→  ecosystemTierFit: (tier: string) => ipcRenderer.invoke('ecosystem-tier-fit', tier),
+   319→   319→  ecosystemCanRun: (catalogId: string) => ipcRenderer.invoke('ecosystem-can-run', catalogId),
+   320→   320→  ecosystemStatus: () => ipcRenderer.invoke('ecosystem-status'),
+   321→   321→  ecosystemSecurityAudit: () => ipcRenderer.invoke('ecosystem-security-audit'),
+   322→   322→
+   323→   323→  // ── Phase 60: Universal Knowledge Brain Expansion ──
+   324→   324→  universalKnowledgeDomains: () => ipcRenderer.invoke('universal-knowledge-domains'),
+   325→   325→  universalKnowledgePacks: () => ipcRenderer.invoke('universal-knowledge-packs'),
+   326→   326→  universalKnowledgePacksByDomain: (domain: string) => ipcRenderer.invoke('universal-knowledge-packs-by-domain', domain),
+   327→   327→  universalKnowledgeRoute: (request: any) => ipcRenderer.invoke('universal-knowledge-route', request),
+   328→   328→  universalKnowledgeSearch: (query: string, opts?: any) => ipcRenderer.invoke('universal-knowledge-search', query, opts),
+   329→   329→  universalKnowledgeGraph: (opts?: any) => ipcRenderer.invoke('universal-knowledge-graph', opts),
+   330→   330→  universalKnowledgeStatus: () => ipcRenderer.invoke('universal-knowledge-status'),
+   331→   331→  universalKnowledgeDetectDomain: (query: string) => ipcRenderer.invoke('universal-knowledge-detect-domain', query),
+   332→   332→  universalKnowledgeSecurityAudit: () => ipcRenderer.invoke('universal-knowledge-security-audit'),
+   333→   333→
+   334→   334→  // ── Phase 61: Real Local AI Model Deployment ──
+   335→   335→  modelDeployImport: (filePath: string, opts?: any) => ipcRenderer.invoke('model-deploy-import', filePath, opts),
+   336→   336→  modelDeployDownload: (opts: any) => ipcRenderer.invoke('model-deploy-download', opts),
+   337→   337→  modelDeployRemove: (modelId: string, deleteFile?: boolean) => ipcRenderer.invoke('model-deploy-remove', modelId, deleteFile),
+   338→   338→  modelDeployVerify: (filePath: string, opts?: any) => ipcRenderer.invoke('model-deploy-verify', filePath, opts),
+   339→   339→  modelDeployTestInference: (modelId: string, opts?: any) => ipcRenderer.invoke('model-deploy-test-inference', modelId, opts),
+   340→   340→  modelDeployHealthCheck: (modelId: string) => ipcRenderer.invoke('model-deploy-health-check', modelId),
+   341→   341→  modelDeployStatus: () => ipcRenderer.invoke('model-deploy-status'),
+   342→   342→  modelDeployPendingPermission: () => ipcRenderer.invoke('model-deploy-pending-permission'),
+   343→   343→  modelDeployRespondPermission: (userResponse: string) => ipcRenderer.invoke('model-deploy-respond-permission', userResponse),
+   344→   344→  modelDeployRespondVoice: () => ipcRenderer.invoke('model-deploy-respond-voice'),
+   345→   345→  modelDeploySecurityAudit: () => ipcRenderer.invoke('model-deploy-security-audit'),
+   346→   346→  onModelDeploymentPermissionRequest: (callback: (req: any) => void) => {
+   347→   347→    const listener = (_e: any, req: any) => callback(req);
+   348→   348→    ipcRenderer.on('model-deployment-permission-request', listener);
+   349→   349→    return () => ipcRenderer.removeListener('model-deployment-permission-request', listener);
+   350→   350→  },
+   351→   351→  onModelDeploymentProgress: (callback: (progress: any) => void) => {
+   352→   352→    const listener = (_e: any, progress: any) => callback(progress);
+   353→   353→    ipcRenderer.on('model-deployment-progress', listener);
+   354→   354→    return () => ipcRenderer.removeListener('model-deployment-progress', listener);
+   355→   355→  },
+   356→   356→
+   357→   357→  // ── Phase 62: Basic Interaction MVP ──
+   358→   358→  interactionProcessText: (request: any) => ipcRenderer.invoke('interaction-process-text', request),
+   359→   359→  interactionProcessVoice: (transcript: string, opts?: any) => ipcRenderer.invoke('interaction-process-voice', transcript, opts),
+   360→   360→  interactionSpeak: (text: string) => ipcRenderer.invoke('interaction-speak', text),
+   361→   361→  interactionStop: () => ipcRenderer.invoke('interaction-stop'),
+   362→   362→  interactionSetPersonality: (type: string) => ipcRenderer.invoke('interaction-set-personality', type),
+   363→   363→  interactionStatus: () => ipcRenderer.invoke('interaction-status'),
+   364→   364→  languageDetect: (text: string) => ipcRenderer.invoke('language-detect', text),
+   365→   365→  languageNormalizePersian: (text: string) => ipcRenderer.invoke('language-normalize-persian', text),
+   366→   366→  languageBuildPrompt: (language: string, personality?: string) => ipcRenderer.invoke('language-build-prompt', language, personality),
+   367→   367→  interactionSecurityAudit: () => ipcRenderer.invoke('interaction-security-audit'),
+   368→   368→
+   369→   369→  // ── Phase 64: First Real Local AI Model Activation ──
+   370→   370→  firstrunState: () => ipcRenderer.invoke('firstrun-state'),
+   371→   371→  firstrunRecommendedModel: () => ipcRenderer.invoke('firstrun-recommended-model'),
+   372→   372→  firstrunInstallRecommended: () => ipcRenderer.invoke('firstrun-install-recommended'),
+   373→   373→  firstrunTestInteraction: (prompt?: string) => ipcRenderer.invoke('firstrun-test-interaction', prompt),
+   374→   374→  firstrunBrainReady: () => ipcRenderer.invoke('firstrun-brain-ready'),
+   375→   375→  firstrunSecurityAudit: () => ipcRenderer.invoke('firstrun-security-audit'),
+   376→   376→
+   377→   377→  // ── Phase 65: Real Local AI Hardware Validation ──
+   378→   378→  hwDiagnostics: () => ipcRenderer.invoke('hw-diagnostics'),
+   379→   379→  hwBenchmark: (modelId: string, opts?: any) => ipcRenderer.invoke('hw-benchmark', modelId, opts),
+   380→   380→  hwValidatePipeline: (opts?: any) => ipcRenderer.invoke('hw-validate-pipeline', opts),
+   381→   381→  hwDetailedStatus: () => ipcRenderer.invoke('hw-detailed-status'),
+   382→   382→  hwFixWindowsPath: (filePath: string) => ipcRenderer.invoke('hw-fix-windows-path', filePath),
+   383→   383→  hwSecurityAudit: () => ipcRenderer.invoke('hw-security-audit'),
+   384→   384→
+   385→   385→  // ── Phase 72: Unified Model Download Manager ──
+   386→   386→  modelDownloadList: () => ipcRenderer.invoke('model-download-list'),
+   387→   387→  modelDownloadGet: (modelId: string) => ipcRenderer.invoke('model-download-get', modelId),
+   388→   388→  modelDownloadStart: (modelId: string) => ipcRenderer.invoke('model-download-start', modelId),
+   389→   389→  modelDownloadCancel: (downloadId: string) => ipcRenderer.invoke('model-download-cancel', downloadId),
+   390→   390→  modelDownloadActive: () => ipcRenderer.invoke('model-download-active'),
+   391→   391→  modelDownloadTestConnectionUrl: (url: string) => ipcRenderer.invoke('model-download-test-connection-url', url),
+   392→   392→  modelDownloadTestSources: (modelId: string) => ipcRenderer.invoke('model-download-test-sources', modelId),
+   393→   393→  modelDownloadGetModelsDir: () => ipcRenderer.invoke('model-download-get-models-dir'),
+   394→   394→  modelDownloadImportLocal: (filePath: string, opts?: any) => ipcRenderer.invoke('model-download-import-local', filePath, opts),
+   395→   395→  // Phase 73: Scan filesystem for unregistered .gguf files
+   396→   396→  scanModels: () => ipcRenderer.invoke('scan-models'),
+   397→   397→
+   398→   398→  // ── Phase 75: Unified Component Installer ──
+   399→   399→  componentUnifiedList: () => ipcRenderer.invoke('component-unified-list'),
+   400→   400→  componentUnifiedVoiceList: () => ipcRenderer.invoke('component-unified-voice-list'),
+   401→   401→  componentUnifiedGet: (componentId: string) => ipcRenderer.invoke('component-unified-get', componentId),
+   402→   402→  componentUnifiedInstall: (componentId: string) => ipcRenderer.invoke('component-unified-install', componentId),
+   403→   403→  componentUnifiedCancel: (componentId: string) => ipcRenderer.invoke('component-unified-cancel', componentId),
+   404→   404→  componentUnifiedIsInstalled: (componentId: string) => ipcRenderer.invoke('component-unified-is-installed', componentId),
+   405→   405→  componentUnifiedInstalledList: () => ipcRenderer.invoke('component-unified-installed-list'),
+   406→   406→  componentUnifiedImportLocal: (filePath: string, componentId: string) => ipcRenderer.invoke('component-unified-import-local', filePath, componentId),
+   407→   407→  onComponentInstallProgress: (callback: (progress: any) => void) => {
+   408→   408→    const listener = (_e: any, progress: any) => callback(progress);
+   409→   409→    ipcRenderer.on('component-install:progress', listener);
+   410→   410→    return () => ipcRenderer.removeListener('component-install:progress', listener);
+   411→   411→  },
+   412→   412→
+   413→   413→  // ── Phase 80: AI Storage Manager ──
+   414→   414→  aiStorageInfo: () => ipcRenderer.invoke('ai-storage-info'),
+   415→   415→  aiStorageGetPath: () => ipcRenderer.invoke('ai-storage-get-path'),
+   416→   416→  aiStorageSetPath: (newPath: string) => ipcRenderer.invoke('ai-storage-set-path', newPath),
+   417→   417→  aiStorageScan: () => ipcRenderer.invoke('ai-storage-scan'),
+   418→   418→  aiStorageList: () => ipcRenderer.invoke('ai-storage-list'),
+   419→   419→  aiStorageRepair: () => ipcRenderer.invoke('ai-storage-repair'),
+   420→   420→  aiStorageOpenFolder: () => ipcRenderer.invoke('ai-storage-open-folder'),
+   421→   421→  aiStorageChooseFolder: () => ipcRenderer.invoke('ai-storage-choose-folder'),
+   422→   422→  onModelDownloadProgress: (callback: (progress: any) => void) => {
+   423→   423→    const listener = (_e: any, progress: any) => callback(progress);
+   424→   424→    ipcRenderer.on('model-download:progress', listener);
+   425→   425→    return () => ipcRenderer.removeListener('model-download:progress', listener);
+   426→   426→  },
+   427→   427→
+   428→   428→  // ── Phase 68: Download State Architecture ──
+   429→   429→  downloadGetActive: () => ipcRenderer.invoke('download-get-active'),
+   430→   430→  downloadStart: (opts: any) => ipcRenderer.invoke('download-start', opts),
+   431→   431→  downloadStartRecommended: () => ipcRenderer.invoke('download-start-recommended'),
+   432→   432→  // ── Phase 72: Test Connection + Alternative Source ──
+   433→   433→  downloadTestConnection: () => ipcRenderer.invoke('download-test-connection'),
+   434→   434→  downloadGetAlternativeModel: () => ipcRenderer.invoke('download-get-alternative-model'),
+   435→   435→  downloadStartAlternative: () => ipcRenderer.invoke('download-start-alternative'),
+   436→   436→  onDownloadState: (callback: (state: any) => void) => {
+   437→   437→    const listener = (_e: any, state: any) => callback(state);
+   438→   438→    ipcRenderer.on('download:state', listener);
+   439→   439→    return () => ipcRenderer.removeListener('download:state', listener);
+   440→   440→  },
+   441→   441→  onDownloadCompleted: (callback: (ev: any) => void) => {
+   442→   442→    const listener = (_e: any, ev: any) => callback(ev);
+   443→   443→    ipcRenderer.on('download:completed', listener);
+   444→   444→    return () => ipcRenderer.removeListener('download:completed', listener);
+   445→   445→  },
+   446→   446→  onDownloadError: (callback: (ev: any) => void) => {
+   447→   447→    const listener = (_e: any, ev: any) => callback(ev);
+   448→   448→    ipcRenderer.on('download:error', listener);
+   449→   449→    return () => ipcRenderer.removeListener('download:error', listener);
+   450→   450→  },
+   451→   451→
+   452→   452→  // ── Phase 42: Local Vision Engine (LLaVA + image analysis) ──
+   453→   453→  visionStatus: () => ipcRenderer.invoke('vision-status'),
+   454→   454→  visionLoadModel: (modelPath: string, mmprojPath?: string) =>
+   455→   455→    ipcRenderer.invoke('vision-load-model', modelPath, mmprojPath),
+   456→   456→  visionAnalyzeImage: (imagePath: string, prompt?: string, question?: string) =>
+   457→   457→    ipcRenderer.invoke('vision-analyze-image', imagePath, prompt, question),
+   458→   458→  visionAnalyzeScreen: (prompt?: string) =>
+   459→   459→    ipcRenderer.invoke('vision-analyze-screen', prompt),
+   460→   460→  visionUnloadModel: () => ipcRenderer.invoke('vision-unload-model'),
+   461→   461→  visionFindBinary: () => ipcRenderer.invoke('vision-find-binary'),
+   462→   462→
+   463→   463→  // ── Phase 43: Secure Update & Permission System ──
+   464→   464→  updateCheck: (info: any) => ipcRenderer.invoke('update-check', info),
+   465→   465→  updateExecute: (plan: any) => ipcRenderer.invoke('update-execute', plan),
+   466→   466→  updateRespondPermission: (userResponse: string) =>
+   467→   467→    ipcRenderer.invoke('update-respond-permission', userResponse),
+   468→   468→  updateRespondVoice: () => ipcRenderer.invoke('update-respond-voice'),
+   469→   469→  updateAuditHistory: (limit?: number) => ipcRenderer.invoke('update-audit-history', limit),
+   470→   470→  updateHistory: () => ipcRenderer.invoke('update-history'),
+   471→   471→  updateListBackups: () => ipcRenderer.invoke('update-list-backups'),
+   472→   472→  updateRollback: (version: string) => ipcRenderer.invoke('update-rollback', version),
+   473→   473→  updateClassifyAction: (action: any) => ipcRenderer.invoke('update-classify-action', action),
+   474→   474→
+   475→   475→  // ── Phase 44: Production Update Execution Layer ──
+   476→   476→  updateDownload: (opts: { url: string; expectedSize?: number; filename?: string }) =>
+   477→   477→    ipcRenderer.invoke('update-download', opts),
+   478→   478→  updateVerifySignature: (opts: {
+   479→   479→    filePath: string; expectedHash: string; signature?: string;
+   480→   480→    publicKey?: string; currentVersion: string; targetVersion: string;
+   481→   481→  }) => ipcRenderer.invoke('update-verify-signature', opts),
+   482→   482→  updateInstall: (opts: {
+   483→   483→    method: string; sourcePath: string; targetDir: string;
+   484→   484→    currentVersion: string; newVersion: string; createBackup: boolean; verifyAfterInstall: boolean;
+   485→   485→  }) => ipcRenderer.invoke('update-install', opts),
+   486→   486→  updateModel: (info: any) => ipcRenderer.invoke('update-model', info),
+   487→   487→  updateModelExplanation: (info: any) => ipcRenderer.invoke('update-model-explanation', info),
+   488→   488→  updateGetHistory: (limit?: number) => ipcRenderer.invoke('update-get-history', limit),
+   489→   489→  updateAddHistory: (entry: any) => ipcRenderer.invoke('update-add-history', entry),
+   490→   490→  updateLastSuccessful: () => ipcRenderer.invoke('update-last-successful'),
+   491→   491→
+   492→   492→  // ── Phase 45: Intelligent Model Advisor + Smart Router ──
+   493→   493→  modelAdvisorStatus: () => ipcRenderer.invoke('model-advisor-status'),
+   494→   494→  modelRecommendations: () => ipcRenderer.invoke('model-recommendations'),
+   495→   495→  modelCompare: (modelAId: string, modelBId: string) => ipcRenderer.invoke('model-compare', modelAId, modelBId),
+   496→   496→  modelRouterDecision: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+   497→   497→    ipcRenderer.invoke('model-router-decision', request),
+   498→   498→  modelRouterStatus: () => ipcRenderer.invoke('model-router-status'),
+   499→   499→  usageStats: () => ipcRenderer.invoke('usage-stats'),
+   500→   500→  usageRecord: (record: any) => ipcRenderer.invoke('usage-record', record),
+   501→   501→  advisorPreferences: () => ipcRenderer.invoke('advisor-preferences'),
+   502→   502→  advisorRejectRecommendation: (recommendationId: string) => ipcRenderer.invoke('advisor-reject-recommendation', recommendationId),
+   503→   503→  advisorSetPreferredModel: (category: string, modelId: string) => ipcRenderer.invoke('advisor-set-preferred-model', category, modelId),
+   504→   504→  advisorInstalledHistory: () => ipcRenderer.invoke('advisor-installed-history'),
+   505→   505→
+   506→   506→  // ── Phase 46: Local Runtime Setup Center ──
+   507→   507→  runtimeScan: () => ipcRenderer.invoke('runtime-scan'),
+   508→   508→  runtimeSetupSummary: () => ipcRenderer.invoke('runtime-setup-summary'),
+   509→   509→  runtimeCatalog: (type?: string) => ipcRenderer.invoke('runtime-catalog', type),
+   510→   510→  runtimeRecommendations: () => ipcRenderer.invoke('runtime-recommendations'),
+   511→   511→  runtimeFindMissing: () => ipcRenderer.invoke('runtime-find-missing'),
+   512→   512→
+   513→   513→  // ── Phase 47: Component Installation Assistant ──
+   514→   514→  componentInstall: (componentId: string) => ipcRenderer.invoke('component-install', componentId),
+   515→   515→  componentExplanation: (componentId: string) => ipcRenderer.invoke('component-explanation', componentId),
+   516→   516→  componentHealthCheck: (componentId: string, installedPath: string) =>
+   517→   517→    ipcRenderer.invoke('component-health-check', componentId, installedPath),
+   518→   518→  componentRespondPermission: (userResponse: string) =>
+   519→   519→    ipcRenderer.invoke('component-respond-permission', userResponse),
+   520→   520→  componentRespondVoice: () => ipcRenderer.invoke('component-respond-voice'),
+   521→   521→
+   522→   522→  // ── Phase 49: First Run Intelligence & Model Catalog ──
+   523→   523→  firstrunCatalog: (type?: string) => ipcRenderer.invoke('firstrun-catalog', type),
+   524→   524→  firstrunModelsByTier: (tier: string) => ipcRenderer.invoke('firstrun-models-by-tier', tier),
+   525→   525→  firstrunPersianModels: () => ipcRenderer.invoke('firstrun-persian-models'),
+   526→   526→  firstrunAnalyze: () => ipcRenderer.invoke('firstrun-analyze'),
+   527→   527→  firstrunSummary: () => ipcRenderer.invoke('firstrun-summary'),
+   528→   528→  firstrunInstallPlan: (modelIds: string[], tier: string) => ipcRenderer.invoke('firstrun-install-plan', modelIds, tier),
+   529→   529→  firstrunRecommendedPackage: () => ipcRenderer.invoke('firstrun-recommended-package'),
+   530→   530→  firstrunAlternatives: () => ipcRenderer.invoke('firstrun-alternatives'),
+   531→   531→
+   532→   532→  // ── Phase 50: Final Command Center Integration ──
+   533→   533→  systemStatus: () => ipcRenderer.invoke('system-status'),
+   534→   534→  systemStartupSummary: () => ipcRenderer.invoke('system-startup-summary'),
+   535→   535→  systemOrbState: () => ipcRenderer.invoke('system-orb-state'),
+   536→   536→  systemSetOrbState: (state: string) => ipcRenderer.invoke('system-set-orb-state', state),
+   537→   537→  systemNotifications: () => ipcRenderer.invoke('system-notifications'),
+   538→   538→  systemAddNotification: (notif: any) => ipcRenderer.invoke('system-add-notification', notif),
+   539→   539→  systemClearNotifications: () => ipcRenderer.invoke('system-clear-notifications'),
+   540→   540→  systemQuickActions: () => ipcRenderer.invoke('system-quick-actions'),
+   541→   541→
+   542→   542→  // ── Phase 51: NEX Brain Core + Identity System ──
+   543→   543→  brainDecide: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
+   544→   544→    ipcRenderer.invoke('brain-decide', request),
+   545→   545→  brainStatus: () => ipcRenderer.invoke('brain-status'),
+   546→   546→  brainSetMode: (mode: string) => ipcRenderer.invoke('brain-set-mode', mode),
+   547→   547→  brainLastDecision: () => ipcRenderer.invoke('brain-last-decision'),
+   548→   548→  brainModelsByTask: () => ipcRenderer.invoke('brain-models-by-task'),
+   549→   549→  identityGet: () => ipcRenderer.invoke('identity-get'),
+   550→   550→  identityUpdate: (patch: any) => ipcRenderer.invoke('identity-update', patch),
+   551→   551→  identitySetPersonality: (personality: string) => ipcRenderer.invoke('identity-set-personality', personality),
+   552→   552→  identitySelfAwareness: () => ipcRenderer.invoke('identity-self-awareness'),
+   553→   553→
+   554→   554→  // ── Phase 52: Personality Engine + Long Term Memory ──
+   555→   555→  personalityGet: () => ipcRenderer.invoke('personality-get'),
+   556→   556→  personalitySet: (type: string) => ipcRenderer.invoke('personality-set', type),
+   557→   557→  personalityAll: () => ipcRenderer.invoke('personality-all'),
+   558→   558→  personalityPrompt: (lang?: string) => ipcRenderer.invoke('personality-prompt', lang),
+   559→   559→  userProfileGet: () => ipcRenderer.invoke('user-profile-get'),
+   560→   560→  userProfileUpdate: (patch: any) => ipcRenderer.invoke('user-profile-update', patch),
+   561→   561→  ltmStore: (category: string, key: string, value: any, opts?: any) => ipcRenderer.invoke('ltm-store', category, key, value, opts),
+   562→   562→  ltmRetrieve: (key: string, store?: string, projectId?: string) => ipcRenderer.invoke('ltm-retrieve', key, store, projectId),
+   563→   563→  ltmList: (store?: string, projectId?: string) => ipcRenderer.invoke('ltm-list', store, projectId),
+   564→   564→  ltmStats: () => ipcRenderer.invoke('ltm-stats'),
+   565→   565→  ltmPendingPermission: () => ipcRenderer.invoke('ltm-pending-permission'),
+   566→   566→  ltmRespondPermission: (approved: boolean, reason?: string) => ipcRenderer.invoke('ltm-respond-permission', approved, reason),
+   567→   567→
+   568→   568→  // ── Phase 53: Universal Expert System ──
+   569→   569→  expertRoute: (request: string) => ipcRenderer.invoke('expert-route', request),
+   570→   570→  expertAll: () => ipcRenderer.invoke('expert-all'),
+   571→   571→  expertGet: (id: string) => ipcRenderer.invoke('expert-get', id),
+   572→   572→  expertDescription: (lang?: string) => ipcRenderer.invoke('expert-description', lang),
+   573→   573→  expertDomains: () => ipcRenderer.invoke('expert-domains'),
+   574→   574→
+   575→   575→  // ── Phase 54: Agent Skills & Tool Execution Layer ──
+   576→   576→  agentCreatePlan: (request: string) => ipcRenderer.invoke('agent-create-plan', request),
+   577→   577→  agentExecutePlan: (plan: any) => ipcRenderer.invoke('agent-execute-plan', plan),
+   578→   578→  agentRespondPermission: (userResponse: string) => ipcRenderer.invoke('agent-respond-permission', userResponse),
+   579→   579→  agentRespondVoice: () => ipcRenderer.invoke('agent-respond-voice'),
+   580→   580→  agentPendingPermission: () => ipcRenderer.invoke('agent-pending-permission'),
+   581→   581→  agentPermissionMessage: (action: string, details?: string) => ipcRenderer.invoke('agent-permission-message', action, details),
+   582→   582→  skillAll: () => ipcRenderer.invoke('skill-all'),
+   583→   583→  skillGet: (id: string) => ipcRenderer.invoke('skill-get', id),
+   584→   584→  skillByDomain: (domain: string) => ipcRenderer.invoke('skill-by-domain', domain),
+   585→   585→
+   586→   586→  // ── Phase 55: Offline Expert Knowledge Engine ──
+   587→   587→  expertKnowledgeList: () => ipcRenderer.invoke('expert-knowledge-list'),
+   588→   588→  expertKnowledgeGet: (id: string) => ipcRenderer.invoke('expert-knowledge-get', id),
+   589→   589→  expertKnowledgeByDomain: (domain: string) => ipcRenderer.invoke('expert-knowledge-by-domain', domain),
+   590→   590→  expertKnowledgeStatus: () => ipcRenderer.invoke('expert-knowledge-status'),
+   591→   591→  expertKnowledgeInstalled: () => ipcRenderer.invoke('expert-knowledge-installed'),
+   592→   592→  expertKnowledgeMissing: () => ipcRenderer.invoke('expert-knowledge-missing'),
+   593→   593→  expertKnowledgeRecommend: (domain?: string) => ipcRenderer.invoke('expert-knowledge-recommend', domain),
+   594→   594→  expertKnowledgeRetrieve: (query: string, opts?: { domain?: string; limit?: number }) => ipcRenderer.invoke('expert-knowledge-retrieve', query, opts),
+   595→   595→  expertKnowledgeRecommendationFa: (domain: string) => ipcRenderer.invoke('expert-knowledge-recommendation-fa', domain),
+   596→   596→  expertKnowledgeCapabilitiesFa: (domain: string) => ipcRenderer.invoke('expert-knowledge-capabilities-fa', domain),
+   597→   597→  expertKnowledgeSelfDescFa: () => ipcRenderer.invoke('expert-knowledge-self-desc-fa'),
+   598→   598→  knowledgePackScan: () => ipcRenderer.invoke('knowledge-pack-scan'),
+   599→   599→  knowledgePackInstall: (packId: string) => ipcRenderer.invoke('knowledge-pack-install', packId),
+   600→   600→  knowledgePackRemove: (packId: string) => ipcRenderer.invoke('knowledge-pack-remove', packId),
+   601→   601→  knowledgePackUpdate: (packId: string) => ipcRenderer.invoke('knowledge-pack-update', packId),
+   602→   602→  knowledgePackVerify: (packId: string) => ipcRenderer.invoke('knowledge-pack-verify', packId),
+   603→   603→  knowledgePackVerifyAll: () => ipcRenderer.invoke('knowledge-pack-verify-all'),
+   604→   604→  knowledgePackStorage: () => ipcRenderer.invoke('knowledge-pack-storage'),
+   605→   605→  knowledgePackPendingPermission: () => ipcRenderer.invoke('knowledge-pack-pending-permission'),
+   606→   606→  knowledgePackRespondPermission: (userResponse: string) => ipcRenderer.invoke('knowledge-pack-respond-permission', userResponse),
+   607→   607→  knowledgePackRespondVoice: () => ipcRenderer.invoke('knowledge-pack-respond-voice'),
+   608→   608→  onKnowledgePackPermissionRequest: (callback: (req: any) => void) => {
+   609→   609→    const listener = (_event: any, req: any) => callback(req);
+   610→   610→    ipcRenderer.on('knowledge-pack-permission-request', listener);
+   611→   611→    return () => ipcRenderer.removeListener('knowledge-pack-permission-request', listener);
+   612→   612→  },
+   613→   613→
+   614→   614→  // ── Agent Core (Phase 7) ──
+   615→   615→  agentCreateTask: (request: any) => ipcRenderer.invoke('agent-create-task', request),
+   616→   616→  agentCancelTask: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-cancel-task', taskId, reason),
+   617→   617→  // Phase 114: Snapshot / Undo API
+   618→   618→  snapshotRestore: (snapshotId: string) => ipcRenderer.invoke('snapshot-restore', snapshotId),
+   619→   619→  snapshotList: (taskId: string) => ipcRenderer.invoke('snapshot-list', taskId),
+   620→   620→  agentGetTask: (taskId: string) => ipcRenderer.invoke('agent-get-task', taskId),
+   621→   621→  agentListTasks: () => ipcRenderer.invoke('agent-list-tasks'),
+   622→   622→  agentDeleteTask: (taskId: string) => ipcRenderer.invoke('agent-delete-task', taskId),
+   623→   623→  agentListTools: () => ipcRenderer.invoke('agent-list-tools'),
+   624→   624→  agentGetToolSchemas: () => ipcRenderer.invoke('agent-get-tool-schemas'),
+   625→   625→  agentAcceptDiff: (taskId: string, changeId: string) => ipcRenderer.invoke('agent-accept-diff', taskId, changeId),
+   626→   626→  agentRejectDiff: (taskId: string, changeId: string, reason?: string) => ipcRenderer.invoke('agent-reject-diff', taskId, changeId, reason),
+   627→   627→  agentAcceptAllDiffs: (taskId: string) => ipcRenderer.invoke('agent-accept-all-diffs', taskId),
+   628→   628→  agentRejectAllDiffs: (taskId: string, reason?: string) => ipcRenderer.invoke('agent-reject-all-diffs', taskId, reason),
+   629→   629→  agentListPendingDiffs: (taskId: string) => ipcRenderer.invoke('agent-list-pending-diffs', taskId),
+   630→   630→  permissionRespond: (response: any) => ipcRenderer.invoke('permission-respond', response),
+   631→   631→
+   632→   632→  // ── Knowledge / Local RAG (Phase 9 services, Phase 10 UI bridge) ──
+   633→   633→  // Renderer NEVER touches the filesystem directly for knowledge: every
+   634→   634→  // operation flows through Main → KnowledgeService (project-isolated).
+   635→   635→  knowledgeStats: (projectPath: string) => ipcRenderer.invoke('knowledge-stats', projectPath),
+   636→   636→  // System Monitor (Phase 12)
+   637→   637→  systemSnapshot: () => ipcRenderer.invoke('system-snapshot'),
+   638→   638→
+   639→   639→  // ── Phase 32: Conversation Center ──
+   640→   640→  conversationSave: (data: any) => ipcRenderer.invoke('conversation-save', data),
+   641→   641→  conversationLoad: (id: string) => ipcRenderer.invoke('conversation-load', id),
+   642→   642→  conversationList: () => ipcRenderer.invoke('conversation-list'),
+   643→   643→  conversationDelete: (id: string) => ipcRenderer.invoke('conversation-delete', id),
+   644→   644→  conversationRename: (id: string, title: string) => ipcRenderer.invoke('conversation-rename', id, title),
+   645→   645→  conversationSearch: (query: string) => ipcRenderer.invoke('conversation-search', query),
+   646→   646→  // Phase 88: Create + Update
+   647→   647→  conversationCreate: (title?: string) => ipcRenderer.invoke('conversation-create', title),
+   648→   648→  conversationUpdate: (id: string, updates: any) => ipcRenderer.invoke('conversation-update', id, updates),
+   649→   649→
+   650→   650→  // ── Phase 28: Terminal Sessions (PTY-backed) ──
+   651→   651→  terminalSessionSpawn: (cwd: string, cols?: number, rows?: number) =>
+   652→   652→    ipcRenderer.invoke('terminal-session-spawn', cwd, cols, rows),
+   653→   653→  terminalSessionWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal-session-write', sessionId, data),
+   654→   654→  terminalSessionResize: (sessionId: string, cols: number, rows: number) =>
+   655→   655→    ipcRenderer.invoke('terminal-session-resize', sessionId, cols, rows),
+   656→   656→  terminalSessionSignal: (sessionId: string, signal: string) => ipcRenderer.invoke('terminal-session-signal', sessionId, signal),
+   657→   657→  terminalSessionKill: (sessionId: string) => ipcRenderer.invoke('terminal-session-kill', sessionId),
+   658→   658→  terminalSessionList: () => ipcRenderer.invoke('terminal-session-list'),
+   659→   659→  onTerminalSessionOutput: (sessionId: string, callback: (data: string) => void) => {
+   660→   660→    const channel = `terminal-output:${sessionId}`;
+   661→   661→    const listener = (_e: any, data: string) => callback(data);
+   662→   662→    ipcRenderer.on(channel, listener);
+   663→   663→    return () => ipcRenderer.removeListener(channel, listener);
+   664→   664→  },
+   665→   665→  onTerminalSessionExit: (sessionId: string, callback: (code: number | null) => void) => {
+   666→   666→    const channel = `terminal-exit:${sessionId}`;
+   667→   667→    const listener = (_e: any, code: number | null) => callback(code);
+   668→   668→    ipcRenderer.on(channel, listener);
+   669→   669→    return () => ipcRenderer.removeListener(channel, listener);
+   670→   670→  },
+   671→   671→
+   672→   672→  // ── Phase 28: Filesystem Service (workspace-jailed) ──
+   673→   673→  fsSetWorkspace: (rootPath: string) => ipcRenderer.invoke('fs-set-workspace', rootPath),
+   674→   674→  fsServiceReaddir: (dirPath: string, showHidden?: boolean) => ipcRenderer.invoke('fs-service-readdir', dirPath, showHidden),
+   675→   675→  fsServiceReadfile: (filePath: string) => ipcRenderer.invoke('fs-service-readfile', filePath),
+   676→   676→  fsServiceWritefile: (filePath: string, content: string) => ipcRenderer.invoke('fs-service-writefile', filePath, content),
+   677→   677→  fsServiceCreate: (parentPath: string, name: string, isDir: boolean) => ipcRenderer.invoke('fs-service-create', parentPath, name, isDir),
+   678→   678→  fsServiceRename: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs-service-rename', oldPath, newPath),
+   679→   679→  fsServiceDelete: (targetPath: string) => ipcRenderer.invoke('fs-service-delete', targetPath),
+   680→   680→  fsServiceSearch: (query: string) => ipcRenderer.invoke('fs-service-search', query),
+   681→   681→  // Memory (Phase 13)
+   682→   682→  memoryList: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-list', store, projectPath),
+   683→   683→  // Plugins (Phase 15) — manifests only, no code activation
+   684→   684→  pluginsList: () => ipcRenderer.invoke('plugins-list'),
+   685→   685→  pluginsSetEnabled: (pluginId: string, enabled: boolean) => ipcRenderer.invoke('plugins-set-enabled', pluginId, enabled),
+   686→   686→  memoryDelete: (store: string, key: string, projectPath?: string) => ipcRenderer.invoke('memory-delete', store, key, projectPath),
+   687→   687→  memoryClear: (store: string, projectPath?: string) => ipcRenderer.invoke('memory-clear', store, projectPath),
+   688→   688→  knowledgeList: (projectPath: string) => ipcRenderer.invoke('knowledge-list', projectPath),
+   689→   689→  knowledgeSearch: (projectPath: string, query: string, limit?: number) => ipcRenderer.invoke('knowledge-search', projectPath, query, limit),
+   690→   690→  knowledgeIngest: (projectPath: string, filePath: string) => ipcRenderer.invoke('knowledge-ingest', projectPath, filePath),
+   691→   691→  knowledgeIngestMany: (projectPath: string, filePaths: string[]) => ipcRenderer.invoke('knowledge-ingest-many', projectPath, filePaths),
+   692→   692→  knowledgeIngestFolder: (projectPath: string, folderPath: string) => ipcRenderer.invoke('knowledge-ingest-folder', projectPath, folderPath),
+   693→   693→  knowledgeRemove: (projectPath: string, documentId: string) => ipcRenderer.invoke('knowledge-remove', projectPath, documentId),
+   694→   694→  knowledgePurgeMissing: (projectPath: string) => ipcRenderer.invoke('knowledge-purge-missing', projectPath),
+   695→   695→  knowledgeRebuild: (projectPath: string) => ipcRenderer.invoke('knowledge-rebuild', projectPath),
+   696→   696→  knowledgeClear: (projectPath: string) => ipcRenderer.invoke('knowledge-clear', projectPath),
+   697→   697→  knowledgeChunks: (projectPath: string, documentId: string) => ipcRenderer.invoke('knowledge-chunks', projectPath, documentId),
+   698→   698→  knowledgeEmbeddingGet: () => ipcRenderer.invoke('knowledge-embedding-get'),
+   699→   699→  knowledgeEmbeddingSet: (modelId: string | null) => ipcRenderer.invoke('knowledge-embedding-set', modelId),
+   700→   700→  dialogOpenFiles: () => ipcRenderer.invoke('dialog-open-files'),
+   701→   701→  dialogOpenFolder: () => ipcRenderer.invoke('dialog-open-folder'),
+   702→   702→  onAgentEvent: (callback: (event: any) => void) => {
+   703→   703→    // Phase 115: Use removeListener instead of removeAllListeners to avoid
+   704→   704→    // wiping other components' listeners when this component re-registers.
+   705→   705→    const handler = (_event: any, ev: any) => callback(ev);
+   706→   706→    ipcRenderer.on('agent-event', handler);
+   707→   707→    return () => ipcRenderer.removeListener('agent-event', handler);
+   708→   708→  },
+   709→   709→  onPermissionRequest: (callback: (request: any) => void) => {
+   710→   710→    const handler = (_event: any, req: any) => callback(req);
+   711→   711→    ipcRenderer.on('permission-request', handler);
+   712→   712→    return () => ipcRenderer.removeListener('permission-request', handler);
+   713→   713→  },
+   714→   714→
+   715→   715→  // ── File Watcher ──
+   716→   716→  fsWatch: (dirPath: string) => ipcRenderer.invoke('fs-watch', dirPath),
+   717→   717→  fsUnwatch: () => ipcRenderer.invoke('fs-unwatch'),
+   718→   718→  onFsChange: (callback: (change: { event: string; path: string }) => void) => {
+   719→   719→    const handler = (_event: any, change: any) => callback(change);
+   720→   720→    ipcRenderer.on('fs-change', handler);
+   721→   721→    return () => ipcRenderer.removeListener('fs-change', handler);
+   722→   722→  },
+   723→   723→
+   724→   724→  // ── Git ──
+   725→   725→  gitStatus: (cwd: string) => ipcRenderer.invoke('git-status', cwd),
+   726→   726→  gitLog: (cwd: string, count?: number) => ipcRenderer.invoke('git-log', cwd, count),
+   727→   727→
+   728→   728→  // ── Content Search (now safe — pure Node, no shell) ──
+   729→   729→  fsSearchContent: (dirPath: string, query: string) =>
+   730→   730→    ipcRenderer.invoke('fs-search-content', dirPath, query),
+   731→   731→
+   732→   732→  // ── Events ──
+   733→   733→  // Phase 116 PERF: AI ready state — lets UI show model loading progress
+   734→   734→  onAIReady: (callback: (ev: { modelId: string; modelName: string; readyAt: number; totalLoadMs: number }) => void) => {
+   735→   735→    const handler = (_e: any, ev: any) => callback(ev);
+   736→   736→    ipcRenderer.on('ai-ready', handler);
+   737→   737→    return () => ipcRenderer.removeListener('ai-ready', handler);
+   738→   738→  },
+   739→   739→  // Phase 116: Agent → Editor bridge — open file from agent tool
+   740→   740→  onOpenFileInEditor: (callback: (ev: { path: string }) => void) => {
+   741→   741→    const handler = (_e: any, ev: any) => callback(ev);
+   742→   742→    ipcRenderer.on('open-file-in-editor', handler);
+   743→   743→    return () => ipcRenderer.removeListener('open-file-in-editor', handler);
+   744→   744→  },
+   745→   745→  onNewTerminal: (callback: () => void) => {
+   746→   746→    const handler = () => callback();
+   747→   747→    ipcRenderer.on('new-terminal', handler);
+   748→   748→    return () => ipcRenderer.removeListener('new-terminal', handler);
+   749→   749→  },
+   750→   750→  onKillTerminal: (callback: () => void) => {
+   751→   751→    const handler = () => callback();
+   752→   752→    ipcRenderer.on('kill-terminal', handler);
+   753→   753→    return () => ipcRenderer.removeListener('kill-terminal', handler);
+   754→   754→  },
+   755→   755→  onOpenSettings: (callback: () => void) => {
+   756→   756→    const handler = () => callback();
+   757→   757→    ipcRenderer.on('open-settings', handler);
+   758→   758→    return () => ipcRenderer.removeListener('open-settings', handler);
+   759→   759→  },
+   760→   760→
+   761→   761→  // ── Phase 6: Background Task Queue ──
+   762→   762→  // All operations are async (return Promise). Event subscriptions return a
+   763→   763→  // cleanup function. Mirrors the main-side task-queue IPC handlers.
+   764→   764→  taskQueueEnqueueAgent: (agentTaskId: string, opts?: any) =>
+   765→   765→    ipcRenderer.invoke('task-queue-enqueue-agent', agentTaskId, opts),
+   766→   766→  taskQueueEnqueueFunction: (functionKey: string, opts?: any) =>
+   767→   767→    ipcRenderer.invoke('task-queue-enqueue-function', functionKey, opts),
+   768→   768→  taskQueueCreateAgentTask: (request: any) =>
+   769→   769→    ipcRenderer.invoke('task-queue-create-agent-task', request),
+   770→   770→  taskQueueCancel: (taskId: string, reason?: string) =>
+   771→   771→    ipcRenderer.invoke('task-queue-cancel', taskId, reason),
+   772→   772→  taskQueueCancelAll: (reason?: string) =>
+   773→   773→    ipcRenderer.invoke('task-queue-cancel-all', reason),
+   774→   774→  taskQueuePause: (taskId: string) =>
+   775→   775→    ipcRenderer.invoke('task-queue-pause', taskId),
+   776→   776→  taskQueueResume: (taskId: string) =>
+   777→   777→    ipcRenderer.invoke('task-queue-resume', taskId),
+   778→   778→  taskQueueGet: (taskId: string) =>
+   779→   779→    ipcRenderer.invoke('task-queue-get', taskId),
+   780→   780→  taskQueueList: (filter?: any) =>
+   781→   781→    ipcRenderer.invoke('task-queue-list', filter),
+   782→   782→  taskQueueState: () => ipcRenderer.invoke('task-queue-state'),
+   783→   783→  taskQueueUpdateConfig: (patch: any) =>
+   784→   784→    ipcRenderer.invoke('task-queue-update-config', patch),
+   785→   785→  taskQueuePrune: () => ipcRenderer.invoke('task-queue-prune'),
+   786→   786→  taskQueueSnapshot: () => ipcRenderer.invoke('task-queue-snapshot'),
+   787→   787→  onTaskQueueEvent: (callback: (event: any) => void) => {
+   788→   788→    const handler = (_event: any, ev: any) => callback(ev);
+   789→   789→    ipcRenderer.on('task-queue-event', handler);
+   790→   790→    return () => ipcRenderer.removeListener('task-queue-event', handler);
+   791→   791→  },
+   792→   792→
+   793→   793→  // ── Phase 10: Browser Automation opt-in ──
+   794→   794→  browserAutomationGet: () => ipcRenderer.invoke('browser-automation-get'),
+   795→   795→  browserAutomationSet: (enabled: boolean) => ipcRenderer.invoke('browser-automation-set', enabled),
+   796→   796→
+   797→   797→  // ── Phase 11: Computer Control opt-in ──
+   798→   798→  computerControlGet: () => ipcRenderer.invoke('computer-control-get'),
+   799→   799→  computerControlSet: (enabled: boolean) => ipcRenderer.invoke('computer-control-set', enabled),
+   800→   800→  computerControlSetPolicy: (policy: 'per-action' | 'session-wide') =>
+   801→   801→    ipcRenderer.invoke('computer-control-set-policy', policy),
+   802→   802→});
+   803→   803→
+   804→   804→export {};
+   805→   805→

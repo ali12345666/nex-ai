@@ -1,0 +1,402 @@
+     1→     1→# NEX AI — Worklog
+     2→     2→
+     3→     3→---
+     4→     4→Task ID: phase-6-0
+     5→     5→Agent: main
+     6→     6→Task: PHASE 6 — Background Task Queue (planning + scaffolding)
+     7→     7→
+     8→     8→Work Log:
+     9→     9→- Read existing architecture: agent core (createTask/runTask/cancelTask), AgentEvent IPC, permission layer, orb state machine (12 states incl. working/success/cancelled), voiceController condition system (priority-based state resolution), persistence layer, memory system.
+    10→    10→- Designed task queue architecture:
+    11→    11→  - New module `src/main/tasks/` with: types.ts, queue.ts, persistence.ts, orb-bridge.ts, index.ts
+    12→    12→  - TaskQueueItem wraps either an AgentTask (kind='agent') or an async function (kind='function')
+    13→    13→  - Priority heap: critical > high > normal > low
+    14→    14→  - Concurrency-limited worker pool (default 2)
+    15→    15→  - Cancellation propagates via existing CancellationToken (agent) + new queue-level token (functions)
+    16→    16→  - Persistence: `<userData>/task-queue.json` — queued/paused/running items survive reload; running items after crash → marked `failed` with reason "interrupted by process restart" (NO fake completion)
+    17→    17→  - Orb integration via `voiceController.setCondition('queue', state)` — reuses existing state machine, no duplication
+    18→    18→  - New IPC channel `task-queue-event` for queue lifecycle events
+    19→    19→  - Permission enforcement: queue runs agent tasks which already call executeToolWithPermission internally; function tasks must call permission API themselves (queue never bypasses)
+    20→    20→- Confirmed existing tests pattern: tsx tests that read source files + assert on patterns; integration tests use Electron app.whenReady()
+    21→    21→
+    22→    22→Stage Summary:
+    23→    23→- Architecture approved: separate `tasks/` module wrapping agent + function tasks, new IPC channel, orb condition key `'queue'`
+    24→    24→- No duplication of state machine — reuses orb-state.ts and voiceController conditions
+    25→    25→- Next: implement types.ts → queue.ts → persistence.ts → orb-bridge.ts → index.ts → wire IPC → UI listener → tests
+    26→    26→
+    27→    27→---
+    28→    28→Task ID: phase-6-1
+    29→    29→Agent: main
+    30→    30→Task: PHASE 6 — Background Task Queue (implementation + tests + verification)
+    31→    31→
+    32→    32→Work Log:
+    33→    33→- Created src/main/tasks/types.ts: TaskQueueItem, TaskPriority (critical/high/normal/low), TaskQueueStatus (queued/running/completed/failed/cancelled/paused), TaskQueueEvent, TaskExecutionContext, PersistedQueueState, DEFAULT_QUEUE_CONFIG
+    34→    34→- Created src/main/tasks/persistence.ts: initTaskQueuePersistence, loadQueueState, saveQueueState (atomic write via temp+rename), recoverQueueState (queued/paused preserved; running → failed with "Interrupted by process restart" — NO fake completion), clearQueueState, loadQueueConfig
+    35→    35→- Created src/main/tasks/queue.ts: full priority queue + worker pool
+    36→    36→  - enqueueAgentTask / enqueueFunction / registerTaskFunction
+    37→    37→  - cancelTask (propagates to agent via _agentCancelTaskFn + sets CancellationToken)
+    38→    38→  - cancelAllTasks / pauseTask / resumeTask
+    39→    39→  - getTask / listTasks / getQueueState / updateConfig / pruneHistory
+    40→    40→  - onTaskQueueEvent / emitStateSnapshot
+    41→    41→  - initTaskQueue (wires agent callbacks + agent event listener + recovery + persistence) / shutdownTaskQueue
+    42→    42→  - Failure isolation (each task in try/catch)
+    43→    43→  - Retry policy (maxRetries, retryCount)
+    44→    44→  - Concurrency limit (maxConcurrent, lazy worker spawn)
+    45→    45→  - Cancellation token re-creation on recovery (fix found by tests)
+    46→    46→  - Memory recording callback (filters: skip 'no-mem' tagged, only agent + 'mem' tagged functions, only completed/failed)
+    47→    47→- Created src/main/tasks/orb-bridge.ts: orbStateForTaskEvent (maps task_started/progress → working, completed → success+clear, failed → error+clear, cancelled → cancelled+clear, recovered → error+clear) — does NOT define its own state machine
+    48→    48→- Created src/main/tasks/index.ts: public API barrel
+    49→    49→- Modified src/main/main.ts: imported tasks module; initTaskQueue called after initPersistence with agent wiring (runTask/cancelTask/getTaskStatus/onAgentEvent), onInterruptedRecovery logging, memoryRecord (TaskMemory.set); shutdownTaskQueue called in before-quit before agent cancel; added 13 IPC handlers (task-queue-enqueue-agent, -enqueue-function, -create-agent-task, -cancel, -cancel-all, -pause, -resume, -get, -list, -state, -update-config, -prune, -snapshot) + onTaskQueueEvent forwarding to renderer; registered 2 built-in functions (noop:echo, test:delay)
+    50→    50→- Modified src/main/preload.ts: exposed 14 task-queue API methods + onTaskQueueEvent listener
+    51→    51→- Modified src/renderer/types/electron.d.ts: added 15 task-queue type declarations
+    52→    52→- Modified src/renderer/components/layout/AppShell.tsx: added useEffect that subscribes to onTaskQueueEvent and drives Orb via voiceController.setCondition('queue', state) — NEW condition key separate from 'agent' (chat) to avoid conflicts; mapping: started/progress → working, completed → success (clear 1.5s), failed/recovered → error (clear 1.5s), cancelled → cancelled (clear 1.5s)
+    53→    53→- Created tests/tools/test-phase-6-task-queue.ts: 15 test sections, 149 assertions covering enqueue/dequeue, priority ordering, lifecycle, concurrency, cancellation, failure isolation, persistence/recovery, agent integration, orb integration, permission enforcement (source inspection), race conditions, retry policy, event emission, history pruning
+    54→    54→- Fixed bugs found by tests:
+    55→    55→  1. emit() signature was Omit<TaskQueueEvent, "timestamp"> but calls included timestamp — removed timestamp from all emit calls
+    56→    56→  2. Map.delete() called with 2 args — fixed to use Set.delete + conditional Map.delete
+    57→    57→  3. agentTaskId undefined in non-null assertions — added '!' assertions after guard
+    58→    58→  4. Cancellation tokens not re-created for recovered items — fixed in initTaskQueue (re-creates token for non-terminal recovered items)
+    59→    59→- Test timing fixes:
+    60→    60→  - enqueue/dequeue test: use maxConcurrent=0 to keep items queued until verified, then bump to 2 to run
+    61→    61→  - priority test: use maxConcurrent=0 to enqueue all first, then bump to 1 to preserve priority order
+    62→    62→  - recovery test: verify item survives restart (queued/running/completed all valid) instead of asserting queued status
+    63→    63→  - agent integration: mock agent uses polling loop (10ms interval, 2s timeout) so tests can mutate status after runTask starts
+    64→    64→- Verification:
+    65→    65→  - Typecheck (renderer): PASS
+    66→    66→  - Typecheck (main): PASS
+    67→    67→  - Build: PASS
+    68→    68→  - Phase 6 tests: 149/149 PASS
+    69→    69→  - Phase 116 regression tests: ALL PASS (19+19+30+19+60+26+34+12+30+48+19 = 316 assertions)
+    70→    70→  - Other tools tests (write-file, git-commit-snapshot, phase-114, phase-115): ALL PASS
+    71→    71→  - System tests: same pass/fail count before and after my changes (19 PASS, 22 FAIL — all pre-existing failures unrelated to task queue)
+    72→    72→
+    73→    73→Stage Summary:
+    74→    74→- Architecture delivered: src/main/tasks/ module with 5 files (types, queue, persistence, orb-bridge, index)
+    75→    75→- Agent integration: queue wraps AgentTask IDs via enqueueAgentTask; runs via injected runTask; cancellation propagates via cancelTask
+    76→    76→- Orb integration: NEW condition key 'queue' (separate from 'agent'); reuses orb-state.ts state machine (no duplication)
+    77→    77→- Permission enforcement: queue never calls executeTool directly; agent tasks still use executeToolWithPermission internally; function tasks must call permission API themselves
+    78→    78→- Persistence: <userData>/task-queue.json with atomic writes; queued/paused/running persisted; running after crash → failed (NO fake completion); terminal items capped at historyLimit
+    79→    79→- Concurrency: maxConcurrent (default 2, configurable via updateConfig); lazy worker spawn
+    80→    80→- Failure isolation: each task in try/catch; worker pool continues after failure
+    81→    81→- Retry: maxRetries (default 1); retryable errors re-enqueue with retryCount++
+    82→    82→- Events: task-queue-event IPC channel; full lifecycle (enqueued/started/progress/completed/failed/cancelled/paused/recovered/queue_state)
+    83→    83→- IPC: 13 handlers + onTaskQueueEvent forwarding; preload exposes 14 methods + listener
+    84→    84→- Tests: 149/149 PASS (15 sections covering all Phase 6 §13 requirements)
+    85→    85→- Files changed: 5 new (tasks/), 4 modified (main.ts, preload.ts, electron.d.ts, AppShell.tsx), 1 new test file
+    86→    86→- Next: commit + push to main
+    87→    87→
+    88→    88→---
+    89→    89→Task ID: phase-7-0
+    90→    90→Agent: main
+    91→    91→Task: PHASE 7 — LLM Error Recovery (planning)
+    92→    92→
+    93→    93→Work Log:
+    94→    94→- Read existing error-handling architecture:
+    95→    95→  - src/main/agent/trust-retry.ts: classifyFailure (transient/permanent/unknown) + decideRetry (exponential backoff)
+    96→    96→  - src/main/agent/core.ts handleStepFailure: uses decideRetry + emit('retry' event) + re-execute step
+    97→    97→  - src/main/agent/react-loop.ts: rePlanAfterObservation (LLM call after each tool step → continue/replan/complete/abort)
+    98→    98→  - src/main/agent/types.ts AgentError: type ∈ {tool_error, permission_denied, timeout, max_retries, max_steps, max_tool_calls, invalid_state, cancelled, llm_error, context_too_large, unknown} + recovered + recoveryAction fields
+    99→    99→  - src/main/agent/types.ts AgentEventType: includes 'retry', 'replan_started', 'replan_completed', 'task_failed', 'task_cancelled'
+   100→   100→  - Phase 6 Task Queue: emit() in queue.ts fires task_recovered, retry policy in queue.ts (retryCount, maxRetries, retryable error code check)
+   101→   101→  - UI: AgentStateDisplay handles 'retry' event with RefreshCw icon + yellow color
+   102→   102→- Designed Phase 7 architecture (NO duplication, layered on existing):
+   103→   103→  - NEW src/main/agent/error-classifier.ts: 10-class taxonomy (extends trust-retry's 3-class to 10)
+   104→   104→    - transient_network, timeout, permission_denied, invalid_arguments, file_path, model_inference,
+   105→   105→      tool_failure, user_cancellation, security_policy, unknown
+   106→   106→  - NEW src/main/agent/recovery-engine.ts:
+   107→   107→    - decideRecovery() → 5 decisions: RETRY, MODIFY_AND_RETRY, REPLAN, SKIP, ABORT
+   108→   108→    - Heuristic path (offline-first): pattern-based rules per error class
+   109→   109→    - LLM fallback (optional, uses AIRuntime when available): analyze complex errors
+   110→   110→    - Exponential backoff preserved from decideRetry
+   111→   111→    - Permanent errors (permission/security) → SKIP or ABORT (never infinite retry)
+   112→   112→    - Cancellation → never retry (immediate ABORT)
+   113→   113→    - Context propagation: safe summary (redacted args, task/agent IDs, tool name, error, attempts, observations, plan/step)
+   114→   114→  - MODIFY types.ts:
+   115→   115→    - AgentError: extend 'type' to include new subclasses (permission_denied already exists, add security_policy, file_path, invalid_arguments, model_inference, transient_network)
+   116→   116→    - AgentError: add optional recoveryDecision field + recoveryAttempted count
+   117→   117→    - AgentEventType: add 'recovery_started', 'recovery_decision', 'recovery_succeeded', 'recovery_failed', 'modify_retry_started', 'skip_executed'
+   118→   118→  - INTEGRATE core.ts handleStepFailure:
+   119→   119→    - Replace decideRetry call with decideRecovery (uses error-classifier + heuristic rules + optional LLM)
+   120→   120→    - Emit 'recovery_started' (THINKING Orb state via voiceController condition 'agent' = 'thinking')
+   121→   121→    - Emit 'recovery_decision' (with the chosen decision + reason)
+   122→   122→    - On RETRY: emit 'retry' (existing) — WORKING Orb state
+   123→   123→    - On MODIFY_AND_RETRY: emit 'modify_retry_started' — modify tool params via LLM/heuristic, then re-execute
+   124→   124→    - On REPLAN: emit 'replan_started' + call rePlanAfterObservation (existing)
+   125→   125→    - On SKIP: emit 'skip_executed' — mark step skipped, continue to next step
+   126→   126→    - On ABORT: emit 'recovery_failed' — mark task failed, exit loop
+   127→   127→    - On success after retry: emit 'recovery_succeeded'
+   128→   128→    - On failure after all attempts: emit 'recovery_failed'
+   129→   129→  - Phase 6 Task Queue integration:
+   130→   130→    - queue.ts retry policy already handles function-kind tasks; agent-kind tasks flow through agent core → new recovery
+   131→   131→    - queue.ts 'task_recovered' event emitted after crash recovery
+   132→   132→    - No new queue events needed — recovery events flow via agent-event IPC (existing)
+   133→   133→  - Orb integration:
+   134→   134→    - recovery analysis → THINKING (via 'agent' condition, set when 'recovery_started' fires)
+   135→   135→    - retry/recovery execution → WORKING (via 'agent' condition, set when 'retry' fires)
+   136→   136→    - recovered successfully → SUCCESS (existing 'task_completed' / 'step_completed' flow)
+   137→   137→    - unrecoverable → ERROR (existing 'task_failed' flow)
+   138→   138→    - user cancellation → CANCELLED (existing 'task_cancelled' flow)
+   139→   139→    - NO new Orb states or state machine
+   140→   140→  - Memory:
+   141→   141→    - Record only: SKIP decisions (lost cause, useful for future planning), ABORT decisions (unrecoverable, useful), LLM-analyzed recoveries (complex errors)
+   142→   142→    - Skip: transient retries (noisy), simple RETRY decisions (routine)
+   143→   143→  - Tests: ~25 scenarios covering all 10 error classes + 5 decisions + retry policy + backoff + cancellation + max retries + LLM fallback + offline + context propagation + verification + queue + Orb + race + isolation
+   144→   144→
+   145→   145→Stage Summary:
+   146→   146→- Architecture approved: layered on existing trust-retry + react-loop, NO parallel systems
+   147→   147→- 10-class error taxonomy + 5 recovery decisions + heuristic-first (offline-capable) + LLM fallback (optional)
+   148→   148→- All recovery events flow through existing AgentEvent IPC — UI updates additive (new cases in switch)
+   149→   149→- Orb integration reuses existing state machine + condition system
+   150→   150→- Phase 6 Task Queue: no changes needed (retry policy already isolated)
+   151→   151→- Next: implement error-classifier.ts → recovery-engine.ts → wire into core.ts → tests
+   152→   152→
+   153→   153→---
+   154→   154→Task ID: phase-7-1
+   155→   155→Agent: main
+   156→   156→Task: PHASE 7 — LLM Error Recovery (implementation + tests + verification)
+   157→   157→
+   158→   158→Work Log:
+   159→   159→- Created src/main/agent/error-classifier.ts: 10-class taxonomy (transient_network, timeout, permission_denied, invalid_arguments, file_path, model_inference, tool_failure, user_cancellation, security_policy, unknown). Heuristic-only (no LLM call). Pattern-based with priority order (cancellation > security > permission > invalid_arguments > file_path > model_inference > timeout > transient_network > tool_failure > unknown). Backward-compat with 3-class trust-rety via legacyClass field.
+   160→   160→- Created src/main/agent/recovery-engine.ts: 5 recovery decisions (RETRY, MODIFY_AND_RETRY, REPLAN, SKIP, ABORT). Heuristic-first (offline-capable) + LLM fallback for ambiguous cases. Exponential backoff (base 400ms, ×2, cap 5s, jitter). timeout gets 2x base. tryFixArguments heuristic for missing path/content + type coercion. LLM prompt includes redacted context (redactObjectDeep). Safety: LLM can NEVER override permission/security/cancellation decisions. Pure module — never calls executeTool/executeToolWithPermission directly.
+   161→   161→- Modified src/main/agent/types.ts:
+   162→   162→  - AgentEventType: added 6 new events (recovery_started, recovery_decision, modify_retry_started, skip_executed, recovery_succeeded, recovery_failed)
+   163→   163→  - AgentError: added errorClass (10-class), recoveryDecision (5-action), recoveryAttempts, llmAnalyzed fields
+   164→   164→- Modified src/main/agent/core.ts:
+   165→   165→  - Imported classifyError + decideRecovery + RecoveryContext/RecoveryDecision
+   166→   166→  - Replaced handleStepFailure's decideRetry call with decideRecovery (the old decideRetry is preserved for other callers but no longer called in handleStepFailure)
+   167→   167→  - Emits recovery_started (Orb → THINKING via 'agent' condition) before decision
+   168→   168→  - Emits recovery_decision with full metadata
+   169→   169→  - Switch on 5 actions: RETRY (existing retry event), MODIFY_AND_RETRY (modify_retry_started + apply modifiedParams), REPLAN (replan_started), SKIP (skip_executed + step.status='skipped'), ABORT (recovery_failed + step_failed + AgentError with recovery metadata)
+   170→   170→  - recordRecoveryMemory filters noisy retries (transient RETRY, successful unknown RETRY); records SKIP/ABORT/REPLAN/MODIFY/LLM-analyzed
+   171→   171→  - mapErrorClassToAgentErrorType for backward-compat with legacy AgentError.type
+   172→   172→- Modified src/renderer/components/agent/AgentStateDisplay.tsx: added 6 new event cases (recovery_started → Brain+pulse+purple, recovery_decision → Brain+purple, modify_retry_started → Wrench+pulse+yellow, skip_executed → Square+yellow, recovery_succeeded → CheckCircle+green, recovery_failed → XCircle+red)
+   173→   173→- Modified src/renderer/components/chat/NexChatPanel.tsx: added 6 new event cases mapping to Orb states (recovery_started → voiceController.setCondition('agent', 'thinking'), modify_retry_started → 'working', others → message updates). Recovery emoji varies by action (🔄/📋/⏭️/❌/🤔).
+   174→   174→- Created tests/tools/test-phase-7-recovery.ts: 23 test sections, 165 assertions covering:
+   175→   175→  1. Error classification (10 classes + priority order)
+   176→   176→  2. Transient retry
+   177→   177→  3. Exponential backoff (grows exponentially, caps at 5000ms, timeout 2x base)
+   178→   178→  4. Permanent error (file_path → REPLAN)
+   179→   179→  5. Permission/security rejection (SKIP if more steps, ABORT on last step, NEVER RETRY)
+   180→   180→  6. Cancellation (ABORT, never RETRY/REPLAN/SKIP)
+   181→   181→  7. Max retry (transient/timeout → REPLAN/ABORT at max; model_inference/unknown → SKIP/ABORT at 1)
+   182→   182→  8. MODIFY_AND_RETRY (missing path from activeFile, missing content as empty string; path-outside → security NOT modify)
+   183→   183→  9. REPLAN (file_path, transient exhausted)
+   184→   184→  10. SKIP (permission with more steps, model_inference at 1 retry)
+   185→   185→  11. ABORT (cancellation, permission last step, unknown at 1 retry)
+   186→   186→  12. LLM fallback (heuristic first, ambiguous → LLM, LLM parse failure → heuristic, LLM throw → heuristic, forceLLM always)
+   187→   187→  13. Offline behavior (no runtime → heuristic only)
+   188→   188→  14. Context propagation (redacted — API keys stripped, paths preserved, includes task ID/user request/step/tool/error/attempt/remaining plan)
+   189→   189→  15. Verification (source inspection — core.ts checks step.status === completed before recovery_succeeded)
+   190→   190→  16. Queue integration (recovery events flow through agent-event IPC, queue retry policy independent)
+   191→   191→  17. Orb integration (NexChatPanel maps recovery_started → thinking, modify_retry_started → working; AgentStateDisplay handles all 6 events; orb-state.ts untouched — no new states)
+   192→   192→  18. Race conditions (concurrent decideRecovery, cancellation overrides transient)
+   193→   193→  19. Failure isolation (recovery engine crash → ABORT, LLM failure → heuristic, independent task decisions)
+   194→   194→  20. Memory recording (filters noisy transient RETRY, records SKIP/ABORT/REPLAN/LLM-analyzed, best-effort)
+   195→   195→  21. Agent core integration (decideRecovery not decideRetry, emits recovery_started + recovery_decision, switch on 5 actions, ABORT pushes AgentError with metadata, SKIP marks skipped)
+   196→   196→  22. Safety guards (LLM cannot override permission/security/cancellation → safety override to heuristic; recovery re-executes via executeStep → executeToolWithPermission; recovery-engine never calls executeTool directly)
+   197→   197→  23. Types + AgentEventType (6 recovery events, AgentError metadata fields, legacy type preserved)
+   198→   198→- Fixed bugs found during testing:
+   199→   199→  1. "context too large" was matching file_path's "too large" pattern (wrong priority). Fixed by removing "too large" from FILE_PATH_PATTERNS and using "file too large" instead. MODEL_INFERENCE_PATTERNS already has "context (too large|...)".
+   200→   200→  2. tryFixArguments had a "path outside → strip ../" heuristic that would bypass security. Removed it (correct behavior: path-outside is classified as security_policy → SKIP/ABORT, never auto-fix).
+   201→   201→  3. Tests using errorCode: 'TOOL_FAILURE' for "weird error" got tool_failure class (not unknown). Fixed tests to use errorCode: undefined for genuinely ambiguous errors.
+   202→   202→  4. buildLLMRecoveryPrompt referenced undefined `heuristicDecision` variable (should be `heuristic`). Fixed.
+   203→   203→  5. Tests checking "recovery-engine does NOT call executeTool" used substring match which matched comment mentions. Fixed to use regex for actual imports/calls.
+   204→   204→  6. Test 14.1 used makeCtx with overridden task but taskId still pointed to default task. Fixed to also override taskId.
+   205→   205→  7. core.ts had a LogEntry type mismatch — `decision` field not in LogEntry. Fixed to use `data: decision`.
+   206→   206→  8. core.ts had type narrowing issue — step.status = 'pending' narrowed to literal. Fixed with cast `(step as { status: string }).status`.
+   207→   207→
+   208→   208→Stage Summary:
+   209→   209→- Architecture delivered: error-classifier.ts (10-class) + recovery-engine.ts (5-action + LLM fallback) layered on existing trust-retry + react-loop. NO parallel systems.
+   210→   210→- Agent integration: handleStepFailure now uses decideRecovery (replaces decideRetry). Old decideRetry preserved for backward-compat (no other callers).
+   211→   211→- Phase 6 Queue integration: recovery events flow through existing agent-event IPC (no new IPC). Queue retry policy stays independent (function-kind tasks). Agent-kind tasks flow through agent core → new recovery.
+   212→   212→- Orb integration: NEW events map to existing Orb states via existing condition system (recovery_started → 'thinking', modify_retry_started → 'working'). NO new orb-state.ts transitions.
+   213→   213→- Permission enforcement: recovery NEVER calls executeTool directly. RETRY/MODIFY re-execute via executeStep → executeToolWithPermission (same path as original). LLM can NEVER override permission/security/cancellation (safety guard in parseLLMRecoveryResponse).
+   214→   214→- Memory: records SKIP/ABORT/REPLAN/MODIFY/LLM-analyzed recoveries; filters out noisy transient RETRY + successful unknown RETRY. Best-effort (wrapped in try/catch).
+   215→   215→- Tests: 165/165 PASS across 23 sections covering all Phase 7 §13 requirements.
+   216→   216→- Verification:
+   217→   217→  - Typecheck (renderer + main): PASS
+   218→   218→  - Build: PASS
+   219→   219→  - Phase 7 tests: 165/165 PASS
+   220→   220→  - Phase 116 regression tests: ALL PASS (14 suites)
+   221→   221→  - Phase 6 task queue tests: PASS
+   222→   222→  - System tests: same pass/fail count before and after my changes (no regressions):
+   223→   223→    - phase38: 79/80 (1 pre-existing fail — "invokes on complex verification")
+   224→   224→    - phase40: 109/110 (1 pre-existing fail — "Phase 40 log message")
+   225→   225→    - phase41: 116/118 (2 pre-existing fails — whisper/piper binary search paths)
+   226→   226→    - ui14: 95/100 (5 pre-existing fails — utterance.onend/onerror, UI-14 §4 comment, speaking → Magenta/Pink, onend restarts STT)
+   227→   227→    - p33: 46/47 (1 pre-existing fail — NO voice toggle)
+   228→   228→- Files changed: 5 new/modified (error-classifier.ts, recovery-engine.ts, types.ts, core.ts, AgentStateDisplay.tsx, NexChatPanel.tsx) + 1 new test file
+   229→   229→- Next: commit + push to main
+   230→   230→
+   231→   231→---
+   232→   232→Task ID: phase-8-0
+   233→   233→Agent: main
+   234→   234→Task: PHASE 8 — Context Propagation (architecture trace + gap analysis)
+   235→   235→
+   236→   236→Work Log:
+   237→   237→- Traced existing context flow across the agent pipeline:
+   238→   238→  1. Agent → Planner: buildContext() in context-manager.ts builds messages from userRequest, intent, recentConversation, projectPath, activeFile, relevantKnowledge, relevantMemories. Token-aware (truncates from lowest-priority layers if needed).
+   239→   239→  2. Planner → Steps: generatePlan() returns PlanResult { steps: AgentStep[] }. Each step has id, index, description, toolName, toolParams, requiresPermission, requiresDiffApproval, verificationCriteria, status, retryCount. userRequest is NOT propagated per-step (it lives on task).
+   240→   240→  3. Steps → executeStep: passes (task, step, token, runtime, model). All context is on `task`. Step gets mutated (status, startedAt, completedAt, retryCount, error).
+   241→   241→  4. executeStep → Tool: prepareToolCall(step) returns ToolCall with toolDefinition + params + permission. Permission context: { projectId, sessionId: task.id, targetPath, metadata }. ToolContext.metadata gets the cancellationToken + toolContextExtras.
+   242→   242→  5. Tool → Observation: built as { id, toolCallId, stepId, rawOutput, data, signals, modifiedFiles, timestamp }. Pushed to task.observations. NO reference to userRequest/intent/conversation.
+   243→   243→  6. Observation → Agent: ReAct loop passes (userRequest, intent, lastStepDescription, lastToolName, toolResult, observation, remainingSteps, stepsExecuted, maxSteps, recentObservations, projectPath, tools). Missing: sessionId, conversationId, language, activeFile.
+   244→   244→  7. Agent → Recovery (Phase 7): RecoveryContext has { taskId, step, task, toolName, errorMessage, errorCode, attempt, maxRetries, lastObservation, cancelled, cancelReason }. Has access to full task (via task reference) so userRequest/intent/projectPath are reachable via ctx.task.
+   245→   245→  8. Recovery → Retry/Replan: RETRY/MODIFY_AND_RETRY call executeStep(task, step, ...) — same task reference preserved. REPLAN sets step.status='completed' and lets runTask loop continue (replanner is invoked via ReAct on the next step).
+   246→   246→  9. Task Queue → Agent: queue wraps agentTaskId. The queue has its own metadata (free-form). NO sessionId/conversationId propagation from queue → agent. Agent task gets its ID at createTask time; queue item has a separate queue ID.
+   247→   247→  10. Agent → Memory: TaskMemory.set() called in handleStepFailure for recovery + main.ts for task results. Records recovery decisions. No structured contract.
+   248→   248→  11. Agent → UI events: emit() with { type, taskId, stepId?, toolCallId?, timestamp, message, data? }. data is redacted via redactObjectDeep in AgentLogger (logger.ts:178). UI never sees raw tool params unless explicitly passed in data (e.g. permission_requested passes toolCall.params).
+   249→   249→
+   250→   250→- Identified gaps:
+   251→   251→  G1. CreateTaskRequest has NO sessionId/conversationId field — agent tasks can't be correlated back to the chat conversation that spawned them. Currently sessionId in permContext is just task.id (self-reference, not the actual conversation).
+   252→   252→  G2. TaskQueueItem.metadata is free-form (Record<string, unknown>) with NO contract — no way to know what's safe to persist (could leak secrets) vs. what's structured context (taskId, conversationId, language, userGoal).
+   253→   253→  G3. Recovery context propagation: RecoveryContext has `task` (full reference) which is good, but the LLM prompt builder (buildLLMRecoveryPrompt) doesn't explicitly surface userGoal/intent at the top — it's buried in "## Task" section. Should be more prominent for replan preservation.
+   254→   254→  G4. Observation propagation: observation object has NO reference to userRequest/intent. When observation is fed to the re-planner, it relies on the caller (executeStep) to pass userRequest separately. This is fragile — if a future caller forgets, the replan loses the original goal.
+   255→   255→  G5. IPC boundary: agent-event IPC passes the event object via webContents.send. Electron serializes via structured clone. Complex objects (Error instances, functions, class instances) don't survive — they become plain objects. Currently AgentEvent.data contains arbitrary objects (e.g. AgentError with stack) which could lose type info.
+   256→   256→  G6. Step context in retry: when a step is retried (RETRY/MODIFY_AND_RETRY), step.retryCount is incremented and step.toolParams may be modified. The ORIGINAL toolParams are lost (overwritten). No snapshot of the original params → can't audit what was changed.
+   257→   257→  G7. Memory recording: TaskMemory.set() is called in recordRecoveryMemory but the key is `recovery-${task.id}-${step.id}` which is unique per (task, step) — fine. But there's NO aggregation: if the same kind of error happens across tasks, we don't learn from it.
+   258→   258→  G8. Large tool outputs: context-manager truncates observations to 2000 chars (line 255). buildLLMRecoveryPrompt slices error to 500 chars, params JSON to 800 chars. But rawOutput on the Observation object is NOT truncated — task.observations keeps the full output. If task.observations grows unbounded, memory grows.
+   259→   259→  G9. Persistence redaction: TaskQueueItem.metadata is persisted to disk (task-queue.json) WITHOUT redaction. If metadata contains secrets (e.g. user passes an API key in metadata), it's written to disk in plaintext.
+   260→   260→
+   261→   261→- Designed Context Contract (minimal, additive — NO new system):
+   262→   262→  Phase 8 will ADD a structured `AgentContextContract` interface that captures the canonical context fields, and a `safeContextSnapshot()` helper that produces a redacted, bounded snapshot suitable for LLM prompts, memory, and IPC.
+   263→   263→
+   264→   264→  Contract fields (all optional except taskId + userRequest):
+   265→   265→    taskId, agentTaskId?, conversationId?, sessionId?, userRequest, intent?, projectPath?, activeFile?, language?, currentPlan (summary), currentStep (summary), stepIndex?, toolName?, toolParamsSafe (redacted), lastObservation? (truncated), error?, attempt?, maxRetries?, remainingSteps (summary), executionMetadata?
+   266→   266→
+   267→   267→  Snapshot rules:
+   268→   268→    - Always redacted (redactObjectDeep on toolParamsSafe + lastObservation)
+   269→   269→    - Always bounded (truncations: userRequest 200, error 500, toolParamsSafe 800, lastObservation 2000, remainingSteps 5)
+   270→   270→    - Never includes raw tool outputs > 2000 chars
+   271→   271→    - Never includes secrets (redactObjectDeep strips api_key, password, token, etc.)
+   272→   272→    - Shallow snapshot (no deep clone of task/plan — just summary fields)
+   273→   273→
+   274→   274→  Propagation rules (minimal fixes):
+   275→   275→    P1. Add conversationId/sessionId to CreateTaskRequest + AgentTask (additive, optional).
+   276→   276→    P2. Add safeContextSnapshot() helper that produces a redacted, bounded snapshot from any AgentTask+Step.
+   277→   277→    P3. Use safeContextSnapshot() in buildLLMRecoveryPrompt (replace inline redaction).
+   278→   278→    P4. Add redaction to TaskQueueItem.metadata before persistence (defense-in-depth).
+   279→   279→    P5. Preserve original toolParams snapshot on step when MODIFY_AND_RETRY changes them (for audit).
+   280→   280→    P6. Add sessionId (conversationId) to PermissionContext (currently uses task.id as sessionId).
+   281→   281→    P7. Add language field to AgentTask (for i18n-aware recovery prompts).
+   282→   282→    P8. Document the Context Contract in a new src/main/agent/context-contract.ts module.
+   283→   283→
+   284→   284→Stage Summary:
+   285→   285→- Architecture trace complete. 9 gaps identified. NO duplication of existing systems.
+   286→   286→- Context Contract designed as a minimal ADDITIVE layer on top of existing context-manager + types.
+   287→   287→- Snapshot helper will reuse existing redactObjectDeep + estimateTokens (no new redaction logic).
+   288→   288→- Propagation fixes are minimal: optional fields added, helper function for safe snapshots, redaction at persistence boundary.
+   289→   289→- Next: implement context-contract.ts → wire into core.ts + recovery-engine.ts + queue.ts → tests
+   290→   290→
+   291→   291→---
+   292→   292→Task ID: phase-8-1
+   293→   293→Agent: main
+   294→   294→Task: PHASE 8 — Context Propagation (implementation + tests + verification)
+   295→   295→
+   296→   296→Work Log:
+   297→   297→- Traced existing context flow (9 gaps identified, no duplication):
+   298→   298→  G1. No conversationId/sessionId on AgentTask — couldn't correlate to chat
+   299→   299→  G2. TaskQueueItem.metadata was free-form, no redaction at persistence
+   300→   300→  G3. Recovery LLM prompt built context inline (duplicated redaction logic)
+   301→   301→  G4. Observation had no reference to userRequest/intent (fragile)
+   302→   302→  G5. IPC boundary: AgentEvent.data with arbitrary objects could lose type info
+   303→   303→  G6. Step original toolParams lost when MODIFY_AND_RETRY modified them
+   304→   304→  G7. Memory recording per-(task,step) — no aggregation
+   305→   305→  G8. Observation.rawOutput unbounded on the task object
+   306→   306→  G9. No structured way to snapshot context for IPC/memory
+   307→   307→- Created src/main/agent/context-contract.ts (minimal, additive — no new system):
+   308→   308→  - AgentContextContract interface: taskId, agentTaskId?, conversationId?, sessionId?, userRequest, intent?, projectPath?, activeFile?, language?, currentPlan, currentStep, stepIndex?, toolName?, toolParamsSafe? (redacted), lastObservation? (truncated), error?, errorClass?, attempt?, maxRetries?, remainingSteps (max 5), executionMetadata?
+   309→   309→  - safeContextSnapshot(task, step?, opts?) helper: produces REDACTED + BOUNDED snapshot. Reuses redactObjectDeep (logger.ts) + estimateTokens (context-manager.ts). NO new redaction logic.
+   310→   310→  - snapshotToolParams(step) helper: shallow clone of tool params (for MODIFY_AND_RETRY audit)
+   311→   311→  - redactQueueMetadata(metadata) helper: defense-in-depth redaction at persistence boundary
+   312→   312→  - validateSnapshotBounds(snapshot) helper: bounds check (for tests)
+   313→   313→  - snapshotTokenSize(snapshot) helper: token budget check
+   314→   314→  - SNAPSHOT_BOUNDS constants: USER_REQUEST_MAX=200, INTENT_MAX=100, TOOL_PARAMS_JSON_MAX=800, OBSERVATION_RAW_OUTPUT_MAX=2000, ERROR_MESSAGE_MAX=500, REMAINING_STEPS_MAX=5, PLAN_DESCRIPTIONS_MAX=5
+   315→   315→  - Snapshot rules: ALWAYS redacted, ALWAYS bounded, NEVER includes raw outputs > 2000 chars, NEVER includes secrets, SHALLOW snapshot (no deep clone of task/plan/observations arrays)
+   316→   316→- Modified src/main/agent/types.ts: added optional fields to AgentTask (additive — no breaking changes):
+   317→   317→  - conversationId? (chat conversation correlation)
+   318→   318→  - sessionId? (UI session for permission scope + memory)
+   319→   319→  - language? (en/fa/... for i18n-aware recovery/replan prompts)
+   320→   320→  - originalToolParams? (snapshot before MODIFY_AND_RETRY modification, for audit)
+   321→   321→- Modified src/main/agent/core.ts:
+   322→   322→  - CreateTaskRequest: added conversationId?, sessionId?, language? fields
+   323→   323→  - createTask(): wired new fields into the task object
+   324→   324→  - PermissionContext: now uses task.sessionId || task.id (session-scoped permissions instead of per-task)
+   325→   325→  - MODIFY_AND_RETRY action: snapshots original toolParams BEFORE modification (via snapshotToolParams) and emits them in modify_retry_started event for audit
+   326→   326→- Modified src/main/agent/recovery-engine.ts:
+   327→   327→  - Imported safeContextSnapshot from context-contract
+   328→   328→  - Rewrote buildLLMRecoveryPrompt() to use safeContextSnapshot (removed inline redaction — no duplication)
+   329→   329→  - Prompt now surfaces conversationId, sessionId, language, projectPath, activeFile, intent, executionMetadata (backend, model, timeout) — all redacted + bounded
+   330→   330→- Modified src/main/tasks/persistence.ts:
+   331→   331→  - saveQueueState() now calls redactQueueMetadata on each item.metadata before writing to disk (defense-in-depth)
+   332→   332→  - Also redacts item.result for terminal items (function tasks may have raw output with secrets)
+   333→   333→  - Atomic write preserved (temp + rename)
+   334→   334→- Created tests/tools/test-phase-8-context.ts: 20 test sections, 151 assertions covering:
+   335→   335→  1. Agent → Tool context preservation (taskId, userRequest, toolName, toolParamsSafe, projectPath)
+   336→   336→  2. taskId preserved (matches task.id, distinct across tasks)
+   337→   337→  3. agentTaskId preserved (queue → agent)
+   338→   338→  4. user goal preserved in replan (userRequest + intent)
+   339→   339→  5. step context preserved in retry (description, index, snapshotToolParams produces NEW object)
+   340→   340→  6. observation propagated to next step (ReAct uses last 5 observations)
+   341→   341→  7. recovery context complete (all required fields, recovery-engine uses safeContextSnapshot)
+   342→   342→  8. queue → agent context correct (agentTaskId, agentRunTask, agentCancelTask, redaction at persistence)
+   343→   343→  9. IPC context serialize/deserialize (JSON-serializable, no undefined, redacted via logger)
+   344→   344→  10. snapshot immutability (mutating task/step doesn't change previous snapshot)
+   345→   345→  11. large tool output truncated (OBSERVATION_RAW_OUTPUT_MAX + 5000 chars → 2000)
+   346→   346→  12. context size controlled (SNAPSHOT_BOUNDS, validateSnapshotBounds, remainingSteps capped)
+   347→   347→  13. secrets redacted (API keys, passwords, tokens, GitHub PAT)
+   348→   348→  14. persistence does NOT store secrets (metadata + result redacted before disk write)
+   349→   349→  15. cancellation context preserved (cancelled flag, cancelReason, ABORT decision)
+   350→   350→  16. failed task context identifiable (errors array, errorClass, recoveryDecision fields)
+   351→   351→  17. replan context correct (remainingSteps, userRequest + intent, recentObservations)
+   352→   352→  18. concurrent tasks isolation (distinct taskIds, no aliasing, Map<taskId, AgentTask>)
+   353→   353→  19. two-task isolation (same userRequest but different IDs distinguishable, conversationId correlation)
+   354→   354→  20. regression — Phase 6 + Phase 7 + Phase 8 source inspection (additive, no breaking changes)
+   355→   355→- Verification:
+   356→   356→  - Typecheck (renderer + main): PASS
+   357→   357→  - Build: PASS
+   358→   358→  - Phase 8 tests: 151/151 PASS
+   359→   359→  - Phase 6 task queue tests: PASS
+   360→   360→  - Phase 7 recovery tests: PASS
+   361→   361→  - Phase 116 regression tests: ALL PASS (14 suites)
+   362→   362→  - System tests: same pass/fail count before and after (no regressions):
+   363→   363→    - phase38: 79/80 (1 pre-existing)
+   364→   364→    - phase40: 109/110 (1 pre-existing)
+   365→   365→    - phase41: 116/118 (2 pre-existing)
+   366→   366→    - ui14: 95/100 (5 pre-existing)
+   367→   367→    - p33: 46/47 (1 pre-existing)
+   368→   368→
+   369→   369→Stage Summary:
+   370→   370→- Architecture delivered: src/main/agent/context-contract.ts (CONTRACT + HELPERS) layered on existing context-manager + types + logger. NO new context manager.
+   371→   371→- Context Contract: AgentContextContract with 18 optional fields + safeContextSnapshot helper (single source of truth for redaction + bounds).
+   372→   372→- Propagation path: Agent → Planner (existing buildContext) → Steps → executeStep → Tool (permContext now uses sessionId) → Observation (task.observations) → Recovery (safeContextSnapshot) → Retry (same task/step references) → Replan (task.userRequest + intent + recentObservations) → Queue (agentTaskId link, redacted metadata at persistence) → Memory (TaskMemory.set) → UI (agent-event IPC, redacted by logger).
+   373→   373→- Redaction strategy: redactObjectDeep (logger.ts) reused everywhere. Applied at: recovery prompt (via safeContextSnapshot), persistence (via redactQueueMetadata), event emission (via AgentLogger). Single source of truth — no duplication.
+   374→   374→- Token/size limits: SNAPSHOT_BOUNDS enforce 200 (userRequest), 100 (intent), 800 (toolParams JSON), 2000 (observation), 500 (error), 5 (remaining steps + plan descriptions). Existing context-manager truncates observations to 2000 + conversation to last 10 + files to 4000 chars.
+   375→   375→- Queue integration: Phase 6 queue unchanged structurally. Persistence now redacts metadata + result before disk write. agentTaskId link preserved. Crash recovery still marks running → failed (NO fake completion).
+   376→   376→- Recovery integration: Phase 7 recovery-engine now uses safeContextSnapshot (single redaction source). Permission scope uses task.sessionId (chat session, not per-task). MODIFY_AND_RETRY snapshots original toolParams for audit.
+   377→   377→- Persistence changes: saveQueueState redacts item.metadata + item.result via redactQueueMetadata. Atomic write preserved (temp + rename).
+   378→   378→- Tests: 151/151 PASS across 20 sections covering all Phase 8 §11 requirements.
+   379→   379→- Files changed: 5 new/modified (context-contract.ts new, types.ts, core.ts, recovery-engine.ts, persistence.ts) + 1 new test file
+   380→   380→- Next: commit + push to main (hold for Phase 9 approval per user instruction)
+   381→   381→
+   382→   382→---
+   383→   383→Task ID: phase-9-0
+   384→   384→Agent: main
+   385→   385→Task: PHASE 9 — Agent Reliability & Verification (architecture trace + gap analysis)
+   386→   386→
+   387→   387→Work Log:
+   388→   388→- Traced existing verification flow across the agent pipeline:
+   389→   389→  1. verification.ts (existing): verifyToolResult() + verifyObservation() — pattern matching on exit code + output contains/regex/forbidden. Returns VerificationResult { id, stepId, description, verifiedBy, status, details, timestamp }. NO confidence/evidence/signals/recommendedAction fields yet.
+   390→   390→  2. core.ts executeStep (line 1060-1086): if step.verificationCriteria exists, calls verifyToolResult() + pushes to task.verification. verificationPassed boolean gates step completion.
+   391→   391→  3. Step completion (line 1245-1300): 3 paths — (a) result.success && verificationPassed → step.completed; (b) !result.success → handleStepFailure (Phase 7 recovery); (c) !verificationPassed → if replan then completed, else step.failed + emit step_failed. GAP: path (c) does NOT call handleStepFailure — so verification failures bypass Phase 7 recovery (just marks failed, no RETRY/MODIFY/REPLAN decision).
+   392→   392→  4. Task completion (line 549-625): if task.status !== 'failed' && !cancelled → checks toolCalls.length === 0 (false-success prevention from Phase 116) → marks completed + emits task_completed. GAP: no check that all required steps were verified, no check for unresolved errors, no check for active recovery in progress.
+   393→   393→  5. VerificationResult type (line 237-249): { id, stepId, description, verifiedBy, verifyingToolCallId?, status, details?, timestamp }. NO confidence, NO evidence array, NO signals, NO recommendedAction.
+   394→   394→  6. AgentStep.verificationCriteria (line 105-110): { expectedExitCode?, expectedOutputContains?, expectedOutputRegex?, forbiddenOutputContains? }. GAP: NO expectedOutcome (what the step should produce — e.g. "file should exist at path X"), NO verificationHints (how to verify — e.g. "check file exists").
+   395→   395→  7. Existing events: verification_started, verification_completed. GAP: NO verification_passed, NO verification_failed (the "completed" event has status in data, but UI can't easily distinguish).
+   396→   396→
+   397→   397→- Identified gaps (9):
+   398→   398→  G1. Verification failure does NOT enter Phase 7 recovery. Path (c) at line 1275-1300 just marks step.failed + emits step_failed — bypasses handleStepFailure. This means a tool that succeeds but doesn't produce the expected outcome gets no recovery (no RETRY/MODIFY/REPLAN).
+   399→   399→  G2. No structural verification. verifyToolResult only checks tool result output/exit code — doesn't verify the actual system state changed (file exists after write_file, file gone after delete, etc.). A tool can report success=false→success but the file wasn't actually created.
+   400→   400→  G3. No content verification. After edit_file, we don't check the expected text is actually in the file. We rely on the tool's self-report.
+
+[showing lines 1-400 of 863; use offset=401 with limit to continue reading]
