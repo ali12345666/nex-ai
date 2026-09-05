@@ -238,10 +238,33 @@ Output STRICT JSON with steps[]:`;
     });
     return plan;
   } catch (err: any) {
+    // Phase 17 (BUG-GAP-5 + INFERENCE-PLAN-SWALLOW fix): Distinguish
+    // AbortError (user cancel / shutdown) from real inference errors
+    // (OOM, model not loaded, VRAM error, network timeout). Previously
+    // ALL errors were swallowed and fallbackPlan was returned, which
+    // meant:
+    //   - A cancel during planning silently produced a heuristic plan
+    //     and the agent kept executing (instead of aborting).
+    //   - A real OOM was hidden from the user — they got a heuristic
+    //     plan that didn't match their request, and the task "succeeded"
+    //     with 0 tool calls or wrong content.
+    //
+    // Now: AbortError is re-thrown so the caller (runTask) can transition
+    // the task to 'cancelled' cleanly. Real errors are logged with the
+    // full message + stack and re-thrown so the user sees the actual
+    // cause via the task_failed event (instead of a misleading
+    // fallbackPlan "success").
+    const isAbort = err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || /abort/i.test(err?.message || '');
+    if (isAbort) {
+      console.log(`[PLANNER_DIAG] Planner aborted (user cancel): ${err.message}`);
+      throw err; // re-throw — runTask outer catch handles AGENT_CANCELLED
+    }
     console.error('[PLANNER_ERROR] Planner threw:', err.message);
     console.error('[PLANNER_ERROR] stack:', err.stack?.split('\n').slice(0, 5).join('\n'));
     AgentLogger.error(`Planner failed: ${err.message}`);
-    return fallbackPlan(request.userRequest, err.message);
+    // Phase 17: re-throw real errors so the user sees the root cause via
+    // task_failed. Previously fallbackPlan masked the real error.
+    throw err;
   }
 }
 

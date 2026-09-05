@@ -196,14 +196,27 @@ export async function rePlanAfterObservation(
 
     return parseReActResponse(result.content, request);
   } catch (err: any) {
-    AgentLogger.warn(`ReAct decision failed: ${err.message} — defaulting to 'continue'`);
-    // On failure, default to 'continue' so we don't block the agent.
-    // The original plan still has steps to execute.
-    return {
-      action: 'continue',
-      reason: `ReAct decision failed (${err.message}) — proceeding with original plan`,
-      confidence: 0.0,
-    };
+    // Phase 17 (INFERENCE-REACT-SWALLOW fix): Distinguish AbortError from
+    // real inference errors. Previously ALL errors were swallowed and
+    // the ReAct decision defaulted to 'continue' — meaning a cancel
+    // during ReAct silently continued the agent, and a real OOM was
+    // hidden (the agent kept executing the original plan with no LLM
+    // oversight).
+    //
+    // Now: AbortError is re-thrown so the caller (executeStep → runTask)
+    // can transition the task to 'cancelled'. Real errors are logged
+    // with the full message and re-thrown so the user sees the actual
+    // cause via task_failed (instead of a silent "continue" that
+    // masks the failure).
+    const isAbort = err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || /abort/i.test(err?.message || '');
+    if (isAbort) {
+      console.log(`[REACT_DIAG] ReAct aborted (user cancel): ${err.message}`);
+      throw err; // re-throw — runTask outer catch handles AGENT_CANCELLED
+    }
+    AgentLogger.warn(`ReAct decision failed: ${err.message}`);
+    console.error('[REACT_ERROR] ReAct threw:', err.message);
+    console.error('[REACT_ERROR] stack:', err.stack?.split('\n').slice(0, 5).join('\n'));
+    throw err;
   }
 }
 

@@ -438,12 +438,10 @@ export interface NexAPI {
   systemQuickActions: () => Promise<{ success: boolean; quickActions?: any[]; error?: string }>;
 
   // Phase 51: NEX Brain Core + Identity System
-  brainDecide: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
-    Promise<{ success: boolean; decision?: any; error?: string }>;
-  brainStatus: () => Promise<{ success: boolean; status?: any; error?: string }>;
-  brainSetMode: (mode: string) => Promise<{ success: boolean; error?: string }>;
-  brainLastDecision: () => Promise<{ success: boolean; decision?: any; error?: string }>;
-  brainModelsByTask: () => Promise<{ success: boolean; models?: any; error?: string }>;
+  // Phase 17 (legacy cleanup): 5 brain-* IPC types REMOVED —
+  // brainDecide, brainStatus, brainSetMode, brainLastDecision,
+  // brainModelsByTask. They were never invoked by renderer code.
+  // NexBrainController is still used internally by main-process modules.
   identityGet: () => Promise<{ success: boolean; identity?: any; error?: string }>;
   identityUpdate: (patch: any) => Promise<{ success: boolean; identity?: any; error?: string }>;
   identitySetPersonality: (personality: string) => Promise<{ success: boolean; error?: string }>;

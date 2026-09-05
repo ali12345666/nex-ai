@@ -2194,17 +2194,53 @@ async function setupIPC(): Promise<void> {
       }
 
       // 4. Load the model with node-llama-cpp (catches OOM, architecture errors, etc.)
-      const { loadModel, unloadModel } = await import('./ai/inference');
+      //
+      // Phase 17 (P0-1 fix): Save the user's currently-loaded model id BEFORE
+      // the test load. Previously the handler called loadModel + unloadModel
+      // unconditionally — after which NO model remained loaded. The user's
+      // next chat would fail or trigger a 5-15s reload. Even testing the
+      // SAME model unloaded it (the idempotency check passed for the load,
+      // but the explicit unloadModel killed it).
+      //
+      // Now: snapshot the loaded model, perform the test load (idempotent
+      // if same model — no actual reload), and restore the snapshot
+      // afterward. If the test loaded a DIFFERENT model, we reload the
+      // user's original. If same model, the unload is skipped (idempotent
+      // restore reuses it).
+      const { loadModel, unloadModel, getLoadedModelInfo } = await import('./ai/inference');
+      const savedLoaded = getLoadedModelInfo();
+      let savedModelInfo: any = null;
+      if (savedLoaded) {
+        // Snapshot the LocalModelInfo so we can restore it
+        try {
+          const { getModel } = await import('./ai/model-registry');
+          savedModelInfo = getModel(savedLoaded.id);
+        } catch { /* best-effort */ }
+      }
       try {
         await loadModel(model, { contextSize: 512 }); // small context for fast test
       } catch (loadErr: any) {
         // Surface the REAL llama.cpp error — not a generic message
         const realError = loadErr?.message || String(loadErr);
+        // Phase 17: restore the user's model before returning
+        if (savedModelInfo) {
+          try { await loadModel(savedModelInfo, { contextSize: 4096, gpuLayers: -1 }); } catch { /* best-effort */ }
+        }
         return { success: false, error: realError, modelName: model.name };
       }
 
-      // 5. Immediately unload (we're just testing, not activating)
-      try { await unloadModel(); } catch { /* non-fatal */ }
+      // 5. Restore the user's previously-loaded model (or unload if none was loaded)
+      if (savedModelInfo) {
+        // Reload the user's original model. If the test loaded the SAME model,
+        // the idempotency check in loadModel will reuse it (no actual reload).
+        // If the test loaded a DIFFERENT model, this reloads the original.
+        try {
+          await loadModel(savedModelInfo, { contextSize: 4096, gpuLayers: -1 });
+        } catch { /* best-effort — the test result is still valid */ }
+      } else {
+        // No model was loaded before the test — unload the test model.
+        try { await unloadModel(); } catch { /* non-fatal */ }
+      }
 
       return { success: true, modelName: model.name, sizeBytes: model.sizeBytes };
     } catch (err: any) {
@@ -4492,61 +4528,23 @@ async function setupIPC(): Promise<void> {
   });
 
   // ── Phase 51: NEX Brain Core + Identity System ──
-  const { getNexBrainController } = await import('./ai/nex-brain-controller');
+  // Phase 17 (legacy cleanup): getNexBrainController no longer imported
+  // here — the 5 brain-* IPC handlers were removed (see comment below).
+  // NexBrainController is still used internally by
+  // `multi-model-runtime-manager.ts` (routeTask) and
+  // `nex-executive-planner.ts` (createPlan) via direct import.
   const { getNexIdentityManager } = await import('./ai/nex-identity-manager');
 
-  // Brain: get decision for a user request
-  ipcMain.handle('brain-decide', async (_event, request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) => {
-    try {
-      const brain = getNexBrainController();
-      const decision = brain.decide(request);
-      return { success: true, decision };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // Brain: get status
-  ipcMain.handle('brain-status', async () => {
-    try {
-      const brain = getNexBrainController();
-      const status = await brain.getStatus();
-      return { success: true, status };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // Brain: set mode (auto/coding/reasoning/vision/voice/chat)
-  ipcMain.handle('brain-set-mode', async (_event, mode: string) => {
-    try {
-      const brain = getNexBrainController();
-      brain.setMode(mode as any);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // Brain: get last decision
-  ipcMain.handle('brain-last-decision', async () => {
-    try {
-      const brain = getNexBrainController();
-      return { success: true, decision: brain.getLastDecision() };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // Brain: get models grouped by task
-  ipcMain.handle('brain-models-by-task', async () => {
-    try {
-      const brain = getNexBrainController();
-      return { success: true, models: brain.getModelsByTask() };
-    } catch (err: any) {
-      return { success: false, error: err.message, models: {} };
-    }
-  });
+  // Phase 17 (legacy cleanup): 5 brain-* IPC handlers REMOVED —
+  // brain-decide, brain-status, brain-set-mode, brain-last-decision,
+  // brain-models-by-task. These were exposed in preload.ts and typed in
+  // electron.d.ts but NEVER invoked by any renderer code. The
+  // NexBrainController singleton is still used internally by
+  // `multi-model-runtime-manager.ts` (routeTask) and
+  // `nex-executive-planner.ts` (createPlan), but those call it directly
+  // — not via IPC. Removing the dead IPC surface reduces the preload
+  // API surface and makes the IPC layer match what's actually used.
+  // The preload + electron.d.ts entries are also removed.
 
   // Identity: get identity
   ipcMain.handle('identity-get', async () => {
@@ -5181,6 +5179,21 @@ async function setupIPC(): Promise<void> {
     if (request.onlineEnvironment) return; // already wired
     try {
       const settings = (loadState().settings || {}) as PersistedSettings;
+      // Phase 17 (P0-3 fix): respect aiMode. Previously this function set
+      // onlineEnvironment.available=true based solely on API key existence,
+      // WITHOUT checking getCurrentAiMode(). If aiMode='local' but an API
+      // key existed, agent's routeModel picked 'online' for complex tasks
+      // → transport called routeChat → blocked at enforceAiMode → agent's
+      // planner failed → fell back to heuristic plan. The agent ATTEMPTED
+      // an online call (wasting an LLM round-trip) when the user explicitly
+      // chose 'local' mode. Now: if aiMode='local', onlineEnvironment is
+      // forced to { available: false } so routeModel never picks online.
+      const { getCurrentAiMode } = require('./ai/ai-mode');
+      const currentAiMode = getCurrentAiMode();
+      if (currentAiMode === 'local') {
+        request.onlineEnvironment = { available: false };
+        return;
+      }
       const provider = settings.onlineProvider || 'glm';
       // Check if API key exists (glmApiKey for GLM, aiApiKey for OpenAI/Claude)
       const apiKey = provider === 'glm' ? getSecret('glmApiKey') : getSecret('aiApiKey');
@@ -5235,7 +5248,15 @@ async function setupIPC(): Promise<void> {
   });
 
   ipcMain.handle('agent-cancel-task', async (_event, taskId: string, reason?: string) => {
-    const ok = cancelTask(taskId, reason);
+    // Phase 17: cancelTask is now async (calls abortInference internally).
+    const ok = await cancelTask(taskId, reason);
+    // Phase 17 (BUG-GAP-3 fix): also abort the agent-shared online runtime
+    // so online-mode agent tasks can be cancelled (previously only the
+    // chat-shared online runtime was aborted by ai-chat-stream-cancel).
+    try {
+      const { getRuntime } = await import('./ai/runtime');
+      try { getRuntime('online', 'agent-shared').abort(); } catch { /* not created */ }
+    } catch { /* runtime module not loaded */ }
     return { success: ok };
   });
 
@@ -6226,7 +6247,12 @@ app.whenReady().then(async () => {
       initTaskQueue({
         userDataDir: userDataPath,
         agentRunTask: (taskId: string) => runTask(taskId),
-        agentCancelTask: (taskId: string, reason?: string) => cancelTask(taskId, reason),
+      agentCancelTask: async (taskId: string, reason?: string) => {
+        // Phase 17: cancelTask is now async (calls abortInference). The
+        // queue fires this and doesn't await — that's fine; the abort
+        // signal still propagates to the in-flight LLM call immediately.
+        return cancelTask(taskId, reason);
+      },
         agentGetTaskStatus: (taskId: string) => {
           const t = getTask(taskId);
           return t ? t.status : null;
@@ -6389,57 +6415,67 @@ app.on('before-quit', (event) => {
   // Phase 115: Cancel all active agent tasks to prevent orphaned
   // in-flight tool calls and pending permission prompts from hanging
   // the process during shutdown.
-  try {
-    const { cancelAllActiveTasks } = require('./agent/core');
-    cancelAllActiveTasks('Application shutting down');
-  } catch { /* best-effort */ }
+  //
+  // Phase 17 (CLEANUP-LEAK-3 fix): cancelAllActiveTasks is now async and
+  // calls abortInference internally. We MUST await it before calling
+  // shutdownLlama() — otherwise shutdownLlama's unloadModel → waitForInFlight
+  // would wait 30s+ for the in-flight LLM call to complete naturally,
+  // causing an app hang on quit. The await ensures the AbortController
+  // fires first, the LLM call rejects with AbortError, the in-flight
+  // promise clears, and shutdownLlama can proceed immediately.
+  (async () => {
+    try {
+      const { cancelAllActiveTasks } = await import('./agent/core');
+      await cancelAllActiveTasks('Application shutting down');
+    } catch { /* best-effort */ }
 
-  // Phase 6: Shut down the task queue — cancels running items and saves state.
-  // Must run BEFORE the agent cancel above so the queue can propagate
-  // cancellation to in-progress agent tasks.
-  try {
-    shutdownTaskQueue();
-  } catch { /* best-effort */ }
+    // Phase 6: Shut down the task queue — cancels running items and saves state.
+    // Must run BEFORE the agent cancel above so the queue can propagate
+    // cancellation to in-progress agent tasks.
+    try {
+      shutdownTaskQueue();
+    } catch { /* best-effort */ }
 
-  // Phase 10: Close all browser sessions (Playwright) — best-effort cleanup
-  // so we don't leave orphaned Chromium processes behind.
-  try {
-    const { closeAllSessions } = require('./ai/tools/browser');
-    closeAllSessions().catch(() => {});
-  } catch { /* best-effort — browser module may not be loaded */ }
+    // Phase 10: Close all browser sessions (Playwright) — best-effort cleanup
+    // so we don't leave orphaned Chromium processes behind.
+    try {
+      const { closeAllSessions } = require('./ai/tools/browser');
+      closeAllSessions().catch(() => {});
+    } catch { /* best-effort — browser module may not be loaded */ }
 
-  // Phase 11: Close all computer sessions — best-effort cleanup.
-  // Computer sessions are lightweight (no separate process), but we mark
-  // them dead so no further actions can use stale state.
-  try {
-    const { closeAllSessions: closeComputerSessions } = require('./ai/tools/computer');
-    closeComputerSessions().catch(() => {});
-  } catch { /* best-effort — computer module may not be loaded */ }
+    // Phase 11: Close all computer sessions — best-effort cleanup.
+    // Computer sessions are lightweight (no separate process), but we mark
+    // them dead so no further actions can use stale state.
+    try {
+      const { closeAllSessions: closeComputerSessions } = require('./ai/tools/computer');
+      closeComputerSessions().catch(() => {});
+    } catch { /* best-effort — computer module may not be loaded */ }
 
-  // Phase 115: Stop the periodic snapshot cleanup timer.
-  try {
-    const { stopSnapshotCleanupInterval } = require('./agent/snapshot-service');
-    stopSnapshotCleanupInterval();
-  } catch { /* best-effort */ }
+    // Phase 115: Stop the periodic snapshot cleanup timer.
+    try {
+      const { stopSnapshotCleanupInterval } = require('./agent/snapshot-service');
+      stopSnapshotCleanupInterval();
+    } catch { /* best-effort */ }
 
-  // Phase 108/115: Dispose semantic memory (flush + clear timer).
-  // Previously called flush() only, leaving the 30s setInterval alive.
-  // dispose() is double-call safe and clears the timer properly.
-  try {
-    const { getMemoryRetrievalEngine } = require('./memory/memory-retrieval-engine');
-    const engine = getMemoryRetrievalEngine();
-    if (engine?.semanticStore) {
-      engine.semanticStore.dispose();
-      console.log('[NEX AI] Semantic memory disposed (flushed + timer cleared)');
-    }
-  } catch { /* best-effort */ }
-  shutdownLlama()
-    .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
-    .finally(() => {
-      terminalService.killAll();
-      // Force-exit now — engine is disposed
-      app.exit(0);
-    });
+    // Phase 108/115: Dispose semantic memory (flush + clear timer).
+    // Previously called flush() only, leaving the 30s setInterval alive.
+    // dispose() is double-call safe and clears the timer properly.
+    try {
+      const { getMemoryRetrievalEngine } = require('./memory/memory-retrieval-engine');
+      const engine = getMemoryRetrievalEngine();
+      if (engine?.semanticStore) {
+        engine.semanticStore.dispose();
+        console.log('[NEX AI] Semantic memory disposed (flushed + timer cleared)');
+      }
+    } catch { /* best-effort */ }
+    shutdownLlama()
+      .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
+      .finally(() => {
+        terminalService.killAll();
+        // Force-exit now — engine is disposed
+        app.exit(0);
+      });
+  })();
 });
 
 // ─── Security: enforce single instance ─────────────────────────────────────

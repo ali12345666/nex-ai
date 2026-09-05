@@ -594,7 +594,15 @@ export default function NexChatPanel() {
               metadata: { ...last.metadata, failed: true, error: event.error || event.message },
             };
             // Phase 116 JARVIS: Orb → error state
+            // Phase 17 (ORB-ERROR-NO-CLEAR fix): auto-clear the 'error'
+            // condition after 1.5s — same as 'cancelled' below. Previously
+            // the 'error' condition was set but NEVER cleared, leaving the
+            // Orb stuck on red forever (STATE_PRIORITY['error']=8 is the
+            // highest, so no other condition could override it). The user
+            // had to start a new agent task to clear it. Now it auto-
+            // clears like 'cancelled', letting the Orb return to idle.
             voiceController.setCondition('agent', 'error');
+            setTimeout(() => voiceController.clearCondition('agent'), 1500);
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
@@ -966,6 +974,9 @@ export default function NexChatPanel() {
           return next;
         });
         setError(stream.error);
+        // Phase 17 (CHAT-ERROR-NO-ORB fix): flash Orb red on chat error
+        voiceController.setCondition('chat', 'error');
+        setTimeout(() => voiceController.clearCondition('chat'), 1500);
       } else if (stream.error && /abort|cancelled|canceled/i.test(stream.error)) {
         // ABORT FIX: do NOT fall back to non-streaming aiChat when the stream
         // was aborted. Falling back starts a NEW inference (chatComplete)
@@ -1004,6 +1015,12 @@ export default function NexChatPanel() {
             return next;
           });
           setError(result.error || 'Request failed');
+          // Phase 17 (CHAT-ERROR-NO-ORB fix): flash Orb red on chat error
+          const isAbort = /abort|cancelled|canceled/i.test(result.error || '');
+          if (!isAbort) {
+            voiceController.setCondition('chat', 'error');
+            setTimeout(() => voiceController.clearCondition('chat'), 1500);
+          }
         }
       }
     } catch (err: any) {
@@ -1015,6 +1032,17 @@ export default function NexChatPanel() {
         return next;
       });
       setError(err.message);
+      // Phase 17 (CHAT-ERROR-NO-ORB fix): set Orb to 'error' on chat
+      // failure too — previously only agent task failures set the Orb
+      // to 'error'; chat errors left the Orb at 'thinking' (cleared by
+      // the finally block below via setThinking(false) → 'idle'). The
+      // user had no visual indication that the chat failed. Now we
+      // briefly flash the Orb red (1.5s) to match the agent path's UX.
+      const isAbort = /abort|cancelled|canceled/i.test(err.message || '');
+      if (!isAbort) {
+        voiceController.setCondition('chat', 'error');
+        setTimeout(() => voiceController.clearCondition('chat'), 1500);
+      }
     } finally {
       setIsGenerating(false);
       setChatStreaming(false);

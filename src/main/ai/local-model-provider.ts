@@ -41,6 +41,7 @@ import {
   chatStream as inferenceChatStream,
   abortInference,
   getLoadedModelInfo,
+  getLoadedModel,
   getGpuBackend,
 } from './inference';
 import {
@@ -182,16 +183,24 @@ export class LocalModelProvider {
   /**
    * Generate a full response (not streamed).
    * The model must be loaded first via load().
+   *
+   * Phase 17 (P1 14-3 fix): Read the loaded model from inference.ts as
+   * the single source of truth. Previously this used `this.loadedModel`
+   * (a shadow copy that could go stale when inference.ts internally
+   * called unloadModel during a fresh-load). Now we read getLoadedModel()
+   * at call time so the chat/stream calls always use the actually-loaded
+   * model, not a stale snapshot.
    */
   async generate(
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     opts?: ProviderGenerateOptions,
   ): Promise<ProviderGenerateResult> {
-    if (!this.loadedModel) {
+    const model = this.getEffectiveLoadedModel();
+    if (!model) {
       throw new Error('No model loaded. Call load() first.');
     }
     const start = Date.now();
-    const result = await inferenceChatComplete(this.loadedModel, messages, {
+    const result = await inferenceChatComplete(model, messages, {
       contextSize: opts?.contextSize,
       threads: opts?.threads,
       gpuLayers: opts?.gpuLayers,
@@ -215,18 +224,22 @@ export class LocalModelProvider {
   /**
    * Stream a response token-by-token.
    * The model must be loaded first via load().
+   *
+   * Phase 17 (P1 14-3 fix): Same as generate() — reads the effective
+   * loaded model from inference.ts instead of the stale shadow copy.
    */
   async stream(
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     onChunk: (chunk: ProviderStreamChunk) => void,
     opts?: ProviderGenerateOptions,
   ): Promise<ProviderGenerateResult> {
-    if (!this.loadedModel) {
+    const model = this.getEffectiveLoadedModel();
+    if (!model) {
       throw new Error('No model loaded. Call load() first.');
     }
     const start = Date.now();
     const result = await inferenceChatStream(
-      this.loadedModel,
+      model,
       messages,
       (chunk) => onChunk({ content: chunk.content, done: chunk.done, error: chunk.error }),
       {
@@ -259,15 +272,54 @@ export class LocalModelProvider {
   }
 
   /**
+   * Phase 17 (P1 14-3 fix): Get the effective loaded model.
+   *
+   * Source of truth is `inference.ts getLoadedModel()`. The shadow
+   * `_loadedModelId`/`loadedModel` fields are only used as a fallback
+   * if inference.ts returns null but we believe a model is loaded
+   * (defensive — should rarely happen).
+   *
+   * If our shadow `_loadedModelId` doesn't match inference.ts's loaded
+   * id, we update the shadow to match (eventual consistency).
+   */
+  private getEffectiveLoadedModel(): LocalModelInfo | null {
+    const inferenceLoaded = getLoadedModel(); // full LocalModelInfo from inference.ts
+    if (inferenceLoaded) {
+      // Sync the shadow state with the source of truth
+      if (this._loadedModelId !== inferenceLoaded.id) {
+        this._loadedModelId = inferenceLoaded.id;
+        this.loadedModel = inferenceLoaded;
+      }
+      return inferenceLoaded;
+    }
+    // Fallback: inference.ts has no model loaded, but our shadow says we do.
+    // This means inference.ts unloaded our model internally (e.g. fresh-load
+    // of a different model by another path). Return null so the caller
+    // throws "no model loaded" instead of using a stale reference.
+    if (this._loadedModelId) {
+      // Clear the stale shadow state
+      this._loadedModelId = null;
+      this.loadedModel = null;
+    }
+    return null;
+  }
+
+  /**
    * Get info about this provider + its currently-loaded model.
+   *
+   * Phase 17 (P1 14-3 fix): use getLoadedModelInfo() as the source of
+   * truth for whether ANY model is loaded, and getEffectiveLoadedModel()
+   * for the full LocalModelInfo. Previously this returned the stale
+   * shadow `this.loadedModel` even when inference.ts had unloaded it.
    */
   getInfo(): ProviderInfo {
+    const effectiveModel = this.getEffectiveLoadedModel();
     const loadedInfo = getLoadedModelInfo();
     return {
       backend: this.backend,
       available: this.isBackendAvailable(),
       capabilities: this.getBackendCapabilities(),
-      loadedModel: loadedInfo && this._loadedModelId ? this.loadedModel : null,
+      loadedModel: loadedInfo && this._loadedModelId ? effectiveModel : null,
       gpuBackend: getGpuBackend(),
       hardware: this.cachedHardware,
     };
@@ -276,13 +328,18 @@ export class LocalModelProvider {
   /**
    * Run a health check: is the backend available, is a model loaded, can
    * we infer? Returns a structured report.
+   *
+   * Phase 17 (P1 14-3 fix): use getLoadedModelInfo() as the source of
+   * truth for "is a model loaded". Previously used the shadow
+   * `_loadedModelId` which could go stale.
    */
   healthCheck(): ProviderHealthCheck {
     const issues: string[] = [];
     const available = this.isBackendAvailable();
     if (!available) issues.push(`Backend '${this.backend}' is not available on this machine`);
+    // Phase 17: read from inference.ts as source of truth
     const loadedInfo = getLoadedModelInfo();
-    const modelLoaded = !!loadedInfo && loadedInfo.id === this._loadedModelId;
+    const modelLoaded = !!(loadedInfo && loadedInfo.id === this._loadedModelId);
     if (!modelLoaded) issues.push('No model loaded');
     const canInfer = available && modelLoaded;
     return {
@@ -297,9 +354,27 @@ export class LocalModelProvider {
     };
   }
 
-  /** Currently-loaded model id (or null). */
+  /**
+   * Currently-loaded model id (or null).
+   *
+   * Phase 17 (P1 14-3 fix): read from inference.ts as the source of truth.
+   * The shadow `_loadedModelId` is updated as a side effect so external
+   * callers that cached the value see the new id on next access.
+   */
   get loadedModelId(): string | null {
-    return this._loadedModelId;
+    const loadedInfo = getLoadedModelInfo();
+    if (loadedInfo) {
+      if (this._loadedModelId !== loadedInfo.id) {
+        this._loadedModelId = loadedInfo.id;
+      }
+      return loadedInfo.id;
+    }
+    // inference.ts has no model — clear shadow
+    if (this._loadedModelId) {
+      this._loadedModelId = null;
+      this.loadedModel = null;
+    }
+    return null;
   }
 
   // ── Internals ──

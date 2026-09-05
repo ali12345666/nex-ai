@@ -163,9 +163,11 @@ interface AppState {
   setProjectPath: (path: string) => void;
 
   // Chat
-  messages: ChatMessage[];
-  addMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
-  clearMessages: () => void;
+  // Phase 17 (legacy cleanup): `messages` / `addMessage` / `clearMessages`
+  // REMOVED — they were only used by the dead ChatPanel.tsx (now deleted).
+  // NexChatPanel manages its own messages via useState (not Zustand), so
+  // these were dead state. Chat history is persisted via the dedicated
+  // `saveConversation` / `loadConversation` flow in NexChatPanel.
   isAILoading: boolean;
   setAILoading: (loading: boolean) => void;
 
@@ -317,15 +319,9 @@ export const useStore = create<AppState>((set, get) => ({
   setProjectPath: (path) => set({ projectPath: path }),
 
   // Chat
-  messages: [],
-  addMessage: (msg) =>
-    set((s) => ({
-      messages: [
-        ...s.messages,
-        { ...msg, id: crypto.randomUUID(), timestamp: Date.now() },
-      ],
-    })),
-  clearMessages: () => set({ messages: [] }),
+  // Phase 17 (legacy cleanup): messages/addMessage/clearMessages removed
+  // (were only used by the dead ChatPanel.tsx). isAILoading/setAILoading
+  // kept — they may still be referenced by other components.
   isAILoading: false,
   setAILoading: (loading) => set({ isAILoading: loading }),
 
@@ -336,7 +332,17 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Phase 6: AI Mode
   aiMode: 'local',
-  setAIMode: (mode) => set({ aiMode: mode }),
+  // Phase 17 (P0 13-1 fix): setAIMode now ALSO updates the nested
+  // settings.aiMode so that settingsSave() persists the user's choice.
+  // Previously setAIMode only updated the top-level aiMode field, leaving
+  // settings.aiMode at its default ('local'). On app restart,
+  // settingsLoad() populated BOTH fields from the persisted settings,
+  // which still had aiMode='local' — so the user's choice was lost.
+  // Now both fields stay in sync so save + load round-trips correctly.
+  setAIMode: (mode) => set((s) => ({
+    aiMode: mode,
+    settings: { ...s.settings, aiMode: mode },
+  })),
 
   // Phase 4: Local Models registry
   localModels: [],

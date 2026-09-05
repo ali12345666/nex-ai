@@ -560,12 +560,12 @@ contextBridge.exposeInMainWorld('nexAPI', {
   systemQuickActions: () => ipcRenderer.invoke('system-quick-actions'),
 
   // ── Phase 51: NEX Brain Core + Identity System ──
-  brainDecide: (request: { request: string; intent?: string; hasImage?: boolean; hasAudio?: boolean }) =>
-    ipcRenderer.invoke('brain-decide', request),
-  brainStatus: () => ipcRenderer.invoke('brain-status'),
-  brainSetMode: (mode: string) => ipcRenderer.invoke('brain-set-mode', mode),
-  brainLastDecision: () => ipcRenderer.invoke('brain-last-decision'),
-  brainModelsByTask: () => ipcRenderer.invoke('brain-models-by-task'),
+  // Phase 17 (legacy cleanup): 5 brain-* IPC entries REMOVED —
+  // brainDecide, brainStatus, brainSetMode, brainLastDecision,
+  // brainModelsByTask. They were never invoked by any renderer code.
+  // The corresponding ipcMain.handle entries in main.ts were also removed.
+  // NexBrainController is still used internally by main-process modules
+  // (multi-model-runtime-manager, nex-executive-planner) via direct import.
   identityGet: () => ipcRenderer.invoke('identity-get'),
   identityUpdate: (patch: any) => ipcRenderer.invoke('identity-update', patch),
   identitySetPersonality: (personality: string) => ipcRenderer.invoke('identity-set-personality', personality),

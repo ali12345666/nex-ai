@@ -329,10 +329,25 @@ export default function AppShell() {
       // the full voice→AI→TTS loop independently of the text Chat panel.
     });
 
+    // Phase 17 (VOICE-ERROR-IPC-NOLISTENER fix): subscribe to
+    // voice-conversation-error IPC so voice engine errors (Whisper model
+    // missing, Piper model missing, mic denied, etc.) drive the Orb to
+    // 'error' state instead of being silently dropped. Previously the
+    // only subscriber was VoiceCenterPanel (which is dead code — never
+    // imported). Now AppShell subscribes and flashes the Orb red for
+    // 1.5s, matching the agent/chat error UX.
+    const offError = window.nexAPI?.onVoiceConversationError?.((ev: any) => {
+      const message = ev?.message || 'Voice engine error';
+      console.warn(`[VOICE] voice-conversation-error: ${message}`);
+      voiceController.setCondition('engine', 'error');
+      setTimeout(() => voiceController.clearCondition('engine'), 1500);
+    });
+
     return () => {
       if (off) off();
       if (offUser) offUser();
       if (offNex) offNex();
+      if (offError) offError();
     };
   }, []);
 

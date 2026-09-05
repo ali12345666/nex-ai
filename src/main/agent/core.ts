@@ -728,7 +728,13 @@ export async function runTask(taskId: string): Promise<AgentTask> {
 
     return task;
   } catch (err: any) {
-    if (err.code === 'AGENT_CANCELLED' || task.cancelled) {
+    // Phase 17: also detect AbortError (from cancelTask → abortInference).
+    // Previously only AGENT_CANCELLED + task.cancelled were caught here —
+    // a raw AbortError from the planner/ReAct throw chain would fall
+    // through to the generic task_failed branch, marking the task as
+    // 'failed' instead of 'cancelled' even though the user clicked Stop.
+    const isAbort = err.code === 'AGENT_CANCELLED' || err.name === 'AbortError' || err.code === 'ABORT_ERR' || /abort/i.test(err.message || '');
+    if (isAbort || task.cancelled) {
       // Phase 111: Ensure single terminal state — don't override if already set
       if (task.status !== 'completed' && task.status !== 'failed') {
         task.status = timeoutFired ? 'failed' : 'cancelled';
@@ -1445,8 +1451,15 @@ async function executeStep(
       });
     }
   } catch (err: any) {
-    if (err.code === 'AGENT_CANCELLED') {
-      throw err; // re-throw
+    // Phase 17: re-throw cancellation signals (AGENT_CANCELLED token OR
+    // AbortError from abortInference during planner/ReAct LLM calls) so
+    // the runTask outer catch can transition the task to 'cancelled' /
+    // 'failed' cleanly. Previously only AGENT_CANCELLED was re-thrown,
+    // so an AbortError from cancelTask's new abortInference call would
+    // be caught here, marked as a step_failed tool_error, and the task
+    // would continue to the next step instead of aborting.
+    if (err.code === 'AGENT_CANCELLED' || err.name === 'AbortError' || err.code === 'ABORT_ERR' || /abort/i.test(err.message || '')) {
+      throw err; // re-throw — runTask outer catch handles cancellation
     }
     step.status = 'failed';
     step.error = err.message;
@@ -1838,7 +1851,46 @@ function extractSignals(result: any): Array<{ type: 'success' | 'error' | 'warni
 
 // ─── Cancellation ─────────────────────────────────────────────────────────────
 
-export function cancelTask(taskId: string, reason?: string): boolean {
+/**
+ * Phase 17 (P1-5 / BUG-GAP-2 fix): Cancel the specified task.
+ *
+ * In addition to setting the cancellation token (which propagates to all
+ * `token.throwIfCancelled()` checkpoints between LLM calls + tools), this
+ * now ALSO calls `abortInference()` to interrupt any in-flight LLM
+ * generation. Previously, a cancel during mid-inference would only take
+ * effect at the next checkpoint — wasting tokens + time while the LLM
+ * finished generating. Now the LLM call's AbortController fires
+ * immediately, the `session.prompt()` Promise rejects with AbortError,
+ * and the runTask outer catch transitions the task to 'cancelled'/'failed'.
+ *
+ * The dynamic import avoids a static circular dependency
+ * (inference.ts ↔ core.ts). At runtime, inference.ts is already loaded
+ * by the time any task runs (model is preloaded), so the import resolves
+ * synchronously from the module cache.
+ */
+export async function cancelTask(taskId: string, reason?: string): Promise<boolean> {
+  const token = _cancellationTokens.get(taskId);
+  if (!token) return false;
+  const task = _activeTasks.get(taskId);
+  if (task) {
+    task.cancelled = true;
+    task.cancelReason = reason || 'cancelled by user';
+  }
+  // Phase 17: abort any in-flight LLM inference so the cancel takes effect
+  // immediately instead of waiting for the next checkpoint.
+  try {
+    const { abortInference } = await import('../ai/inference');
+    abortInference(`agent task cancelled: ${taskId}${reason ? ` (${reason})` : ''}`);
+  } catch { /* inference module may not be loaded — best-effort */ }
+  return token.cancel(reason);
+}
+
+/**
+ * Synchronous cancel (legacy API). Kept for callers that don't want to
+ * await. The async `cancelTask` above is preferred because it also aborts
+ * in-flight inference. This synchronous version only sets the token.
+ */
+export function cancelTaskSync(taskId: string, reason?: string): boolean {
   const token = _cancellationTokens.get(taskId);
   if (!token) return false;
   const task = _activeTasks.get(taskId);
@@ -1854,15 +1906,21 @@ export function cancelTask(taskId: string, reason?: string): boolean {
  * Called during app shutdown to prevent orphaned in-flight tool calls
  * and pending permission prompts from hanging the process.
  *
+ * Phase 17: now async — awaits each `cancelTask` so the abortInference
+ * call inside it completes before we proceed to shutdownLlama. This
+ * prevents the shutdown-hang bug (CLEANUP-LEAK-3) where the in-flight
+ * LLM call was never aborted, causing `shutdownLlama → unloadModel →
+ * waitForInFlight` to wait 30s+ for natural completion.
+ *
  * Returns the number of tasks that were cancelled.
  */
-export function cancelAllActiveTasks(reason?: string): number {
+export async function cancelAllActiveTasks(reason?: string): Promise<number> {
   const r = reason || 'Application shutting down';
   let count = 0;
   for (const [taskId, task] of _activeTasks) {
     // Only cancel non-terminal tasks
     if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled') {
-      if (cancelTask(taskId, r)) {
+      if (await cancelTask(taskId, r)) {
         count++;
       }
     }

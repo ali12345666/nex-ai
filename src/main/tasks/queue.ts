@@ -72,7 +72,7 @@ let _workerCount = 0;
 let _persistenceInitialized = false;
 let _recoverInterruptedHandler: ((taskId: string) => void) | null = null;
 let _agentRunTaskFn: ((taskId: string) => Promise<unknown>) | null = null;
-let _agentCancelTaskFn: ((taskId: string, reason?: string) => boolean) | null = null;
+let _agentCancelTaskFn: ((taskId: string, reason?: string) => boolean | Promise<boolean>) | null = null;
 let _agentGetTaskStatusFn: ((taskId: string) => string | null) | null = null;
 let _agentOnEventUnsub: (() => void) | null = null;
 let _memoryRecordFn: ((item: TaskQueueItem) => void) | null = null;
@@ -89,7 +89,7 @@ export function initTaskQueue(opts?: {
   userDataDir?: string;
   config?: Partial<TaskQueueConfig>;
   agentRunTask?: (taskId: string) => Promise<unknown>;
-  agentCancelTask?: (taskId: string, reason?: string) => boolean;
+  agentCancelTask?: (taskId: string, reason?: string) => boolean | Promise<boolean>;
   agentGetTaskStatus?: (taskId: string) => string | null;
   agentOnEvent?: (listener: (event: { type: string; taskId: string }) => void) => () => void;
   onInterruptedRecovery?: (taskId: string) => void;

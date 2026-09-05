@@ -509,6 +509,14 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // model and RELOAD it — causing "Object is disposed" when the old session
   // tried to use the disposed context. Now we reuse the loaded model as long
   // as it's the same id and not disposed.
+  //
+  // Phase 17 (P1-3 fix): the `contextLargeEnough` check is now ACTUALLY used
+  // in the reuse decision. Previously it was declared but ignored, which
+  // meant a model loaded via VRAM fallback with a smaller context (e.g.
+  // 256 instead of 4096) was silently reused for a 4096-context request,
+  // causing truncation or OOM. Now if the loaded context is too small, we
+  // fall through to the fresh-load path (which will unload + reload with
+  // the requested context, subject to VRAM fallback).
   const sameId = _loadedModelId === model.id;
   const exists = !!(sameId && _loadedContext && _loadedModel);
   const notDisposed = exists && !((_loadedModel as any).disposed) && !((_loadedContext as any).disposed);
@@ -518,22 +526,27 @@ export async function loadModel(model: LocalModelInfo, opts: InferenceOptions = 
   // with ANY gpuLayers, we keep it (reloading just to change gpuLayers would
   // cause the dispose race).
 
-  if (exists && notDisposed) {
+  if (exists && notDisposed && contextLargeEnough) {
     // Reuse the already-loaded model. Log the reuse for diagnostics.
     console.log(`[MODEL_LOAD_PATH]`);
     console.log(`  selected=reuse-existing`);
     console.log(`  modelId=${model.id}`);
     console.log(`  gpuLayers=existing (actual=${_loadedModelGpuLayers ?? '?'})`);
-    console.log(`  context=${_loadedContextSize ?? '?'} (requested ${requestedContextSize}${contextLargeEnough ? '' : ' — smaller than requested, but reusing to avoid reload'})`);
+    console.log(`  context=${_loadedContextSize ?? '?'} (requested ${requestedContextSize})`);
     console.log(`  kvCacheMode=default`);
     _loadedModelInfo = model;
     return;
   }
 
-  // If the model exists but is disposed, clear the stale references before
-  // reloading (unloadModel would try to dispose an already-disposed object).
-  if (sameId && !notDisposed) {
-    console.warn('[NEX AI Local] Loaded model/context is disposed — clearing stale references before reload');
+  // If the model exists but is disposed OR the context is too small, clear
+  // stale references before reloading. (Previously only the disposed case
+  // was handled — now the too-small-context case also forces a reload.)
+  if (sameId && (!notDisposed || !contextLargeEnough)) {
+    if (notDisposed && !contextLargeEnough) {
+      console.warn(`[NEX AI Local] Loaded model context (${_loadedContextSize}) smaller than requested (${requestedContextSize}) — reloading with larger context`);
+    } else {
+      console.warn('[NEX AI Local] Loaded model/context is disposed — clearing stale references before reload');
+    }
     _loadedModel = null;
     _loadedContext = null;
     _ctxSequence = null;
@@ -945,44 +958,56 @@ export async function chatComplete(
   // Phase 90: Wait for any in-flight inference
   await waitForInFlight();
 
-  await loadModel(model, opts);
-  if (!_loadedContext) throw new Error('Model context not initialized');
-  await getLlamaInstance();
-
-  // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
-  // This is the identity check: the model used by chatComplete MUST be the
-  // same _loadedModel instance that was created with gpuLayers in loadModel().
-  let actualGpuLayers = 0;
-  try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
-  console.log(`[GPU_INFERENCE] chatComplete modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
-
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-  if (!lastUserMsg) throw new Error('No user message in conversation');
-
-  const chatHistory = messages
-    .filter(m => m.role !== 'system')
-    .slice(0, -1)
-    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-  // Phase 90: Per-request AbortController with diagnostics
-  const requestId = `chatComplete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const abortController = new AbortController();
-  _activeAbortController = abortController;
-  _activeRequestId = requestId;
-  _activeRequestCreatedAt = Date.now();
-  console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatComplete createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
-
-  const session = new _LlamaChatSession({
-    contextSequence: getSharedSequence(),
-    systemPrompt: opts.systemPrompt,
-    chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+  // Phase 17 (RACE-1 fix): Reserve the in-flight slot IMMEDIATELY, BEFORE
+  // loadModel(). Previously the gap between waitForInFlight() returning
+  // and markInFlight() setting (after loadModel) allowed a second
+  // concurrent chatComplete/chatStream to slip through and operate on
+  // the same shared _ctxSequence — risking KV-cache corruption.
+  // We create the inferencePromise skeleton first, mark it as in-flight,
+  // then run the actual work inside it.
+  let resolveInference: (v: InferenceResult) => void;
+  let rejectInference: (e: any) => void;
+  const inferencePromise = new Promise<InferenceResult>((res, rej) => {
+    resolveInference = res;
+    rejectInference = rej;
   });
+  const clearInFlight = markInFlight(inferencePromise);
 
-  const start = Date.now();
-  let response = '';
+  try {
+    await loadModel(model, opts);
+    if (!_loadedContext) throw new Error('Model context not initialized');
+    await getLlamaInstance();
 
-  // Phase 90: Wrap in serialization
-  const inferencePromise = (async () => {
+    // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
+    let actualGpuLayers = 0;
+    try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
+    console.log(`[GPU_INFERENCE] chatComplete modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
+
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    if (!lastUserMsg) throw new Error('No user message in conversation');
+
+    const chatHistory = messages
+      .filter(m => m.role !== 'system')
+      .slice(0, -1)
+      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+    // Phase 90: Per-request AbortController with diagnostics
+    const requestId = `chatComplete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const abortController = new AbortController();
+    _activeAbortController = abortController;
+    _activeRequestId = requestId;
+    _activeRequestCreatedAt = Date.now();
+    console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatComplete createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
+
+    const session = new _LlamaChatSession({
+      contextSequence: getSharedSequence(),
+      systemPrompt: opts.systemPrompt,
+      chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+    });
+
+    const start = Date.now();
+    let response = '';
+
     try {
       const _t0 = Date.now();
       response = await session.prompt(lastUserMsg.content, {
@@ -1002,6 +1027,17 @@ export async function chatComplete(
         durationMs: genMs,
         active: false,
       });
+      resolveInference!({
+        content: response,
+        tokensGenerated: estimateTokens(response),
+        modelId: model.id,
+        modelName: model.name,
+        stopped: abortController.signal.aborted,
+        durationMs: Date.now() - start,
+      });
+    } catch (err: any) {
+      noteInferenceStats({ active: false });
+      rejectInference!(err);
     } finally {
       try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
       if (_activeAbortController === abortController) {
@@ -1010,23 +1046,13 @@ export async function chatComplete(
         _activeRequestCreatedAt = 0;
       }
     }
-  })();
-
-  const clearInFlight = markInFlight(inferencePromise);
-  try {
-    await inferencePromise;
+    return await inferencePromise;
+  } catch (err: any) {
+    rejectInference!(err);
+    throw err;
   } finally {
     clearInFlight();
   }
-
-  return {
-    content: response,
-    tokensGenerated: estimateTokens(response),
-    modelId: model.id,
-    modelName: model.name,
-    stopped: abortController.signal.aborted,
-    durationMs: Date.now() - start,
-  };
 }
 
 /**
@@ -1050,43 +1076,53 @@ export async function chatStream(
   // Phase 90: Wait for any in-flight inference
   await waitForInFlight();
 
-  await loadModel(model, opts);
-  if (!_loadedContext) throw new Error('Model context not initialized');
-  await getLlamaInstance();
-
-  // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
-  let actualGpuLayers = 0;
-  try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
-  console.log(`[GPU_INFERENCE] chatStream modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
-
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-  if (!lastUserMsg) throw new Error('No user message in conversation');
-
-  const chatHistory = messages
-    .filter(m => m.role !== 'system')
-    .slice(0, -1)
-    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-  // Phase 90: Per-request AbortController with diagnostics
-  const requestId = `chatStream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const abortController = new AbortController();
-  _activeAbortController = abortController;
-  _activeRequestId = requestId;
-  _activeRequestCreatedAt = Date.now();
-  console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatStream createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
-
-  const session = new _LlamaChatSession({
-    contextSequence: getSharedSequence(),
-    systemPrompt: opts.systemPrompt,
-    chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+  // Phase 17 (RACE-1 fix): Reserve the in-flight slot IMMEDIATELY, BEFORE
+  // loadModel(). See chatComplete() above for the full rationale.
+  let resolveInference: (v: InferenceResult) => void;
+  let rejectInference: (e: any) => void;
+  const inferencePromise = new Promise<InferenceResult>((res, rej) => {
+    resolveInference = res;
+    rejectInference = rej;
   });
+  const clearInFlight = markInFlight(inferencePromise);
 
-  const start = Date.now();
-  let fullResponse = '';
-  let firstTokenMs = 0;
-  noteInferenceStats({ active: true });
+  try {
+    await loadModel(model, opts);
+    if (!_loadedContext) throw new Error('Model context not initialized');
+    await getLlamaInstance();
 
-  const inferencePromise = (async () => {
+    // [GPU_INFERENCE] — prove the active session uses the GPU-configured model.
+    let actualGpuLayers = 0;
+    try { actualGpuLayers = (typeof (_loadedModel as any).gpuLayers === 'number') ? (_loadedModel as any).gpuLayers : 0; } catch { /* */ }
+    console.log(`[GPU_INFERENCE] chatStream modelId=${_loadedModelId} backend=${_gpuBackend} gpuLayersActual=${actualGpuLayers} modelInstanceSame=${_loadedModelId === model.id ? 'YES' : 'NO(new model loaded)'}`);
+
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+    if (!lastUserMsg) throw new Error('No user message in conversation');
+
+    const chatHistory = messages
+      .filter(m => m.role !== 'system')
+      .slice(0, -1)
+      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+    // Phase 90: Per-request AbortController with diagnostics
+    const requestId = `chatStream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const abortController = new AbortController();
+    _activeAbortController = abortController;
+    _activeRequestId = requestId;
+    _activeRequestCreatedAt = Date.now();
+    console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chatStream createdAt=${_activeRequestCreatedAt} modelId=${model.id}`);
+
+    const session = new _LlamaChatSession({
+      contextSequence: getSharedSequence(),
+      systemPrompt: opts.systemPrompt,
+      chatHistory: chatHistory.length > 0 ? chatHistory : undefined,
+    });
+
+    const start = Date.now();
+    let fullResponse = '';
+    let firstTokenMs = 0;
+    noteInferenceStats({ active: true });
+
     try {
       const response = await session.prompt(lastUserMsg.content, {
         maxTokens: opts.maxTokens ?? 1024,
@@ -1123,18 +1159,18 @@ export async function chatStream(
         durationMs: genMs,
         active: false,
       });
-      return {
+      resolveInference!({
         content: fullResponse,
         tokensGenerated: genTokens,
         modelId: model.id,
         modelName: model.name,
         stopped: abortController.signal.aborted,
         durationMs: genMs,
-      };
+      });
     } catch (err: any) {
       noteInferenceStats({ active: false });
       onChunk({ content: '', done: true, error: err.message });
-      throw err;
+      rejectInference!(err);
     } finally {
       try { (session as any).dispose?.(); } catch (e: any) { console.warn('[NEX AI Local] Session dispose warning:', e?.message); }
       if (_activeAbortController === abortController) {
@@ -1143,11 +1179,10 @@ export async function chatStream(
         _activeRequestCreatedAt = 0;
       }
     }
-  })();
-
-  const clearInFlight = markInFlight(inferencePromise);
-  try {
     return await inferencePromise;
+  } catch (err: any) {
+    rejectInference!(err);
+    throw err;
   } finally {
     clearInFlight();
   }

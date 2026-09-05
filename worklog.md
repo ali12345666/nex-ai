@@ -3283,3 +3283,3167 @@ Stage Summary:
 - Includes 8 source file modifications + 2 new test files (test-phase-16-bug12.ts, test-phase-16-bug26.ts) + worklog updates
 - Pushed to https://github.com/ali12345666/nex-ai.git main branch
 - Phase 16 BUG-12 + BUG-26 implementation complete and committed
+
+---
+Task ID: P17-AUDIT-STREAMING
+Agent: Explore (streaming/abort/concurrency)
+Phase: 17 — Runtime & Core Integration Audit (items 4, 5, 6)
+Codebase: /home/z/my-project @ 8e5ff6d (main)
+Mode: READ-ONLY — no files modified, no commits
+
+═══════════════════════════════════════════════════════════════════════════════
+WORK LOG
+═══════════════════════════════════════════════════════════════════════════════
+
+Files audited (read in full):
+- /home/z/my-project/src/main/ai/inference.ts (1216 lines)
+- /home/z/my-project/src/main/ai/runtimes/llamacpp-runtime.ts (117 lines)
+- /home/z/my-project/src/main/ai/runtimes/online-runtime.ts (155 lines)
+- /home/z/my-project/src/main/ai/runtimes/online-transport.ts (118 lines)
+- /home/z/my-project/src/main/ai/runtime.ts (282 lines)
+- /home/z/my-project/src/main/ai/runtime-telemetry.ts (57 lines)
+- /home/z/my-project/src/main/ai/local-engine.ts (316 lines)
+- /home/z/my-project/src/main/ai/multi-model-runtime-manager.ts (453 lines, partial)
+- /home/z/my-project/src/main/ai/local-model-provider.ts (391 lines, partial)
+- /home/z/my-project/src/main/ai/interaction-loop.ts (392 lines)
+- /home/z/my-project/src/main/ai/provider.ts (116 lines)
+- /home/z/my-project/src/main/ai-service.ts (254 lines, partial)
+- /home/z/my-project/src/main/agent/core.ts (2187 lines)
+- /home/z/my-project/src/main/agent/planner.ts (532 lines)
+- /home/z/my-project/src/main/agent/react-loop.ts (397 lines)
+- /home/z/my-project/src/main/agent/stream-emit.ts (129 lines)
+- /home/z/my-project/src/main/agent/types.ts (CancellationToken, 320-367)
+- /home/z/my-project/src/main/tasks/queue.ts (859 lines)
+- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (892 lines, partial)
+- /home/z/my-project/src/main/voice/local-voice-engine.ts (509 lines, partial)
+- /home/z/my-project/src/main/main.ts (6463 lines, IPC handlers + before-quit)
+- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx (handleStop)
+
+Cross-referenced symbols:
+- _activeAbortController (inference.ts:161) — single module-level controller
+- _activeRequestId (inference.ts:168), _activeRequestCreatedAt (inference.ts:169)
+- _inFlightPromise (inference.ts:158) — singular (NOT _inFlightRequests)
+- _loadingPromise (inference.ts:151), _isShuttingDown (inference.ts:152)
+- _activeTasks (core.ts:96), _cancellationTokens (core.ts:97)
+- _running / _queue / _items / _cancellationTokens (queue.ts:63-69)
+- _instances (runtime.ts:161) — registry of AIRuntime instances by `${type}:${instanceId}`
+- _inFlight (online-runtime.ts:52) — single promise per OnlineRuntime
+- _aborted (online-runtime.ts:51) — single boolean per OnlineRuntime
+- currentTtsRequestId, ttsPlaybackResolve, ttsPlaybackTimeout (nex-voice-conversation.ts:160-163)
+- _currentTtsRequestId, ttsActive (local-voice-engine.ts:175-179)
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 17 ITEM 4 — STREAMING & ABORTCONTROLLER
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+4.1 INFERENCE STATE — single AbortController, single in-flight promise
+─────────────────────────────────────────────────────────────────────────────
+
+inference.ts:161-169 (module-level singletons):
+  let _inFlightPromise: Promise<any> | null = null;
+  let _activeAbortController: AbortController | null = null;
+  let _activeRequestId: string | null = null;
+  let _activeRequestCreatedAt: number = 0;
+
+Per-request setup — chatComplete (inference.ts:968-973) and chatStream (inference.ts:1071-1076):
+  const requestId = `chat{Complete,Stream}-${Date.now()}-${Math.random()toString(36).slice(2,8)}`;
+  const abortController = new AbortController();
+  _activeAbortController = abortController;
+  _activeRequestId = requestId;
+  _activeRequestCreatedAt = Date.now();
+  console.log(`[INFERENCE_ABORT_CONTROLLER] requestId=${requestId} op=chat{Complete,Stream} createdAt=${...} modelId=${model.id}`);
+
+cleanup (inference.ts:1005-1011 and 1138-1144):
+  finally {
+    try { (session as any).dispose?.(); } catch {...}
+    if (_activeAbortController === abortController) {
+      _activeAbortController = null;
+      _activeRequestId = null;
+      _activeRequestCreatedAt = 0;
+    }
+  }
+
+abortInference (inference.ts:1172-1193):
+  export function abortInference(reason?: string): void {
+    if (_activeAbortController) {
+      const elapsedMs = _activeRequestCreatedAt > 0 ? Date.now() - _activeRequestCreatedAt : -1;
+      const callerStack = new Error().stack || '(no stack)';
+      console.log(`[INFERENCE_ABORT]`);
+      console.log(`  requestId=${_activeRequestId || '(unknown)'}`);
+      console.log(`  reason=${reason || '(not specified)'}`);
+      console.log(`  elapsedMs=${elapsedMs}`);
+      console.log(`  callerStack=${callerStack.split('\n').slice(0, 12).join('\n  ')}`);
+      if (elapsedMs >= 0 && elapsedMs < 3000) {
+        console.warn(`[INFERENCE_ABORT] WARNING: abort called only ${elapsedMs}ms after request creation — possible spurious/immediate abort`);
+      }
+      console.log('[NEX AI Local] Aborting active inference request');
+      _activeAbortController.abort();
+      _activeAbortController = null; _activeRequestId = null; _activeRequestCreatedAt = 0;
+    } else {
+      console.log('[NEX AI Local] No active inference to abort');
+    }
+  }
+
+→ There is a SINGLE module-level _activeAbortController per inference.ts (NOT per-request, NOT per-instance, NOT per-IPC-handler).
+→ Each chatComplete/chatStream call creates its OWN controller, but assigns it to the global — the LAST assignment wins.
+→ Idempotent: if no active controller, abortInference is a no-op (logs `[NEX AI Local] No active inference to abort`).
+→ No duplicate-cancel guard: abortInference() can be called multiple times in succession. First call aborts; subsequent calls log "No active inference to abort".
+
+─────────────────────────────────────────────────────────────────────────────
+4.2 chatStream / chatComplete structure (inference.ts:935 & 1039)
+─────────────────────────────────────────────────────────────────────────────
+
+chatComplete signature:
+  export async function chatComplete(
+    model: LocalModelInfo,
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    opts: InferenceOptions = {}
+  ): Promise<InferenceResult>
+
+chatStream signature:
+  export async function chatStream(
+    model: LocalModelInfo,
+    messages: Array<...>,
+    onChunk: (chunk: StreamChunk) => void,
+    opts: InferenceOptions = {}
+  ): Promise<InferenceResult>
+
+Both follow the same skeleton (chatComplete shown; chatStream mirror with streamer-specific extras):
+  1. await waitForInFlight();            ← line 946 / 1051
+  2. await loadModel(model, opts);        ← line 948 / 1053
+  3. await getLlamaInstance();           ← line 950 / 1055
+  4. Create AbortController; set globals ← line 969-973 / 1072-1076
+  5. Create LlamaChatSession on shared contextSequence (getSharedSequence)
+  6. Set noteInferenceStats({ active: true }) — chatStream ONLY at line 1087
+  7. Define inferencePromise (async IIFE) with try/finally that:
+     a. session.prompt(lastUserMsg.content, { signal: abortController.signal, onTextChunk (chatStream only) })
+     b. on success: noteInferenceStats({ active: false, ... })
+     c. on error:   noteInferenceStats({ active: false }) + onChunk({done:true, error}) + throw (chatStream only)
+     d. finally: session.dispose?.(); clear globals if still ours
+  8. const clearInFlight = markInFlight(inferencePromise);  ← line 1015 / 1148
+  9. try { await inferencePromise; } finally { clearInFlight(); }
+
+CRITICAL: signal is passed to session.prompt (inference.ts:994 for chatComplete, 1102 for chatStream):
+  response = await session.prompt(lastUserMsg.content, {
+    maxTokens, temperature, topP: 0.9, repeatPenalty: 1.1,
+    signal: abortController.signal,
+    onTextChunk: (chunk) => { if (aborted) return; ... onChunk({content: chunk, done: false}); }  // chatStream only
+  });
+
+→ AbortController.signal IS propagated to node-llama-cpp via session.prompt({ signal }).
+→ node-llama-cpp is expected to honor the signal by rejecting its prompt() Promise with an AbortError.
+→ onTextChunk in chatStream also early-returns if signal.aborted (defensive).
+
+─────────────────────────────────────────────────────────────────────────────
+4.3 waitForInFlight / markInFlight (inference.ts:420-432)
+─────────────────────────────────────────────────────────────────────────────
+
+  async function waitForInFlight(): Promise<void> {
+    while (_inFlightPromise) {
+      try { await _inFlightPromise; } catch { /* ignore errors from previous request */ }
+    }
+  }
+  function markInFlight<T>(promise: Promise<T>): () => void {
+    _inFlightPromise = promise as Promise<any>;
+    return () => { if (_inFlightPromise === promise) _inFlightPromise = null; };
+  }
+
+→ There is ONE module-level `_inFlightPromise` (singular). The audit prompt's reference to `_inFlightRequests` (plural) is stale/incorrect — no such symbol exists. CONFIRMED by grep across /src/main.
+→ waitForInFlight loops until `_inFlightPromise` becomes null.
+→ markInFlight atomically assigns the promise; the returned cleanup only clears if still ours (avoids race where a later request overwrote).
+→ Catch in waitForInFlight swallows rejection of previous request — so abort of A does NOT block B's entry.
+
+─────────────────────────────────────────────────────────────────────────────
+4.4 RACE-1 (RACE): The serialization window is broken
+─────────────────────────────────────────────────────────────────────────────
+
+The lock sequence in chatStream (and chatComplete) is:
+  Line 1051: await waitForInFlight();         ← releases lock
+  Line 1053: await loadModel(model, opts);    ← may take seconds
+  ...
+  Line 1148: markInFlight(inferencePromise);  ← re-acquires lock
+
+Between line 1051 returning and line 1148 setting the lock, `_inFlightPromise` is null. A second chatStream B entering in this window will:
+  1. B's waitForInFlight() sees null → returns immediately.
+  2. B's loadModel() awaits A's _loadingPromise if A is still loading (separate lock).
+  3. After A's loadModel finishes, B's loadModel is idempotent (same model) or starts its own (different model).
+  4. B overwrites `_activeAbortController = B_controller` (line 1073) — A's controller is now orphaned.
+  5. B's session.prompt is created on the SAME `_ctxSequence` (via getSharedSequence, line 1198-1203 — single shared context sequence).
+  6. B's markInFlight(B_promise) overwrites `_inFlightPromise = B_promise`.
+
+Now both A and B are calling `session.prompt(...)` on the same shared LlamaContext sequence. node-llama-cpp's KV cache is not designed for concurrent prompts — output corruption or "context sequence in use" error is likely.
+
+Mitigation in practice:
+  - Renderer's NexChatPanel disables the Send button while isGenerating=true → user can't trigger two ai-chat-stream IPC calls concurrently via the standard UI.
+  - brainRoute (main.ts:948) returns EITHER 'agent' OR 'chat' — the renderer either starts an agent task OR calls aiChatStream, never both.
+  - HOWEVER: agent path (runTask → planner → runtime.chatStream at planner.ts:176) uses the SAME `getRuntime('llamacpp','default')` instance (core.ts:1986-1987). If a chat-stream call is mid-flight and an agent task starts planning (via agent-create-task IPC), the agent's planner chatStream would race with the chat path's chatStream.
+
+Expected reproduction: open DevTools, run:
+  window.nexAPI.agentCreateTask({...}) (returns taskId, runTask starts async)
+  window.nexAPI.aiChatStream({...}, [...])  (starts immediately, in parallel)
+→ Both call chatStream on the same default runtime. RACE on shared context sequence.
+
+─────────────────────────────────────────────────────────────────────────────
+4.5 RACE-2 (RACE): _activeAbortController orphaning
+─────────────────────────────────────────────────────────────────────────────
+
+Even if RACE-1 doesn't manifest, the `_activeAbortController = abortController` assignment at line 1073 (chatStream) or 970 (chatComplete) OVERWRITES any prior controller. If B starts after A but before A's markInFlight, B's controller becomes the "active" one. A's controller is unreachable from abortInference.
+
+If user clicks Stop during this overlap:
+  - abortInference fires B_controller.abort() (last assignment wins).
+  - A's inference keeps running (its controller was orphaned).
+  - A's session.prompt continues until natural completion.
+  - When A's inferencePromise settles, its finally block checks `if (_activeAbortController === abortController)` — FALSE (it's B's now) → does NOT clear the global.
+  - B's finally block will clear the global when B settles.
+
+Net effect: A's inference cannot be aborted via the global path. A becomes a "phantom" inference — it produces output but cannot be stopped. The user's Stop click stops B (the latest), but A continues consuming GPU/CPU.
+
+This is a RACE that produces "phantom inference" — the LLM keeps running after Stop, with no observable IPC token stream (the renderer's streamer for A was created but no further chunks arrive because abortInference cleared the global, so A's onTextChunk early-returns after abort fires for B).
+
+Actually wait — the abort fires for B's controller, NOT A's. So A's onTextChunk continues to push chunks. But the IPC handler for A already returned? No — the IPC handler awaits A's chatStream call. A's chatStream is still awaiting A's inferencePromise. The IPC response for A is still pending. When A's inference completes, A's chatStream resolves, the IPC handler sends {success:true, ...content, stopped:false} to the renderer.
+
+So the renderer would receive TWO IPC responses: A (success, full content) and B (failure, aborted). The renderer's state machine may or may not handle this gracefully — depends on `replyId` matching. Both IPC calls use `replyId = 'chat-${Date.now()}'` — different timestamps, different IDs. The renderer's `chat-token` listener for A's replyId would receive tokens for A even though the user "cancelled" — confusing.
+
+─────────────────────────────────────────────────────────────────────────────
+4.6 RACE-3 (RACE): chatStream + agent's planner.chatStream on same runtime
+─────────────────────────────────────────────────────────────────────────────
+
+Planner (planner.ts:175-182):
+  if (request.onToken) {
+    result = await runtime.chatStream(context.messages, (chunk) => {
+      if (chunk.error) return;
+      request.onToken!(chunk.content || '');
+    }, chatOpts);
+  } else {
+    result = await runtime.chat(context.messages, chatOpts);
+  }
+
+runtime is obtained by runTask at core.ts:329: `const runtime = await getRuntime(task.backend);` where `getRuntime` (core.ts:1984-1991):
+  async function getRuntime(backend: 'local' | 'online' = 'local'): Promise<AIRuntime> {
+    if (backend !== 'online') {
+      const { getDefaultRuntime } = await import('../ai/runtime');
+      return getDefaultRuntime();   // ← getRuntime('llamacpp', 'default')
+    }
+    const { getRuntime: getFromRegistry } = await import('../ai/runtime');
+    return getFromRegistry('online', 'agent-shared');   // ← distinct from chat's 'chat-shared'
+  }
+
+→ Local: agent and chat BOTH use `getRuntime('llamacpp', 'default')` — SAME instance, SAME shared model state, SAME _ctxSequence.
+→ Online: agent uses 'agent-shared', chat uses 'chat-shared' — DIFFERENT instances.
+
+For LOCAL backend, if a chat-stream is mid-flight and an agent task starts planning:
+  - chat path holds _inFlightPromise.
+  - agent's planner.chatStream calls waitForInFlight → awaits the chat inference.
+  - After chat finishes, agent's planner.chatStream runs.
+  - Serialized correctly IF the race window (4.4) is not hit.
+
+If chat-stream starts WHILE agent's planner is mid-flight:
+  - agent's planner holds _inFlightPromise.
+  - chat's aiChatStream → runtime.chatStream → waitForInFlight → awaits planner inference.
+  - After planner finishes, chat inference runs.
+  - Correctly serialized.
+
+So serialization IS preserved across chat vs agent paths for local backend, ASSUMING RACE-1's window is not hit. The risk is the WINDOW — chat and agent both pass waitForInFlight before either marks in-flight. This would only happen if both calls enter the chatStream function within microseconds of each other (before either awaits loadModel — but loadModel is awaited BEFORE setting _activeAbortController and BEFORE markInFlight).
+
+Actually, the loadModel call IS awaited between waitForInFlight and markInFlight. If chat's loadModel is in progress and agent's chatStream enters, agent's waitForInFlight sees null (chat hasn't marked yet) → returns. Agent's loadModel awaits chat's _loadingPromise (the separate load lock). After chat's loadModel finishes, agent's loadModel continues. Both proceed to markInFlight — race.
+
+The `_loadingPromise` lock saves the load phase. But the inference phase (after load) has no such lock until markInFlight is called.
+
+For ONLINE backend, chat uses 'chat-shared' and agent uses 'agent-shared' — DIFFERENT OnlineRuntime instances. Each has its own _inFlight and _aborted. So chat and agent online paths DON'T share state. They run parallel HTTP requests. No conflict on shared context (HTTP is stateless).
+
+─────────────────────────────────────────────────────────────────────────────
+4.7 BUG-GAP-2 (RE-CONFIRMED): agent-cancel-task does NOT abort LLM inference
+─────────────────────────────────────────────────────────────────────────────
+
+cancelTask (core.ts:1841-1850):
+  export function cancelTask(taskId: string, reason?: string): boolean {
+    const token = _cancellationTokens.get(taskId);
+    if (!token) return false;
+    const task = _activeTasks.get(taskId);
+    if (task) {
+      task.cancelled = true;
+      task.cancelReason = reason || 'cancelled by user';
+    }
+    return token.cancel(reason);
+  }
+
+CancellationToken (agent/types.ts:335-367):
+  cancel: (reason) => { ...; for (listener of token.listeners) { listener(); }; ... }
+  onCancel: (listener) => { if (cancelled) listener(); else listeners.push(listener); }
+  throwIfCancelled: () => { if (cancelled) throw new Error('Agent cancelled: ...'); }
+
+Grep across /src/main for `token.onCancel` and `onCancel(`:
+  - /src/main/tasks/queue.ts:594 — `token?.onCancel(() => resolve());` (queue's cancelCheck)
+  - /src/main/agent/types.ts:330, 350, 351 — definition of onCancel
+  → ZERO usages of `token.onCancel` in /src/main/agent/.
+  → No listener is registered to call `abortInference()` when the agent task is cancelled.
+
+Cancellation checkpoints in runTask/executeStep:
+  - core.ts:320 — token.throwIfCancelled() at start of runTask (after planning_started emit, before loadModel)
+  - core.ts:490 — token.throwIfCancelled() at start of each step iteration
+  - core.ts:828 — checkpoint 2 in executeStep (start)
+  - core.ts:841 — checkpoint 3 (before permission request)
+  - core.ts:937 — checkpoint 4 (before tool execution)
+  - core.ts:986 — checkpoint 5 (after tool execution)
+  - core.ts:1232 — checkpoint 6 (before ReAct LLM call)
+  - core.ts:1262 — checkpoint 7 (after ReAct LLM call)
+
+NO checkpoint is registered INSIDE the LLM call (planner.chatStream, react.chat, or tool execution). Mid-inference cancel = wasted tokens until natural completion. Agent loop only sees the cancellation at the NEXT checkpoint (after the LLM call returns).
+
+This confirms BUG-GAP-2 from the Phase 16 audit (worklog line ~3009):
+  "Agent inference cancel: cancelTask does NOT abort LLM inference. Mid-inference cancel = wasted LLM tokens until natural completion. The renderer's handleStop works around this by calling BOTH `aiChatStreamCancel` AND `agentCancelTask`..."
+
+The workaround in NexChatPanel.tsx:1027-1039 calls both:
+  1. ttsCancelledRef.current = true
+  2. wasVoiceInputRef.current = false
+  3. window.nexAPI.aiChatStreamCancel()         ← aborts inference (local + chat-shared online)
+  4. window.nexAPI.agentCancelTask(activeAgentTaskRef.current, 'User cancelled')  ← cancels agent token
+  5. window.nexAPI.voiceConversationStopSpeaking()
+
+So the chat-panel Stop button does both. But:
+  - Any UI that only calls `agentCancelTask` (e.g. task-queue-cancel via the Task Queue UI) does NOT abort inference.
+  - `task-queue-cancel` (main.ts:5392) → queueCancelTask (queue.ts:302) → token.cancel() + `_agentCancelTaskFn(agentTaskId, reason)` (which is agent core's cancelTask). Neither path calls abortInference.
+  - `task-queue-cancel-all` (main.ts:5398) → queueCancelAllTasks → same.
+  - `agent-cancel-task` directly → cancelTask → token.cancel() → no inference abort.
+
+The chat-panel Stop is the ONLY path that aborts inference for agent tasks. Any other cancel UI leaves the LLM running.
+
+─────────────────────────────────────────────────────────────────────────────
+4.8 BUG-GAP-3 (NEW): online agent tasks are not abortable via ai-chat-stream-cancel
+─────────────────────────────────────────────────────────────────────────────
+
+ai-chat-stream-cancel (main.ts:923-938):
+  ipcMain.handle('ai-chat-stream-cancel', async () => {
+    try {
+      localAbort('ipc:ai-chat-stream-cancel');
+      const { getRuntime } = await import('./ai/runtime');
+      try { getRuntime('llamacpp', 'default').abort(); } catch { /* not loaded */ }
+      try { getRuntime('online', 'chat-shared').abort(); } catch { /* not created */ }
+      return { success: true };
+    } catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+→ Only aborts 'online', 'chat-shared'. Does NOT abort 'online', 'agent-shared'.
+→ For an online-backend agent task, clicking Stop on chat panel:
+  - localAbort → abortInference (no-op since no local inference is running)
+  - getRuntime('llamacpp','default').abort() → no-op (no local model loaded for online path)
+  - getRuntime('online','chat-shared').abort() → sets _aborted=true on chat-shared instance (no chat running)
+  - agentCancelTask(activeAgentTaskRef) → token.cancel() (no inference abort)
+  - Result: the agent's OnlineRuntime.chatStream on 'agent-shared' continues; HTTP request to GLM/OpenAI/Claude keeps going until natural completion.
+
+For local-backend agent tasks:
+  - localAbort → abortInference → fires the active abortController (since agent's planner.chatStream uses the local default runtime which shares _activeAbortController).
+  - So local-backend agent planner inference IS abortable via aiChatStreamCancel — because the abortController is global.
+
+Net: local agent's planner inference CAN be aborted (via the shared global _activeAbortController); online agent's planner inference CANNOT be aborted (separate OnlineRuntime instance, separate _aborted flag, ai-chat-stream-cancel doesn't touch it).
+
+─────────────────────────────────────────────────────────────────────────────
+4.9 BUG-GAP-4 (NEW): OnlineRuntime.abort() does NOT abort the HTTP request
+─────────────────────────────────────────────────────────────────────────────
+
+OnlineRuntime.abort (online-runtime.ts:131-136):
+  abort(): void {
+    this._aborted = true;
+    // The transport itself is a single HTTP round-trip; flag-based abort is
+    // the best we can do without SSE. In-flight result is still returned but
+    // marked aborted.
+  }
+
+The transport (online-transport.ts:34-66 → createRouteChatTransport):
+  - Calls `routeChat` (provider.ts:80) → `chatCompletion` (ai-service.ts:56)
+  - `chatCompletion` calls `callGLM` / `callOpenAI` / `callClaude` (ai-service.ts:66-72)
+  - Each uses Electron's `net.request` (NOT fetch). The `net.request` API does NOT support an AbortSignal — there is no way to abort the in-flight HTTP request from JavaScript.
+
+So `OnlineRuntime.abort()` is purely advisory:
+  - Sets `_aborted = true` (per-instance).
+  - The HTTP roundtrip continues to completion (could be 10-30s for a long LLM response).
+  - When the result returns, chat() checks `_aborted` and sets `stopped: false` and `finishReason: 'aborted'` (online-runtime.ts:97-99).
+  - chatStream (online-runtime.ts:115-129) loops through pre-fetched lines; checks `if (this._aborted) break;` to skip emitting chunks. The full HTTP response is still consumed.
+
+CLEANUP LEAK: tokens + bandwidth are wasted on cancelled online requests. For online-mode agent tasks, the user's Stop click doesn't actually stop the API call — they keep getting billed for tokens they didn't see.
+
+Fix recommendation: refactor `chatCompletion`/`callGLM`/`callOpenAI`/`callClaude` to accept an AbortSignal (or use `fetch()` with signal). `net.request` supports an `abort()` method on the request object — but it's not exposed through the current chatCompletion signature.
+
+─────────────────────────────────────────────────────────────────────────────
+4.10 BUG-GAP-5 (NEW): Planner silently swallows abort and returns fallback plan
+─────────────────────────────────────────────────────────────────────────────
+
+planner.ts:146-246 (generatePlan):
+  try {
+    ...
+    if (request.onToken) {
+      result = await runtime.chatStream(context.messages, (chunk) => {...}, chatOpts);
+    } else {
+      result = await runtime.chat(context.messages, chatOpts);
+    }
+    ...
+    return plan;
+  } catch (err: any) {
+    console.error('[PLANNER_ERROR] Planner threw:', err.message);
+    console.error('[PLANNER_ERROR] stack:', err.stack?.split('\n').slice(0, 5).join('\n'));
+    AgentLogger.error(`Planner failed: ${err.message}`);
+    return fallbackPlan(request.userRequest, err.message);
+  }
+
+If abort fires during the planner's LLM call:
+  - For LOCAL: chatStream rejects with AbortError → catch → fallbackPlan returned.
+  - For ONLINE: chatStream returns the full result (since HTTP completes); _aborted flag is set but doesn't cause an error → no fallbackPlan; planner proceeds with the (potentially truncated/incomplete) JSON; parsePlanResponse may fail → fallbackPlan.
+
+The fallback plan executes heuristic patterns on the user's request (planner.ts:366-531):
+  - "create folder" pattern → write_file tool call
+  - "read file" pattern → search_files + list_directory + read_file + open_file_in_editor
+  - "list directory" pattern → list_directory tool call
+  - No match → empty plan → task fails with 0 tool calls (line 514-522)
+
+So if the user clicks Stop during planning and only `aiChatStreamCancel` is called (not `agentCancelTask`), the agent's planner catches the AbortError and runs a HEURISTIC FALLBACK plan — potentially doing file ops the user explicitly cancelled!
+
+The agent's runTask then enters the step loop. The first iteration calls `token.throwIfCancelled()` at line 490 — IF token.cancelled (only true if agentCancelTask was called), this throws AGENT_CANCELLED → caught by runTask's catch (line 730-746) → status='cancelled'.
+
+So the agent's behavior on Stop:
+  - chat-panel Stop (calls BOTH aiChatStreamCancel + agentCancelTask):
+    * aiChatStreamCancel aborts the planner's chatStream.
+    * agentCancelTask sets token.cancelled=true.
+    * planner catch → returns fallbackPlan.
+    * runTask while loop: token.throwIfCancelled() throws AGENT_CANCELLED.
+    * Agent cancels correctly. NO fallback plan executed.
+  - task-queue UI cancel (calls only agentCancelTask via queueCancelTask):
+    * token.cancelled=true, but no abortInference.
+    * planner's chatStream continues (HTTP or local inference continues).
+    * When inference completes, planner returns real plan.
+    * runTask while loop: token.throwIfCancelled() throws AGENT_CANCELLED.
+    * Agent cancels. LLM tokens were wasted.
+  - Hypothetical UI calling only aiChatStreamCancel during planning:
+    * AbortController fires. Local chatStream rejects with AbortError.
+    * Planner catch → returns fallbackPlan.
+    * runTask while loop: token.throwIfCancelled() — but token NOT cancelled (only abort was fired).
+    * Agent proceeds to execute fallback plan. BUG: user's stop turned into a heuristic file-op plan.
+
+This third scenario is theoretical (no UI currently calls only aiChatStreamCancel for agent tasks), but it's a fragile API. The fix: planner should check `token.throwIfCancelled()` after the LLM call and before returning fallbackPlan, AND/OR throw the abort error instead of returning fallbackPlan when the error is AbortError.
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 17 ITEM 5 — STOP/CANCEL + COMPLETE INFERENCE CLEANUP
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+5.1 Stop click sequence (NexChatPanel.tsx:1027-1039)
+─────────────────────────────────────────────────────────────────────────────
+
+  const handleStop = useCallback(() => {
+    ttsCancelledRef.current = true;            // 1. prevent new TTS for this request
+    wasVoiceInputRef.current = false;          // 2. no TTS for cancelled request
+    window.nexAPI.aiChatStreamCancel().catch(() => {});                       // 3. abort inference
+    if (activeAgentTaskRef.current) {
+      window.nexAPI.agentCancelTask?.(activeAgentTaskRef.current, 'User cancelled').catch(() => {});  // 4. cancel agent
+    }
+    window.nexAPI?.voiceConversationStopSpeaking?.()?.catch?.(() => {});     // 5. stop TTS playback
+  }, []);
+
+Cascade analysis:
+  1. Sets a ref flag — synchronous.
+  2. Sets a ref flag — synchronous.
+  3. IPC call to main 'ai-chat-stream-cancel' (async). Main handler runs localAbort + getRuntime('llamacpp','default').abort() + getRuntime('online','chat-shared').abort(). Returns {success:true}.
+  4. IPC call to main 'agent-cancel-task' with the active task ID (if any). Main handler calls cancelTask(taskId, reason) from agent/core.ts. Sets task.cancelled=true, fires token.cancel(). Returns {success: ok}.
+  5. IPC call to main 'voice-conversation-stop-speaking'. Main handler calls engine.stopSpeaking() + broadcasts 'voice-tts-stop-playback' to renderer.
+
+All 5 are fired in parallel (no awaits between them). Each IPC is a separate round-trip. The main process receives them in order (IPC is FIFO per channel, but each channel is independent).
+
+The renderer does NOT await any of these — they're fire-and-forget. The Stop button does NOT block on the response. This is OK because each operation is idempotent and best-effort.
+
+─────────────────────────────────────────────────────────────────────────────
+5.2 Does Stop cascade to ALL in-flight operations?
+─────────────────────────────────────────────────────────────────────────────
+
+In-flight operations that handleStop touches:
+  - Local llama.cpp inference: YES (localAbort → abortInference → _activeAbortController.abort()).
+  - Chat-shared OnlineRuntime HTTP request: PARTIALLY (getRuntime('online','chat-shared').abort() sets _aborted flag — HTTP continues, but no chunks emitted to renderer; tokens wasted).
+  - Agent-shared OnlineRuntime HTTP request: NO (not touched by ai-chat-stream-cancel; only chat-shared is aborted).
+  - Agent's planner chatStream (local): YES (shared _activeAbortController fires for whatever inference is currently using it).
+  - Agent's react chat (local): YES (same _activeAbortController).
+  - Agent's planner/react (online): NO (different runtime instance, not aborted).
+  - Agent's token (cancellation token): YES (agentCancelTask → token.cancel()).
+  - Piper TTS synthesis (if running): YES (voiceConversationStopSpeaking → engine.stopSpeaking → ttsProvider.stop() — kills piper subprocess).
+  - Renderer's <audio> element (if playing): PARTIALLY (voice-tts-stop-playback IPC → renderer's audio.pause() — depends on renderer wiring).
+  - Voice conversation state machine: NO (abortCurrentTurn is NOT called by handleStop — only voiceConversationStopSpeaking). The conversation FSM stays in 'speaking' state until TTS audio finishes or is interrupted. This is OK for the chat panel — the voice conversation is a separate UI.
+
+In-flight operations that handleStop DOES NOT touch:
+  - Task Queue items (task-queue-cancel is NOT called by handleStop — only agentCancelTask).
+  - Other concurrent agent tasks (only activeAgentTaskRef.current is cancelled).
+  - Model loading (if a loadModel is in progress via _loadingPromise, it continues — but this is rarely in-flight during chat).
+  - ReAct loop's LLM call (mid-inference, no abort propagation — see BUG-GAP-2).
+
+─────────────────────────────────────────────────────────────────────────────
+5.3 CLEANUP-LEAK-2: Stop leaves inflight state when abort fires but noteInferenceStats doesn't run
+─────────────────────────────────────────────────────────────────────────────
+
+chatStream try/catch/finally (inference.ts:1089-1146):
+  try {
+    const response = await session.prompt(...);
+    ...
+    noteInferenceStats({ ...active: false });  ← line 1120-1125 (success path)
+    return {...};
+  } catch (err) {
+    noteInferenceStats({ active: false });      ← line 1135 (error path)
+    onChunk({ done: true, error: err.message });
+    throw err;
+  } finally {
+    try { (session as any).dispose?.(); } catch {...}
+    if (_activeAbortController === abortController) {
+      _activeAbortController = null;
+      _activeRequestId = null;
+      _activeRequestCreatedAt = 0;
+    }
+  }
+
+→ noteInferenceStats({active:false}) runs in BOTH success AND error paths. If abort fires, session.prompt rejects with AbortError → catch → active:false → throw → finally clears globals. CLEAN.
+
+BUT: chatComplete (inference.ts:985-1013) has NO catch block, only try/finally:
+  try {
+    response = await session.prompt(...);
+    ...
+    noteInferenceStats({ ...active: false });  ← line 999-1004 (success only)
+  } finally {
+    try { (session as any).dispose?.(); } catch {...}
+    if (_activeAbortController === abortController) {
+      _activeAbortController = null; ...
+    }
+  }
+
+→ chatComplete NEVER sets active:false on error. But chatComplete never sets active:true either (the setup block at 968-973 doesn't include noteInferenceStats({active:true})). Only chatStream sets active:true (line 1087). So chatComplete's error path leaves active flag untouched — which is consistent (chatComplete doesn't claim to be active).
+
+HOWEVER: LlamaCppRuntime.chat (llamacpp-runtime.ts:51-65) wraps `_chatComplete` and on success sets `noteInferenceStats({active:false, ...})` (line 57-63). On error, it has no catch — the error propagates up. So if `_chatComplete` rejects (e.g. AbortError), LlamaCppRuntime.chat throws without setting active:false.
+
+This means: if a chat-stream was active:true, then a chatComplete runs and aborts, the active flag stays true (since chatComplete didn't reset it). Subsequent callers reading `inferenceActive` would see true even though no inference is actually running.
+
+PRACTICAL FIX: chatComplete's finally should also call noteInferenceStats({active:false}) defensively. Or: chatComplete should set active:true at start and active:false on settle, mirroring chatStream.
+
+INSTRUMENTATION GAP-1 (chatComplete doesn't track active state):
+  - chatComplete (inference.ts:935) does NOT call noteInferenceStats({active:true}) before inference.
+  - chatComplete's finally does NOT call noteInferenceStats({active:false}) on error.
+  - Only chatStream manages the active flag (line 1087 true, line 1124 or 1135 false).
+  - LlamaCppRuntime.chat (llamacpp-runtime.ts:57) sets active:false only on success.
+  - Effect: when planner/react-loop calls runtime.chat (non-streaming), the inferenceActive UI flag is NEVER set to true during the call. The UI cannot tell when a non-streaming inference is in progress. (Planner/ReAct calls happen for agent tasks; the UI shows "thinking" via the agent's `planning_started` event, so this gap is not user-visible.)
+
+─────────────────────────────────────────────────────────────────────────────
+5.4 waitForInFlight releasing on abort
+─────────────────────────────────────────────────────────────────────────────
+
+  async function waitForInFlight(): Promise<void> {
+    while (_inFlightPromise) {
+      try { await _inFlightPromise; } catch { /* ignore errors from previous request */ }
+    }
+  }
+
+The await wraps in try/catch — even if the previous request rejects with AbortError, waitForInFlight swallows it and continues the loop. The loop exits when `_inFlightPromise === null` (cleared by the previous request's markInFlight cleanup).
+
+→ waitForInFlight correctly releases on abort. The next request can proceed immediately after the previous request's inferencePromise settles (success or abort). No hang.
+
+If `_inFlightPromise` is set but the previous request's clearInFlight() never runs (e.g. inferencePromise never settles — hang in node-llama-cpp), waitForInFlight would hang forever. But this would indicate a node-llama-cpp bug, not a NEX AI bug. The abort signal should force session.prompt to reject.
+
+─────────────────────────────────────────────────────────────────────────────
+5.5 Timers NOT cleared on cancel
+─────────────────────────────────────────────────────────────────────────────
+
+Audited all setTimeout/setInterval in /src/main for cleanup on cancel:
+
+  - core.ts:309 TASK_TIMEOUT_MS timer (5min default):
+    Cleared in finally (line 769) — `clearTimeout(timeoutTimer)`. unref'd at line 316.
+    If cancelTask fires before timeout: timeoutFired stays false, but the timer is cleared in runTask's finally when runTask exits. CLEAN.
+
+  - core.ts:787 scheduleTaskEviction (5min after task terminal):
+    `setTimeout(..., 5*60*1000)` with unref (line 796). Cleared? NOT explicitly. The timer fires after 5 min and tries to delete the task from _activeTasks. If the task is already deleted (e.g. via deleteTask), the lookup returns undefined and the timer is a no-op. The timer is not stored anywhere — it just runs once and is GC'd. No leak (timer is unref'd so doesn't keep process alive).
+
+  - nex-voice-conversation.ts:163 ttsPlaybackTimeout (30s safety):
+    Cleared in releaseTtsPlaybackWait (line 635-637) via clearTimeout. Called by notifyTtsPlaybackEnded, abortCurrentTurn, handleInterruption, and waitForTtsPlayback's own timeout. CLEAN.
+
+  - nex-voice-conversation.ts:663 handleInterruption setTimeout(50ms):
+    `setTimeout(() => this.handleUserUtterance(text), 50)`. NOT cleared on cancel. If abortCurrentTurn is called within 50ms of an interruption, the setTimeout fires anyway and calls handleUserUtterance — which starts a new turn even though the user cancelled.
+    MINOR LEAK — 50ms window. The handleUserUtterance would enterListening + processUserUtterance, but since the conversation is now 'idle' (abortCurrentTurn set it to idle), it would just call setState('listening') and start STT. The user would see the conversation restart listening.
+    Fix: store the timer and clear it in abortCurrentTurn.
+
+  - nex-voice-conversation.ts:747 captureVoiceConfirmation 10s timeout:
+    The fallback path uses `setTimeout(() => { ...; resolve(''); }, 10000)`. Cleared in the onUserUtterance callback (line 753). But if abortCurrentTurn is called during capture, the timeout is NOT cleared. The capture promise resolves after 10s with empty string — delayed but not hung.
+    CLEANUP LEAK (minor): 10s timeout fires even after cancel. The pendingPermission flag is cleared on timeout (line 748). The orig callbacks are restored (line 755). The resolve('') triggers the caller (PermissionGate.respondViaVoice) to receive empty string — treated as no confirmation. Permission denied gracefully. OK.
+
+  - queue.ts:79 _persistDebounce (200ms):
+    Cleared in shutdownTaskQueue (line 180-182). CLEAN.
+
+  - snapshot-service.ts:395 _cleanupTimer (24h setInterval):
+    Cleared in stopSnapshotCleanupInterval (line 414). Called from main.ts:6421 in before-quit. CLEAN.
+
+  - nex-voice-conversation.ts:747 + 163: both setTimeouts are NOT cleared on abortCurrentTurn — MINOR cleanup leak (50ms + 10s).
+
+─────────────────────────────────────────────────────────────────────────────
+5.6 cancelTask propagation: token.cancel() AND abortInference?
+─────────────────────────────────────────────────────────────────────────────
+
+cancelTask (core.ts:1841-1850):
+  - Sets task.cancelled = true.
+  - Calls token.cancel(reason) — fires listeners (none registered for inference abort).
+  - Returns boolean.
+
+→ cancelTask does NOT call abortInference(). Token.cancel() does NOT trigger inference abort.
+→ The agent loop's cooperative cancellation only takes effect at the next `token.throwIfCancelled()` checkpoint.
+→ If the agent is mid-LLM-call (planner, react, or tool execution that calls inference internally), the inference continues until natural completion.
+
+Inference abort for agent tasks must be triggered by a separate path (aiChatStreamCancel). The renderer's handleStop does both.
+
+Expected fix: register `token.onCancel(() => abortInference('agent task cancelled'))` in createTask (core.ts:151) — this would fire abortInference immediately when the token is cancelled, propagating cancel to the LLM call in progress.
+
+CAVEAT: This would also abort any concurrent chat-stream inference (since _activeAbortController is global). If a user has both a chat-stream AND an agent task running concurrently (race scenarios from 4.4-4.6), cancelling the agent would also abort the chat. This is actually desirable (the user's intent is to stop everything).
+
+─────────────────────────────────────────────────────────────────────────────
+5.7 App shutdown cleanup (before-quit at main.ts:6379-6443)
+─────────────────────────────────────────────────────────────────────────────
+
+before-quit handler (lines 6379-6443):
+  1. event.preventDefault() — keeps app alive for async shutdown.
+  2. Re-entry guard (_shuttingDown).
+  3. cancelAllActiveTasks('Application shutting down') — agent/core.ts:1859.
+  4. shutdownTaskQueue() — queue.ts:166. Cancels running items + saves state.
+  5. closeAllSessions() for Playwright browser (best-effort).
+  6. closeAllSessions() for computer sessions (best-effort).
+  7. stopSnapshotCleanupInterval() — clears 24h interval.
+  8. Dispose semantic memory (flush + clear 30s interval).
+  9. shutdownLlama() — inference.ts:871. Sets _isShuttingDown=true. Awaits _loadingPromise. Calls unloadModel (awaits waitForInFlight). Disposes _llama. Sets _isShuttingDown=false.
+  10. finally: terminalService.killAll(); app.exit(0).
+
+Cancellation cascade on shutdown:
+  - cancelAllActiveTasks: cancels each non-terminal agent task's token. Token fires listeners (none registered for inference abort). → Agent loops see cancellation at next checkpoint. BUT: if an agent is mid-LLM-call, the inference keeps running.
+  - shutdownTaskQueue: cancels queue's running items (sets their tokens + calls _agentCancelTaskFn for agent-kind). Same limitation.
+  - shutdownLlama:
+    * Sets _isShuttingDown=true → future loadModel() calls will throw.
+    * Awaits _loadingPromise (any in-progress model load).
+    * Calls unloadModel() → awaits waitForInFlight() → awaits any in-flight inference.
+    * If an inference is in-flight (e.g. agent's planner chatStream still running because cancel didn't abort it), unloadModel WAITS for it to complete naturally. This could take 30+ seconds for a long LLM generation.
+    * Once in-flight is clear, unloadModel disposes context + model.
+    * Then shutdownLlama disposes _llama engine.
+
+CLEANUP-LEAK-3 (shutdown hang risk): If an agent task is mid-LLM-call during shutdown, cancelAllActiveTasks doesn't abort the inference (BUG-GAP-2), and shutdownLlama→unloadModel→waitForInFlight waits for it to complete naturally. The app shutdown blocks until the LLM finishes. For a long generation (30s+), the user sees a hung app for 30s on quit.
+
+Fix: register `token.onCancel(() => abortInference())` in createTask. Then cancelAllActiveTasks would immediately abort the in-flight LLM, and shutdownLlama would proceed without waiting.
+
+ALTERNATIVE: in before-quit, explicitly call `abortInference('app shutdown')` BEFORE shutdownLlama. This would abort any in-flight local inference, allowing waitForInFlight to return immediately. (Doesn't help for online requests — those continue regardless.)
+
+─── NexChatPanel's agent-event cleanup (NexChatPanel.tsx:604-624) ───
+
+On task_cancelled event:
+  - voiceController.setCondition('agent', 'cancelled')
+  - setTimeout(() => voiceController.clearCondition('agent'), 1500)  ← not cleared on unmount
+  - activeAgentTaskRef.current = null
+  - setIsGenerating(false), setChatStreaming(false)
+  - ttsCancelledRef.current = true
+  - wasVoiceInputRef.current = false
+
+The setTimeout for clearing the 'agent' voice condition is NOT cleared on component unmount. If the component unmounts within 1500ms, the timer fires and calls voiceController.clearCondition('agent') on a possibly-unmounted component. voiceController is a singleton service, so this is safe but wasteful (orphaned timer). MINOR.
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 17 ITEM 6 — CONCURRENT INFERENCE + STATE CONFLICT PREVENTION
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+6.1 waitForInFlight serialization (inference.ts:420-432)
+─────────────────────────────────────────────────────────────────────────────
+
+Re-audited: see 4.3 above.
+  - Single `_inFlightPromise` per inference.ts module (NOT per-instance, NOT per-request).
+  - All LlamaCppRuntime instances share the same _inFlightPromise (since LlamaCppRuntime is a thin wrapper around inference.ts module-level singletons).
+  - chatComplete and chatStream both use the same _inFlightPromise.
+
+→ The serialization is at the module level, NOT per-runtime-instance. Even if you create 10 LlamaCppRuntime instances, they all serialize via the same _inFlightPromise.
+
+→ Two concurrent `ai-chat-stream` IPC calls:
+  - A enters chatStream → waitForInFlight returns null → proceeds to loadModel + inference.
+  - B enters chatStream → waitForInFlight awaits A's _inFlightPromise.
+  - A's inference completes → _inFlightPromise cleared → B's loop exits.
+  - B proceeds to its own loadModel + inference.
+  - SERIAL (assuming no race window from 4.4).
+
+→ If both calls enter the function within the race window (4.4), both pass waitForInFlight, both call loadModel concurrently (protected by _loadingPromise), then both proceed to inference — RACE on shared context sequence (4.4).
+
+─────────────────────────────────────────────────────────────────────────────
+6.2 LlamaCppRuntime has NO internal locks (llamacpp-runtime.ts)
+─────────────────────────────────────────────────────────────────────────────
+
+LlamaCppRuntime class fields:
+  readonly type, capabilities, _initialized (boolean).
+
+NO private locks, NO per-instance state. All model state is read from inference.ts module-level singletons (`_getLoadedModel()`, `_getLoadedModelInfo()`).
+
+`abort()` calls `_abortInference('LlamaCppRuntime.abort()')` — same module-level abortInference, same global _activeAbortController.
+
+→ LlamaCppRuntime is a stateless facade. Two LlamaCppRuntime instances (e.g. 'default' and 'agent-shared') would share ALL state via inference.ts module-level singletons. Creating multiple instances via getRuntime('llamacpp', ...) does NOT give you separate model state — they all share the same _loadedModel, _loadedContext, _activeAbortController, _inFlightPromise.
+
+This is documented in llamacpp-runtime.ts:1-8: "Phase 86 P0-3: _loadedModel field REMOVED. All model state is read from inference.ts (single source of truth)."
+
+→ The registry's instanceId for 'llamacpp' is purely a namespace for the JS object — NOT for separate model state. Calling `getRuntime('llamacpp', 'agent-shared')` returns a NEW LlamaCppRuntime instance, but it shares the same model state as `getRuntime('llamacpp', 'default')`.
+
+In practice, only `getRuntime('llamacpp', 'default')` is used (chat path: main.ts:838/842; agent path: core.ts:1987). The 'agent-shared' instanceId is only used for ONLINE backend (core.ts:1990). So there's only ONE LlamaCppRuntime instance in the registry — `default`.
+
+─────────────────────────────────────────────────────────────────────────────
+6.3 _activeTasks Map (core.ts:96)
+─────────────────────────────────────────────────────────────────────────────
+
+  const _activeTasks = new Map<string, AgentTask>();
+  const _cancellationTokens = new Map<string, CancellationToken>();
+
+→ ONE map of active tasks per agent core module. Multiple concurrent agent tasks are stored as separate entries in this map.
+→ runTask(taskId) retrieves the task by id and runs synchronously (one task per runTask invocation). Multiple concurrent runTask calls (e.g. from task queue with maxConcurrent=2) operate on different tasks — they don't share task state.
+→ HOWEVER: each runTask calls runtime.loadModel (idempotent via _loadingPromise) and runtime.chatStream (serialized via _inFlightPromise). So two concurrent agent tasks SHARE the underlying model and inference lock.
+→ If two agent tasks both run planner.chatStream concurrently, they serialize via _inFlightPromise (B waits for A). Then B's planner runs. Then both proceed to step execution.
+→ The task queue's worker pool (maxConcurrent=2) ALLOWS two agent tasks to run concurrently. They share the LLM — serialized. Net throughput is 1 task at a time on the LLM (the other blocks on _inFlightPromise).
+
+This is acceptable but not optimal — the queue's maxConcurrent=2 gives the illusion of parallelism, but LLM calls are serialized. Two concurrent agent tasks would have their LLM calls serialized, but their tool execution (file I/O, command execution) could run in parallel between LLM calls.
+
+─────────────────────────────────────────────────────────────────────────────
+6.4 Tasks queue worker pool (queue.ts:487-497)
+─────────────────────────────────────────────────────────────────────────────
+
+  function spawnWorkers(): void {
+    while (_workerCount < _config.maxConcurrent && _queue.length > 0) {
+      const item = dequeue();
+      if (!item) break;
+      _workerCount++;
+      runItem(item).finally(() => {
+        _workerCount--;
+        spawnWorkers();
+      });
+    }
+  }
+
+→ maxConcurrent=2 (DEFAULT_QUEUE_CONFIG, types.ts). Two workers can run items concurrently.
+→ runItem (queue.ts:512-541):
+  - Sets status='running', _running.set(item.id, item).
+  - For agent-kind: calls runAgentItem (awaits agent's terminal event or cancellation).
+  - For function-kind: calls runFunctionItem (calls the registered function).
+  - finally: _running.delete(item.id).
+
+→ For agent-kind: runAgentItem (queue.ts:547-626):
+  - Sets up a `finished` promise that resolves on agent's task_completed/failed/cancelled event.
+  - Calls `_agentRunTaskFn(agentTaskId)` — which is `runTask(agentTaskId)` (main.ts:6184 wiring).
+  - Awaits `Promise.race([finished, cancelCheck])` where cancelCheck resolves when token.onCancel fires.
+  - When the agent task completes/cancels, finished resolves, worker slot is freed.
+
+→ Two concurrent agent tasks: both call runTask → both call runtime.loadModel (idempotent) → both call runtime.chatStream → serialized via _inFlightPromise. So the queue's parallelism is limited by the LLM serialization.
+
+→ runItem's finally deletes from _running, but `_workerCount` is decremented in spawnWorkers's finally (line 493). Both run synchronously after runItem settles. CLEAN.
+
+Edge case (worklog line ~2888 already documented): "if the function hangs forever and never resolves, `_running.delete` is never called and `_workerCount` never decrements — that slot is permanently consumed."
+
+─────────────────────────────────────────────────────────────────────────────
+6.5 Runtime instance pool — 'default', 'chat-shared', 'agent-shared' (runtime.ts:161-187)
+─────────────────────────────────────────────────────────────────────────────
+
+  const _instances = new Map<string, AIRuntime>(); // keyed by `${type}:${instanceId}`
+
+  export function getRuntime(type: RuntimeType = 'llamacpp', instanceId: string = 'default'): AIRuntime {
+    const key = `${type}:${instanceId}`;
+    let instance = _instances.get(key);
+    if (!instance) {
+      const factory = _factories.get(type);
+      if (!factory) throw new Error(...);
+      instance = factory();
+      _instances.set(key, instance);
+    }
+    return instance;
+  }
+
+Instances actually created (via grep):
+  - getRuntime('llamacpp', 'default') — chat path (main.ts:838/842), agent local backend (core.ts:1987), startup preload (main.ts:6325)
+  - getRuntime('online', 'chat-shared') — chat online path (main.ts:854)
+  - getRuntime('online', 'agent-shared') — agent online backend (core.ts:1990)
+
+→ For llamacpp: only 'default' is used. Even though the registry supports multiple instanceIds, only one is created. All llamacpp paths share the same instance (and via it, the same inference.ts module-level state).
+
+→ For online: TWO instances — 'chat-shared' and 'agent-shared'. Each OnlineRuntime has its own _aborted flag and _inFlight promise. So chat online and agent online DON'T share abort state. This is by design (chat and agent online calls can run in parallel).
+
+→ BUT: ai-chat-stream-cancel only aborts 'chat-shared' (main.ts:933). 'agent-shared' is NOT aborted by ai-chat-stream-cancel. So online agent tasks are not abortable via the chat panel Stop (see 4.8 BUG-GAP-3).
+
+→ shutdownAllRuntimes (runtime.ts:264-272) iterates `_instances.values()` and calls each instance's `shutdown()`. This is NEVER called from main.ts (confirmed by grep). It's dead code. The registry's instances are not explicitly shut down — only the global `shutdownLlama()` is called, which disposes the underlying engine but doesn't call LlamaCppRuntime.shutdown() (which would call _unloadModel + _shutdownLlama — same effect, just via the registry path that's not used).
+
+INSTRUMENTATION GAP-2 (shutdownAllRuntimes dead code): runtime.ts:264-272 `shutdownAllRuntimes()` is exported but never imported/called. The registry's instances (LlamaCppRuntime + OnlineRuntime) don't have their shutdown() called during app exit. shutdownLlama() disposes the llama.cpp engine directly, but doesn't iterate the registry. OnlineRuntime.shutdown() (which would set _loaded=false) is never called.
+
+Not a functional bug (process exits after shutdownLlama), but it's dead code that suggests an intent that wasn't wired.
+
+─────────────────────────────────────────────────────────────────────────────
+6.6 _loadingPromise guard (inference.ts:151, 472-482, 793-798)
+─────────────────────────────────────────────────────────────────────────────
+
+  let _loadingPromise: Promise<void> | null = null;
+
+In loadModel (line 472-482):
+  if (_loadingPromise) {
+    console.log('[NEX AI Local] loadModel() — another load in progress, waiting...');
+    try { await _loadingPromise; } catch { /* ignore */ }
+    if (_loadedModelId === model.id && _loadedContext && _loadedModel && !disposed) {
+      console.log('[MODEL_LOAD_PATH] selected=reuse-after-wait');
+      _loadedModelInfo = model;
+      return;  // ← idempotent reuse, no reload
+    }
+  }
+
+Setting the lock (line 793-798):
+  _loadingPromise = loadWork;
+  try { await _loadingPromise; }
+  finally { if (_loadingPromise === loadWork) _loadingPromise = null; }
+
+→ _loadingPromise correctly guards against concurrent loadModel calls. If A is loading, B awaits A's loadWork. After A finishes, B checks if A's model matches B's — if yes, return (idempotent); if no, B starts its own loadWork (which sets _loadingPromise = B's loadWork).
+
+→ The check `if (_loadingPromise === loadWork)` in finally prevents clearing a later load's promise. CLEAN.
+
+→ Idempotency: if A loads model X and B wants model X, B reuses (no reload). If B wants model Y, B unloads X (waits for in-flight inference via waitForInFlight, then disposes X, then loads Y).
+
+→ Two concurrent agent tasks both calling loadModel for the same model: first one loads, second one awaits _loadingPromise, then reuses. CLEAN.
+
+→ Two concurrent agent tasks with DIFFERENT models: first one loads X, second awaits X's load, then unloads X (after X's in-flight inference finishes), loads Y. The first task's subsequent inference calls would find _loadedModel=Y (not X) — wrong model!
+
+Actually wait — let me trace more carefully:
+  - Task A starts runTask → loadModel(modelX, opts).
+  - loadModel: _loadingPromise=null, _loadedModelId=null → starts loadWork for X. _loadingPromise = X_loadWork.
+  - Task B starts runTask (concurrently) → loadModel(modelY, opts).
+  - loadModel: _loadingPromise=X_loadWork → await X_loadWork.
+  - X_loadWork finishes → _loadedModelId=X, _loadedContext=X's context. _loadingPromise=null.
+  - B's check: `_loadedModelId === model.id` → X !== Y → false → proceeds to its own load.
+  - B's idempotency check (line 521): `exists && notDisposed` → true (X exists, not disposed) → BUT sameId=false → skips reuse.
+  - B continues to fresh load: logs [MODEL_LOAD_PATH] selected=fresh-load. Awaits waitForInFlight (line 556) — A's inference may still be running.
+  - B's loadWork (line 562): awaits unloadModel (line 564) — waits for A's in-flight, then disposes X.
+  - B loads Y. _loadedModelId=Y.
+  - Task A is now in runTask's while loop (between steps), and on the next iteration it would call runtime.chatStream again. A's chatStream awaits loadModel — but A's model was X. Now the loaded model is Y. A's chatStream would use Y for the next LLM call!
+  - This is a BUG: A's task was created for model X, but it would silently use Y after B loads Y.
+
+Actually wait — runTask calls loadModel ONCE at line 370. After that, all chatStream/chat calls go through runtime.chatStream → LlamaCppRuntime.chatStream → _chatStream → which calls `loadModel(model, opts)` again at line 1053.
+
+Let me re-check inference.ts:1053:
+  await loadModel(model, opts);
+
+So each chatStream call ALSO calls loadModel. A's planner.chatStream calls loadModel(modelX). If B has loaded Y in the meantime, A's chatStream's loadModel call would:
+  - _loadingPromise = B's loadWork? No, B has already finished.
+  - _loadedModelId = Y. model.id = X.
+  - exists && notDisposed (Y exists, not disposed) → true.
+  - sameId = (Y === X) → false.
+  - Skips reuse.
+  - Proceeds to fresh load: unloadModel (waits for B's inference), then loads X.
+  - Now _loadedModelId = X.
+
+So A's chatStream reloads X (potentially disrupting B's next inference). This is thrashing: A loads X, B loads Y, A loads X, B loads Y, ...
+
+CLEANUP-LEAK / THRASH: two concurrent agent tasks with different models cause constant model reloads. Each reload is expensive (multi-second). The task queue's maxConcurrent=2 enables this scenario.
+
+Mitigation: the planner uses contextSize=4096 + gpuLayers=-1 for all local agent tasks (core.ts:357-358). So if both tasks use the same model, no thrashing. But if the user pins different models for different tasks (via model router), thrashing can happen.
+
+Also: chat path uses dynamic contextSize via routerVerdict.suggestedContextSize (main.ts:843-849). If chat uses a different model than the agent, thrashing.
+
+─────────────────────────────────────────────────────────────────────────────
+6.7 Concurrent chatStream on same runtime instance (RACE-1 + RACE-2 + RACE-4)
+─────────────────────────────────────────────────────────────────────────────
+
+Per 4.4-4.6 above: TWO concurrent chatStream calls on the same LlamaCppRuntime instance (or any two paths using the same `getRuntime('llamacpp','default')`) can race in the window between waitForInFlight returning and markInFlight setting. The race produces:
+  - Two inference calls on the same shared context sequence (KV cache corruption risk).
+  - Two AbortControllers, only the last is reachable from abortInference.
+  - markInFlight overwrites — the first request's clearInFlight won't clear the global.
+  - The IPC handler awaits each request's chatStream — both return results to the renderer.
+
+In practice, this requires the renderer (or any other entry point) to call ai-chat-stream (or agent-create-task that triggers planner.chatStream) twice in rapid succession, before the first one's markInFlight completes. The renderer's UI prevents this via the isGenerating flag, but agent tasks started via the task queue can run concurrently with chat streams started by other UIs.
+
+→ Deadlock analysis: No deadlock. waitForInFlight is the only sync primitive. abortInference is synchronous. No callback cycle.
+
+─────────────────────────────────────────────────────────────────────────────
+6.8 Orb state consistency during concurrent operations
+─────────────────────────────────────────────────────────────────────────────
+
+VoiceController conditions (per Phase 16 audit, worklog line ~2935):
+  STATE_PRIORITY: error=8, offline=7, speaking=6, working=5, thinking=4, listening=3, success=2, cancelled=2, idle=1
+  Condition keys seen: 'mic', 'tts', 'chat', 'engine', 'queue', 'agent'.
+
+Concurrent operations and their Orb conditions:
+  - Chat streaming: voiceController.setCondition('chat', 'thinking') (or 'speaking' for TTS) — via NexChatPanel useEffect on isGenerating.
+  - Agent task: voiceController.setCondition('agent', 'working'/'thinking'/'cancelled'/'success'/'error') — via NexChatPanel on agent events (line 574, 597, 615).
+  - Task queue: voiceController.setCondition('queue', 'working'/'success'/'error'/'cancelled') — via AppShell on task-queue events.
+  - Voice conversation: voiceController.setCondition('engine', 'listening'/'thinking'/'speaking'/'working') — via AppShell on voice-conversation-state events.
+
+Priority resolution (voice-service.ts):
+  - error(8) > offline(7) > speaking(6) > working(5) > thinking(4) > listening(3) > success(2)=cancelled(2) > idle(1).
+  - Highest-priority active condition wins. Ties: not specified (likely last-set wins via Map iteration order).
+
+Concurrent scenarios:
+  - Chat streaming AND agent task running: 'chat'=thinking(4), 'agent'=working(5). Agent wins (5>4). Orb shows 'working'.
+  - Chat streaming AND voice conversation speaking: 'chat'=thinking(4), 'engine'=speaking(6). Engine wins (6>4). Orb shows 'speaking'.
+  - Agent task AND queue task running: 'agent'=working(5), 'queue'=working(5). TIE — depends on Map iteration order. Both are 'working' visually.
+  - Agent task succeeded AND chat streaming: 'agent'=success(2), 'chat'=thinking(4). Chat wins (4>2). Orb shows 'thinking' (correctly — chat is still running). The success flash is masked by chat's thinking.
+
+CLEANUP-LEAK (agent success flash masked): if an agent task succeeds while a chat-stream is running, the 'agent'=success condition is set, then cleared after 1500ms (NexChatPanel.tsx:575). But the chat's 'chat'=thinking(4) takes priority (4>2). The user never sees the agent success flash because the Orb is showing 'thinking'. This is a UX gap, not a bug.
+
+→ No actual RACE in the Orb state — the priority resolution is deterministic. The visual might not match user expectations in concurrent scenarios, but the state itself is consistent.
+
+─────────────────────────────────────────────────────────────────────────────
+6.9 Deadlock analysis
+─────────────────────────────────────────────────────────────────────────────
+
+Locks / sync primitives:
+  1. inference.ts: _inFlightPromise (single), _loadingPromise (single).
+  2. queue.ts: _running Map, _queue array, _cancellationTokens Map (no locks — synchronous JS).
+  3. core.ts: _activeTasks Map, _cancellationTokens Map (no locks — synchronous JS).
+  4. runtime.ts: _instances Map (no locks).
+  5. OnlineRuntime: _inFlight (single per instance), _aborted (single per instance).
+
+Acquisition order:
+  - loadModel acquires _loadingPromise (line 793).
+  - loadModel internally awaits waitForInFlight (line 556) and unloadModel (line 564) — both await _inFlightPromise.
+  - chatStream/chatComplete await waitForInFlight (line 946/1051) BEFORE acquiring _loadingPromise (via loadModel) — no, actually loadModel is called AFTER waitForInFlight in chatStream.
+  - So order: waitForInFlight → loadModel (acquires _loadingPromise) → ... → markInFlight (acquires _inFlightPromise).
+
+  Wait — let me re-read:
+    chatStream:
+      await waitForInFlight();   ← awaits _inFlightPromise (release when null)
+      await loadModel(model, opts);  ← acquires _loadingPromise (waits for any concurrent load)
+      ...
+      markInFlight(inferencePromise);  ← acquires _inFlightPromise
+
+  So a chatStream call acquires _inFlightPromise (via waitForInFlight returning null), then acquires _loadingPromise (inside loadModel), then re-acquires _inFlightPromise (via markInFlight — overwrites the previous null).
+
+  This is a bit unusual — _inFlightPromise is "released" (null) between waitForInFlight returning and markInFlight setting. This is the RACE-1 window.
+
+  No deadlock: no circular wait. abortInference is synchronous, doesn't wait for anything. cancelTask is synchronous. token.cancel() is synchronous. No callback cycles.
+
+  Potential issue: if loadModel's _loadingPromise is set, and the loadWork internally awaits unloadModel (which awaits waitForInFlight), and there's an in-flight inference, then loadModel blocks on waitForInFlight. But the in-flight inference is using a model that's about to be disposed — when it finishes, _inFlightPromise clears, unloadModel proceeds to dispose. No deadlock.
+
+→ No deadlocks found. The synchronization is mostly correct except for the RACE-1 window.
+
+═══════════════════════════════════════════════════════════════════════════════
+EXPECTED LOGS FOR EACH PATH
+═══════════════════════════════════════════════════════════════════════════════
+
+─── ai-chat-stream (success path, local) ───
+  [CHAT_REQUEST]
+    panel=ai-chat-stream
+    provider=local
+    modelId=<id>
+    modelPath=<path>
+    messages=N
+  [MODEL_ROUTER] source=<...> tier=<...> category=<...> selected=<model name> alreadyLoaded=<bool>
+  [INFERENCE_START] Loading model: <name> — <path> (est. <ms>ms)  OR  [INFERENCE_START] Cache hit — reusing loaded model: <name>
+  [MODEL_LOAD_PATH]
+    selected=reuse-existing  OR  selected=fresh-load
+    modelId=<id> ...
+  [MODEL_TIMING] model_load: <ms>ms (path=...)
+  [GPU_MODEL_LOAD]
+    backend=<...> model=<path> gpuLayersRequested=... gpuLayersActual=...
+  [MODEL_LOAD]
+    path=<path> size=<bytes> contextSize=<n> gpuLayers=... backend=<...>
+  [INFERENCE_START] Model loaded successfully
+  [INFERENCE_ABORT_CONTROLLER] requestId=chatStream-<ts>-<rand> op=chatStream createdAt=<ts> modelId=<id>
+  [GPU_INFERENCE] chatStream modelId=<id> backend=<...> gpuLayersActual=<n> modelInstanceSame=YES
+  [INFERENCE_START] Starting chatStream with N messages
+  [MODEL_TIMING] inference: TTFT=<ms>ms generation=<ms>ms tokens=<n> tps=<n> model=<name>
+  [INFERENCE_METRICS] model=<name> backend=<...> gpuLayers=... context=<n> firstTokenMs=<ms> generatedTokens=<n> generationMs=<ms> tokensPerSecond=<n> totalMs=<ms>
+  [CHAT_RESPONSE]
+    source=local-stream
+    tokens=<n>
+    error=none
+    contentLength=<n>
+
+─── ai-chat-stream (abort path) ───
+  [CHAT_REQUEST] panel=ai-chat-stream ...
+  [INFERENCE_ABORT_CONTROLLER] requestId=chatStream-... op=chatStream ...
+  [GPU_INFERENCE] chatStream ...
+  [INFERENCE_START] Starting chatStream ...
+  [INFERENCE_ABORT]                            ← from abortInference (called by ai-chat-stream-cancel)
+    requestId=chatStream-...
+    reason=ipc:ai-chat-stream-cancel
+    elapsedMs=<ms>
+    callerStack=<stack>
+  [NEX AI Local] Aborting active inference request
+  [INFERENCE_ERROR]
+    message=Aborted  (or "AbortError")
+    code=20  (or ABORT_ERR)
+    name=AbortError
+    abortType=AbortController(external)
+    note: check [INFERENCE_ABORT] log above ...
+  [CHAT_RESPONSE] source=local-stream error=Aborted
+
+─── ai-chat-stream-cancel (handler) ───
+  [INFERENCE_ABORT]
+    requestId=chatStream-... (or chatComplete-...)
+    reason=ipc:ai-chat-stream-cancel
+    elapsedMs=<ms>
+    callerStack=<stack>
+  [NEX AI Local] Aborting active inference request
+  [NEX AI Local] No active inference to abort   ← if already cleared (subsequent abort calls)
+
+─── ai-abort (handler) ───
+  [INFERENCE_ABORT]
+    requestId=<...>
+    reason=ipc:ai-abort
+    elapsedMs=<ms>
+    callerStack=<stack>
+  [NEX AI Local] Aborting active inference request  OR  [NEX AI Local] No active inference to abort
+
+─── local-runtime-abort (handler) ───
+  [INFERENCE_ABORT]
+    requestId=<...>
+    reason=LlamaCppRuntime.abort()  (from LocalModelProvider.abort() → abortInference('LocalModelProvider.abort()'))
+    OR reason=LlamaCppRuntime.abort()  (from getRuntime('llamacpp','default').abort() — only if MultiModelRuntimeManager.abort() is called, which it isn't from this handler — wait, main.ts:2252 calls getMultiModelRuntimeManager().abort() which calls this.provider.abort() → LocalModelProvider.abort() → abortInference('LocalModelProvider.abort()'))
+    elapsedMs=<ms>
+    callerStack=<stack>
+
+─── agent-cancel-task (handler) ───
+  (NO LOG in main.ts handler at line 5237-5240.)
+  (NO LOG in core.ts cancelTask at line 1841-1850.)
+  (NO LOG in CancellationToken.cancel in agent/types.ts:339-348.)
+  → INSTRUMENTATION GAP-3: agent-cancel-task is silent. The user has no log confirmation that the cancel was received. Only the renderer's `task_cancelled` event (later) confirms.
+
+─── voice-conversation-abort (handler) ───
+  (NO LOG in main.ts handler.)
+  (NO LOG in abortCurrentTurn.)
+  (Engine logs: [VOICE_PIPELINE] TTS speaking (req=...) ... [VOICE_PIPELINE] TTS synthesis completed for req=... but stale ... — if abort fires during synthesis.)
+  (Engine's stopSpeaking() has no log.)
+  (releaseTtsPlaybackWait has no log.)
+  → INSTRUMENTATION GAP-4: voice-conversation-abort has no specific log on the main side. The user sees the engine's stale-detection logs only if synthesis was in flight.
+
+─── voice-conversation-stop-speaking (handler) ───
+  (NO LOG in main.ts handler.)
+  (Engine stopSpeaking: no log, just sets ttsActive=false + bumps _currentTtsRequestId + setState('idle').)
+  (Broadcasts 'voice-tts-stop-playback' to renderer — no log.)
+  → INSTRUMENTATION GAP-5: voice-conversation-stop-speaking has no main-side log.
+
+─── agent-create-task → runTask → planner.chatStream (success) ───
+  [AGENT_MODEL] { id, name, path, backend, contextSize, gpuLayers, modelContextSize }
+  [AGENT_VRAM] { gpuBackend, vramBeforeModelLoad, vramAfterModelLoad, ... }
+  [INFERENCE_ABORT_CONTROLLER] requestId=chatStream-... op=chatStream createdAt=... modelId=<id>
+  [GPU_INFERENCE] chatStream modelId=... backend=... gpuLayersActual=... modelInstanceSame=YES
+  [PLANNER_DEBUG] generating plan... { toolCount, contextSize, maxTokens, temperature, userRequest }
+  [MODEL_TIMING] inference: TTFT=... generation=... tokens=... tps=... model=...
+  [INFERENCE_METRICS] ...
+  [PLANNER_DEBUG] raw response length: <n>
+  [PLANNER_DEBUG] raw response (first 1000 chars): ...
+  [PLANNER_DEBUG] raw response (last 200 chars): ...
+  [PLANNER_DIAG] stripped think block, remaining length: <n>   (if Qwen3 thinking)
+  [PLANNER_DIAG] stripped code fence, remaining length: <n>   (if code fence)
+  [PLANNER_DIAG] raw response length: <n>
+  [PLANNER_DIAG] raw response preview: ...
+  [PLANNER_DIAG] JSON parsed OK, steps: <n>
+  [PLANNER_DEBUG] plan created: { stepCount, confidence, tools: ... }
+
+─── agent task cancelled mid-planner-inference ───
+  (via aiChatStreamCancel:)
+  [INFERENCE_ABORT] requestId=chatStream-... reason=ipc:ai-chat-stream-cancel ...
+  [NEX AI Local] Aborting active inference request
+  [PLANNER_ERROR] Planner threw: Aborted
+  [PLANNER_ERROR] stack: ...
+  [PLANNER_DIAG] FALLBACK triggered — reason: Aborted
+  [PLANNER_DIAG] user request was: ...
+  [PLANNER_DIAG] heuristic analysis: { ... }
+  [PLANNER_DIAG] heuristic: <pattern> pattern detected
+  → Planner returns fallback plan.
+  (Then runTask's next iteration: token.throwIfCancelled() throws AGENT_CANCELLED.)
+  [AGENT] Task <id> cancelled: <reason>  (or task_cancelled event via emit)
+
+─── before-quit (shutdown) ───
+  [NEX AI] Graceful shutdown: disposing local AI engine...
+  [AGENT] Cancelled <N> active task(s) on shutdown   (if any active)
+  [NEX TaskQueue] (queue's shutdownTaskQueue — no log in queue.ts itself)
+  [NEX AI Local] shutdownLlama() — waiting for in-progress loadModel()...   (if _loadingPromise set)
+  [NEX AI Local] unloadModel() — waiting for in-progress loadModel()...   (if _loadingPromise still set inside unloadModel)
+  [NEX AI Local] Model unloaded
+  [NEX AI Local] Disposing llama.cpp engine...
+  [NEX AI Local] Engine disposed
+  (finally: app.exit(0))
+
+If an agent task is mid-inference during shutdown, the shutdown will WAIT (no log) for the in-flight inference to complete naturally. This is the CLEANUP-LEAK-3 shutdown hang risk.
+
+═══════════════════════════════════════════════════════════════════════════════
+FINDINGS SUMMARY (sorted by severity)
+═══════════════════════════════════════════════════════════════════════════════
+
+CODE-NAME       SEVERITY  TYPE                  LOCATION                                            DESCRIPTION
+─────────────── ───────── ────────────────── ─────────────────────────────────────────────────── ─────────────────────────────────────────────────────────────────────
+RACE-1          HIGH      RACE                  inference.ts:1051↔1148 (chatStream), 946↔1015 (chatComplete)  Serialization window broken — waitForInFlight returns null before markInFlight sets. Two concurrent calls can both pass and proceed to inference on shared _ctxSequence. KV cache corruption risk.
+RACE-2          HIGH      RACE                  inference.ts:1073 (chatStream), 970 (chatComplete)  _activeAbortController overwrite — second request orphanates first's controller. First request becomes phantom (unabortable via global path).
+BUG-GAP-2       HIGH      BUG (re-confirmed)    core.ts:1841 (cancelTask), agent/types.ts:335-367    agent-cancel-task does NOT call abortInference. Token.onCancel never registered. Mid-LLM cancel = wasted tokens until natural completion. Workaround: renderer's handleStop calls BOTH aiChatStreamCancel AND agentCancelTask.
+BUG-GAP-3       HIGH      BUG (new)             main.ts:923-938 (ai-chat-stream-cancel)              ai-chat-stream-cancel aborts only 'online','chat-shared'. 'online','agent-shared' is NOT aborted. Online-mode agent tasks are not abortable via chat panel Stop.
+BUG-GAP-4       HIGH      BUG (new)             online-runtime.ts:131-136, ai-service.ts:80-126    OnlineRuntime.abort() only sets _aborted flag. HTTP roundtrip via net.request continues (no AbortSignal support). Tokens + bandwidth wasted on cancelled online requests.
+BUG-GAP-5       MED       BUG (new)             planner.ts:240-245                                  Planner's catch block swallows AbortError and returns fallbackPlan. If only aiChatStreamCancel is called (not agentCancelTask), agent executes the heuristic fallback plan instead of cancelling. Currently mitigated by NexChatPanel calling both, but fragile API.
+RACE-3          MED       RACE                  online-runtime.ts:52, 85, 104                       OnlineRuntime.chat doesn't serialize concurrent calls. _inFlight is a single field overwritten by concurrent calls. _aborted flag is shared per-instance — aborting one chat sets flag for ALL concurrent chats on same instance.
+RACE-4          MED       RACE                  chat path + agent path both use getRuntime('llamacpp','default')  Chat streaming + agent planner.chatStream on same runtime instance. Serialization via _inFlightPromise works IF RACE-1 window not hit. Otherwise both race on shared context.
+THRASH-1        MED       BUG (new)             inference.ts:521-531 (idempotency check), 564 (unloadModel)  Two concurrent agent tasks with different models cause constant model reloads. Each chatStream call invokes loadModel — if the loaded model differs from the requested one, unloadModel + fresh load. Multi-second thrashing per step.
+CLEANUP-LEAK-1  MED       CLEANUP LEAK          nex-voice-conversation.ts:663 (handleInterruption setTimeout(50ms))  setTimeout NOT cleared on abortCurrentTurn. 50ms window where the interrupting utterance is processed after cancel.
+CLEANUP-LEAK-2  MED       CLEANUP LEAK          nex-voice-conversation.ts:747 (captureVoiceConfirmation 10s timeout)  Timeout NOT cleared on abort. PendingPermission flag cleared after 10s, callbacks restored, but capture promise resolves with '' — delayed cancellation.
+CLEANUP-LEAK-3  HIGH      CLEANUP LEAK          main.ts:6379-6443 (before-quit) + inference.ts:871 (shutdownLlama)  If agent task mid-inference at shutdown, cancelAllActiveTasks doesn't abort inference (BUG-GAP-2). shutdownLlama→unloadModel→waitForInFlight waits for natural completion. App hangs on quit until LLM finishes (30s+).
+INSTRUMENTATION-GAP-1  LOW   INSTRUMENTATION GAP  inference.ts:935-1030 (chatComplete)  chatComplete never sets noteInferenceStats({active:true}) before inference, never sets active:false on error. UI cannot tell when non-streaming inference is in progress.
+INSTRUMENTATION-GAP-2  LOW   INSTRUMENTATION GAP  runtime.ts:264-272 (shutdownAllRuntimes)  shutdownAllRuntimes() is exported but NEVER called. Dead code. Registry's instance.shutdown() methods (e.g. OnlineRuntime.shutdown) not invoked at app exit.
+INSTRUMENTATION-GAP-3  MED   INSTRUMENTATION GAP  core.ts:1841 cancelTask + main.ts:5237 agent-cancel-task handler  No log on agent task cancel. User has no confirmation that cancel was received (only the deferred task_cancelled event).
+INSTRUMENTATION-GAP-4  LOW   INSTRUMENTATION GAP  main.ts:1641 voice-conversation-abort + nex-voice-conversation.ts:705 abortCurrentTurn  No main-side log. Only engine stale-detection logs (if synthesis was in flight).
+INSTRUMENTATION-GAP-5  LOW   INSTRUMENTATION GAP  main.ts:1663 voice-conversation-stop-speaking + local-voice-engine.ts:446 stopSpeaking  No log on stop-speaking. User has no confirmation.
+DUPLICATE-1     LOW       DUPLICATE             main.ts:775 (ai-abort), 923 (ai-chat-stream-cancel), 2250 (local-runtime-abort)  Three IPC handlers all funnel to abortInference(). localAbort and LlamaCppRuntime.abort() are duplicates of the same call. Comment at main.ts:927-929 acknowledges redundancy. Could be consolidated.
+LEGACY-1        LOW       LEGACY                inference.ts:161 (_inFlightPromise singular)  Audit prompt references `_inFlightRequests` (plural) — this symbol does NOT exist in code. Either the audit prompt is stale or the variable was renamed. Current code uses `_inFlightPromise` (singular) — only tracks ONE in-flight inference at a time.
+
+═══════════════════════════════════════════════════════════════════════════════
+STAGE SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+PHASE 17 ITEMS 4-5-6 AUDIT — STATUS: 5 HIGH-severity issues found, 4 MED, 5 LOW.
+
+The streaming/abort/concurrency architecture is FUNCTIONAL for the common case (single chat-stream or single agent task) but has multiple RACE conditions and CLEANUP LEAKS in concurrent scenarios. The Phase 16 BUG-GAP-2 (agent-cancel-task doesn't abort inference) is re-confirmed and cascading into 4 NEW related issues:
+
+  • BUG-GAP-3: ai-chat-stream-cancel doesn't abort 'online','agent-shared' → online agent tasks not abortable.
+  • BUG-GAP-4: OnlineRuntime.abort() is advisory only — HTTP continues via net.request (no AbortSignal).
+  • BUG-GAP-5: Planner swallows AbortError and returns fallback plan → if only aiChatStreamCancel is called (not agentCancelTask), agent runs the fallback plan instead of cancelling.
+  • CLEANUP-LEAK-3: App shutdown can hang for 30s+ if agent task is mid-inference, because cancelAllActiveTasks doesn't abort inference and shutdownLlama→waitForInFlight blocks.
+
+The renderer's NexChatPanel.handleStop (line 1027) works around BUG-GAP-2/3/4 by calling both aiChatStreamCancel AND agentCancelTask — but this workaround only applies to the chat panel UI. Any other cancel path (task-queue-cancel, agent-cancel-task directly, future UIs) does NOT abort inference.
+
+RACE-1 (broken serialization window in chatStream/chatComplete) is the most concerning. It produces:
+  - Two inference calls on the same shared context sequence (KV cache corruption).
+  - Two AbortControllers — first becomes orphaned (phantom inference).
+  - markInFlight overwrites — first request's cleanup doesn't clear the global.
+  - The window is multi-seconds (loadModel is awaited between waitForInFlight and markInFlight).
+
+RACE-1 is mitigated in practice by:
+  - Renderer disabling Send button while isGenerating=true.
+  - brainRoute returning either 'agent' or 'chat', not both.
+  But it's exploitable via:
+  - DevTools direct IPC calls.
+  - Agent task + chat stream started concurrently from different UIs.
+  - The 50ms voice-interruption setTimeout (CLEANUP-LEAK-1) triggering handleUserUtterance which starts a new inference while the previous is still running.
+
+RECOMMENDED FIXES (NOT implemented — READ-ONLY audit):
+  1. RACE-1: Move markInFlight to IMMEDIATELY after waitForInFlight (before loadModel). Set _inFlightPromise = a deferred promise that resolves when the inference completes. This closes the race window.
+  2. RACE-2: Store AbortController per-request in a Map keyed by requestId. abortInference(requestId?) accepts an optional ID to abort a specific request. Or: queue subsequent controllers and abort them in order.
+  3. BUG-GAP-2: In createTask (core.ts:151), register `token.onCancel(() => { try { abortInference('agent task cancelled: ' + taskId); } catch {} })`. This immediately aborts local LLM inference on token cancel.
+  4. BUG-GAP-3: In ai-chat-stream-cancel (main.ts:933), add `try { getRuntime('online', 'agent-shared').abort(); } catch {}`. Also call this in agent-cancel-task handler.
+  5. BUG-GAP-4: Refactor `chatCompletion`/`callGLM`/`callOpenAI`/`callClaude` (ai-service.ts) to accept an AbortSignal. Use `net.request`'s `request.abort()` method (Electron's net.Request supports it). Pass AbortController.signal through OnlineRuntime → transport → routeChat → chatCompletion.
+  6. BUG-GAP-5: In planner.ts catch block, re-throw AbortError instead of returning fallbackPlan. Or check `err.name === 'AbortError' || err.code === 'ABORT_ERR'` and re-throw.
+  7. CLEANUP-LEAK-3: In before-quit (main.ts:6393 after cancelAllActiveTasks), explicitly call `try { abortInference('app shutdown'); } catch {}` to abort any in-flight local inference before shutdownLlama waits for it.
+  8. CLEANUP-LEAK-1/2: Store the setTimeout handles in NexVoiceConversation and clear them in abortCurrentTurn.
+  9. INSTRUMENTATION-GAP-3: Add `console.log('[AGENT] Cancel requested for task <id>: <reason>')` in cancelTask (core.ts:1841).
+  10. THRASH-1: For local agent tasks, always use the SAME model (don't reload per chatStream call). Add a "agent task model lock" that prevents model switching during a task. Or: cache the model in runTask and pass it to all chatStream/chat calls (skipping loadModel after the first one).
+
+Files reviewed (final list, no modifications):
+  All files in the WORK LOG list above. READ-ONLY audit — no files modified, no commits made.
+
+Audit complete. Findings appended to worklog.md.
+
+
+---
+Task ID: P17-AUDIT-MODEL
+Agent: Explore (model runtime)
+Task: Phase 17 Runtime & Core Integration Audit — Model Router → Model Runtime → Inference pipeline. READ-ONLY (no file modifications, no commits, no new files).
+
+Work Log:
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 1 — ROUTING DECISION POINTS (Phase 17 item 1)
+═══════════════════════════════════════════════════════════════════════════════
+
+1.1 Inventory of model selection / routing layers (NINE total)
+
+  Layer                                              File:Line                                              Used by                      Purpose
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1. ModelRouter.routeForChat                         /home/z/my-project/src/main/ai/model-router.ts:179     ai-chat-stream IPC, local-engine.ts  Chat-path model selection (session-sticky)
+  2. routeModel                                       /home/z/my-project/src/main/agent/model-router.ts:80  agent/core.ts:168 (createTask)        Agent-path BACKEND selection (local vs online)
+  3. selectModel / selectCodingModel / selectChatModel /home/z/my-project/src/main/agent/model-selector.ts:36,96,104,111  routeModel  Phase 7 capability+recency selector
+  4. SmartModelRouter.selectModel                     /home/z/my-project/src/main/ai/model-intelligence/smart-model-router.ts:61  NexBrainController.decide  Phase 45 task-aware selector
+  5. NexBrainController.decide                        /home/z/my-project/src/main/ai/nex-brain-controller.ts:64  MultiModelRuntimeManager.routeTask  Phase 51 UI-facing brain
+  6. NexBrainRouter.route                             /home/z/my-project/src/main/ai/nex-brain-router.ts:200  brain-route IPC (main.ts:948)  Phase 104 chat-vs-agent classifier
+  7. ExpertRouter.route                               /home/z/my-project/src/main/ai/expert-router.ts:27     NexAgentExecutor.createPlan  Phase 53 skill-domain classifier (not model)
+  8. routeChat                                        /home/z/my-project/src/main/ai/provider.ts:80          ai-chat IPC, OnlineRuntime transport  PROVIDER router (local|openai|claude|glm)
+  9. MultiModelRuntimeManager.routeTask               /home/z/my-project/src/main/ai/multi-model-runtime-manager.ts:261  local-runtime-route-task IPC  Phase 58 UI route-and-load
+
+Three different heuristic engines:
+  - ModelRouter uses TaskTier (simple/medium/complex) — 50-word threshold, keyword match
+  - agent's routeModel uses TaskComplexity (simple/moderate/complex) — 400-char / 2000-char thresholds
+  - SmartModelRouter uses TaskComplexity (simple/moderate/complex) — 10-word / 50-word thresholds
+
+1.2 DUPLICATE — Conflicting heuristics
+
+  Conflict table (same user request, three different verdicts possible):
+  ──────────────────────────────────────────────────────────────────────────────
+  User message: "architect a microservice for user auth, compare REST vs gRPC"
+  ModelRouter.classifyTaskTier → 'complex' (matches 'architect'); tier→complex; suggestContextSize=4096 (GPU)
+  routeModel.estimateComplexity → 'complex' (intent=coding, len>400); backend→online (if available)
+  SmartModelRouter.estimateComplexity → 'complex' (words>50); category→coding; prefer LARGER model by parameterCount
+
+  User message: "hello"
+  ModelRouter.classifyTaskTier → 'simple' (≤3 words, greeting); tier→simple; isGreeting=true → small model
+  routeModel.estimateComplexity → 'simple' (no intent, len<2000); backend→local
+  SmartModelRouter.estimateComplexity → 'simple' (words<10); prefer SMALLER model by parameterCount
+
+  Threshold mismatch: ModelRouter uses 50 WORDS for complex; SmartModelRouter uses 50 WORDS too but uses 10 WORDS for simple/moderate boundary; routeModel uses 400 CHARS / 2000 CHARS.
+
+1.3 Single source of truth for "which model is loaded right now"
+
+  Canonical: inference.ts `_loadedModelId` + `_loadedModelInfo` (lines 132-134).
+  Read by: getLoadedModel() (inference.ts:914), getLoadedModelInfo() (inference.ts:903), ModelRouter (model-router.ts:44 import), LlamaCppRuntime (llamacpp-runtime.ts:22 import), LocalModelProvider (local-model-provider.ts:44 import).
+
+  THREE parallel trackers (two mirrors + canonical):
+  ──────────────────────────────────────────────────────────────────────────────
+  1. inference.ts `_loadedModelId` + `_loadedModelInfo`        — CANONICAL (lines 132-134)
+  2. local-model-provider.ts `_loadedModelId` + `loadedModel`  — MIRROR (lines 122-123)
+     Updated ONLY when LocalModelProvider.load() is called. NOT updated when inference.ts internally calls unloadModel (e.g., at inference.ts:564 before fresh-load). CAN DESYNC (see P1-6).
+  3. runtime-telemetry.ts `_notedModel` (name-only)            — MIRROR (line 26)
+     Updated by noteLoadedModel() calls in inference.ts:783 (after load) and 857 (after unload).
+
+1.4 Multiple caches
+
+  - ModelRouter._session (model-router.ts:162) — sticky session cache, CHAT-PATH ONLY (agent doesn't consult or update it)
+  - inference.ts _loadedModel — the actual loaded GGUF model object
+  - runtime.ts _instances Map (line 161) — runtime instances by `${type}:${instanceId}` ('llamacpp:default', 'online:chat-shared', 'online:agent-shared')
+  - runtime-telemetry.ts _lastInference + _notedModel (lines 13, 26) — last inference stats + name mirror
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 2 — MODEL LIFECYCLE: load, reuse, unload (Phase 17 item 2)
+═══════════════════════════════════════════════════════════════════════════════
+
+2.1 Single `loadModel` implementation — ONE real, multiple wrappers
+
+  Real:    inference.ts:463 `export async function loadModel(model, opts): Promise<void>`
+  Wrappers (all delegate to inference.ts):
+    - llamacpp-runtime.ts:41   `async loadModel(model, opts)`  → calls `_loadModel(model, opts)`
+    - local-model-provider.ts:138 `async load(modelId, opts)`  → calls `inferenceLoadModel(model, {contextSize, threads, gpuLayers, ...})`
+    - multi-model-runtime-manager.ts:193 `async loadModel(modelId, opts)` → calls `this.provider.load(modelId, opts)`
+    - OnlineRuntime:70 `async loadModel(_model, _opts)`        → no-op bookkeeping (sets _loaded=true)
+  No duplicate logic. ✓
+
+2.2 Idempotency logic (inference.ts:499-531)
+
+  `loadModel(model, opts)`:
+    if (_isShuttingDown) throw                     [line 465-468]
+    if (_loadingPromise) await it                  [line 472-482] — concurrent load guard
+      if (_loadedModelId === model.id && !disposed) return  [line 476-481] — reuse-after-wait
+    if (!model.path) throw                         [line 485-488]
+    if (!model.fileExists) throw                   [line 490-492]
+    requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024  [line 497]
+    rawGpuLayers = opts.gpuLayers ?? model.gpuLayers ?? -1  [line 495]
+    translatedGpuLayers = translateGpuLayers(rawGpuLayers)  [line 496]  (-1→"auto", 0→0, N→N)
+    
+    IDEMPOTENCY CHECK (line 512-531):
+      sameId = _loadedModelId === model.id
+      exists = !!(sameId && _loadedContext && _loadedModel)
+      notDisposed = exists && !disposed
+      contextLargeEnough = exists && (_loadedContextSize ?? 0) >= requestedContextSize   ← declared but NOT USED in the if (P1-3)
+      if (exists && notDisposed) {
+        log [MODEL_LOAD_PATH] selected=reuse-existing
+        return  ← REUSE (skip reload)
+      }
+    if (sameId && !notDisposed) clear stale references  [line 535-544]
+    log [MODEL_LOAD_PATH] selected=fresh-load
+    await waitForInFlight()                        [line 556] — serialize with active inference
+    _loadingPromise = (async () => {
+      await unloadModel()                          [line 564] — dispose old model
+      llama = await getLlamaInstance()             [line 566]
+      _loadedModel = await llama.loadModel(modelOpts)  [line 585]
+      logGpuModelLoadBlock(...)                    [line 632] — [GPU_MODEL_LOAD] proof
+      VRAM-aware context creation with fallback chain  [line 642-761]
+        Attempt 1: auto-fit context (min:256, max:requested) with flashAttention:'auto'
+        Attempt 2: fixed sizes [requested, requested/2, ..., 256]
+        Attempt 3 (last resort): reload with gpuLayers=0 (CPU-only)
+      _loadedModelId = model.id                    [line 764]
+      _loadedModelInfo = model                     [line 765]
+      _loadedModelGpuLayers = actualGpuLayers      [line 766]
+      _loadedContextSize = usedContextSize         [line 767]
+      log [MODEL_LOAD]                             [line 770-778]
+      touchModel(model.id)                         [line 781] — mark as last-used in registry
+      noteLoadedModel(model.name)                  [line 783] — sync telemetry mirror
+      noteInferenceStats({contextMaxTokens: usedContextSize})  [line 787-789]
+    })()
+    _loadingPromise = loadWork
+    await _loadingPromise
+    finally: _loadingPromise = null
+
+2.3 Reuse "actually working" — VERIFIED ✓
+
+  Same model id + non-disposed → reuse. Logs `[MODEL_LOAD_PATH] selected=reuse-existing`.
+  Inference serialization via _inFlightPromise prevents concurrent chatStream/chatComplete corruption.
+  _loadingPromise + _isShuttingDown prevent dispose-during-load race (the "Object is disposed" bug fixed in Phase 116).
+
+2.4 Unload paths
+
+  Explicit unload IPC: `local-runtime-unload-model` (main.ts:2083) → MultiModelRuntimeManager.unloadModel() → LocalModelProvider.unload() → inference.ts unloadModel()
+  Activation: `local-runtime-activate-model` (main.ts:2094) — if different model, calls `mgr.unloadModel()` (main.ts:2120) before loading new
+  Test-load: `model-test-load` (main.ts:2162) — calls `loadModel(model, {contextSize:512})` then `unloadModel()` (main.ts:2207)
+  Internal: inference.ts:564 — fresh-load path calls `await unloadModel()` before loading new model
+  Shutdown: `shutdownLlama()` (main.ts:6436) — unloadModel + dispose engine
+
+2.5 BUG: model-test-load unloads user's active model as side effect (P0-1)
+
+  /home/z/my-project/src/main/main.ts:2197-2207:
+    const { loadModel, unloadModel } = await import('./ai/inference');
+    try {
+      await loadModel(model, { contextSize: 512 }); // small context for fast test
+    } catch (loadErr) { ... }
+    try { await unloadModel(); } catch { /* non-fatal */ }
+  
+  Two failure modes:
+    a) User has model A loaded, tests model B:
+       - loadModel(B, {contextSize:512}) — sameId=false → unload A, load B with 512 context
+       - unloadModel() — unloads B
+       - User has NO model loaded. Next chat → router selects A → loadModel(A) → 5-15s reload
+    b) User has model A loaded (context 4096), tests SAME model A:
+       - loadModel(A, {contextSize:512}) — sameId=true, _loadedContextSize=4096, exists=true, notDisposed=true → REUSE (skips reload, keeps 4096 context)
+       - unloadModel() — UNLOADS A
+       - User's A is gone. Next chat → reload A. ← BUG (test-load on the same model still unloads it)
+  
+  Logs: [MODEL_LOAD_PATH] selected=fresh-load (or reuse-existing) → [NEX AI Local] Model unloaded → no model loaded.
+  Fix: Save the currently-loaded model id BEFORE the test, restore it AFTER.
+
+2.6 BUG/RACE: Model switch path that bypasses idempotency check — NONE FOUND ✓
+
+  All model switches go through inference.ts loadModel, which has the idempotency check.
+  No code path calls llama.loadModel directly (only inference.ts:585 and 736, and knowledge/llama-embedder.ts:59 which is a separate embedder instance).
+
+2.7 Zombie models / VRAM leak risk
+
+  - inference.ts tracks ONE loaded model. Loading a new always unloads the old (line 564).
+  - shutdownLlama disposes the engine at app exit (main.ts:6436).
+  - _isShuttingDown prevents new loads during shutdown (inference.ts:465).
+  - _loadingPromise guard prevents dispose-during-load race.
+  - No zombie model risk identified. ✓
+  
+  HOWEVER: LocalModelProvider._loadedModelId (line 122) and .loadedModel (line 123) are NOT cleared when inference.ts internally calls unloadModel (e.g., at line 564 before fresh-load, or at line 2207 in test-load). So the provider's mirror state can point to a model that's already disposed in inference.ts. (P1-6)
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 3 — CHAT → RUNTIME → TOOLS → RESPONSE (Phase 17 item 3)
+═══════════════════════════════════════════════════════════════════════════════
+
+3.1 Runtime instances used per path
+
+  Path                            Runtime instance                              File:Line
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  Chat local (ai-chat-stream)     getRuntime('llamacpp', 'default')             main.ts:838, 842
+  Chat online (ai-chat-stream)    getRuntime('online', 'chat-shared')           main.ts:854
+  Agent local (runTask)           getDefaultRuntime() → ('llamacpp', 'default') core.ts:1986-1987
+  Agent online (runTask)          getRuntime('online', 'agent-shared')         core.ts:1990
+  LocalRuntimePanel (UI)          MultiModelRuntimeManager → LocalModelProvider → inference.ts  multi-model-runtime-manager.ts:124, 193, 223, 233
+
+  KEY: Chat local + Agent local use the SAME 'llamacpp:default' runtime instance. They SHARE the model state via inference.ts.
+       Chat online + Agent online use DIFFERENT OnlineRuntime instances ('chat-shared' vs 'agent-shared'), but OnlineRuntime has no shared state besides the stateless lazy transport.
+
+3.2 Are chat and agent paths using the SAME runtime instance?
+
+  LOCAL: YES — both use `getRuntime('llamacpp', 'default')` (the same LlamaCppRuntime instance, runtime.ts:175-187).
+  ONLINE: NO — chat uses 'chat-shared', agent uses 'agent-shared' (different OnlineRuntime instances).
+  WHY IT MATTERS: For local, chat and agent can MUTUALLY RELOAD each other's model (since they share the inference.ts single source of truth). For online, no shared state — no conflict.
+
+3.3 RACE: Chat and agent mutually reload each other's model (P1-2)
+
+  Scenario:
+    1. User sends chat message → ai-chat-stream → ModelRouter picks model A → explicit runtime.loadModel(A, {contextSize:4096}) (main.ts:843) → A loaded.
+    2. User runs agent task → brain-route → createTask → routeModel picks model B (different heuristic) → runTask → runtime.loadModel(B, {contextSize:4096}) (core.ts:370) → unloadModel(A) + loadModel(B).
+    3. User sends another chat → ModelRouter._session still has modelId=A (sticky session, line 249-275) → routerVerdict says "session-sticky reuse A" but cacheHit=(currentlyLoaded?.id===A)=false (currentlyLoaded is now B) → needsSwitch=true → chat's explicit loadModel(A, {contextSize:4096}) (main.ts:843) → unloadModel(B) + loadModel(A).
+    4. Agent's next ReAct call → runtime.chat → inference.ts chatComplete → loadModel(B, opts) → unloadModel(A) + loadModel(B).
+    5. Repeat → RELOAD CHURN on every chat ↔ agent switch.
+  
+  Cost: 5-15s reload on 8B models. Confirmed by logs:
+    [MODEL_LOAD_PATH] selected=fresh-load reason=different-model  (repeated on every switch)
+
+3.4 RACE: Chat accidentally triggers model reload while agent is running
+
+  Yes (per 3.3). inference.ts serializes via _inFlightPromise (line 420-432, 556) so no corruption, but the chat's explicit loadModel waits for agent's inference to finish, then unloads agent's model and loads chat's. Agent's next inference call reloads.
+
+3.5 BUG: Cancel chat kills agent's in-flight inference (P0-2)
+
+  Scenario:
+    1. Agent runs planner → runtime.chatStream → inference.ts chatStream → sets _activeAbortController (line 1072-1075), _inFlightPromise set.
+    2. User sends chat → ai-chat-stream → routerVerdict.cacheHit=true → skips loadModel → calls runtime.chatStream.
+    3. inference.ts chatStream line 1051: `await waitForInFlight()` — chat WAITS for agent's inference to finish.
+    4. User clicks Stop → ai-chat-stream-cancel IPC (main.ts:923) → localAbort('ipc:ai-chat-stream-cancel') → inference.ts abortInference (line 1172-1193).
+    5. abortInference clears _activeAbortController — which was set by the AGENT's chatStream (step 1), not the chat's (which hasn't started inference yet).
+    6. Agent's session.prompt throws AbortError. Agent's planner falls back to heuristic plan.
+    7. _inFlightPromise resolves. Chat's waitForInFlight resolves. Chat's chatStream proceeds → sets a new _activeAbortController → runs normally.
+  
+  Result: The user's "cancel chat" click killed the AGENT's inference, NOT the chat's. The chat actually CONTINUES after the cancel (because it was waiting, not running). The agent gets confused.
+  
+  Logs: [INFERENCE_ABORT] requestId=chatStream-<agent's id> reason=ipc:ai-chat-stream-cancel callerStack=...ai-chat-stream-cancel...
+  
+  Root cause: There is ONE global _activeAbortController in inference.ts (line 161). It is overwritten by every chatStream/chatComplete call. Canceling "the active inference" cancels whoever set it last, regardless of who's calling cancel.
+
+3.6 Chat path's runtime.chatStream conflict with concurrent chat path on same model
+
+  Not possible — only ONE chat path can be active at a time per chat-stream IPC. The IPC handler is `ipcMain.handle` which serializes (single Promise per call). And inference.ts _inFlightPromise serializes across all paths.
+
+3.7 Agent path's runtime.chatStream vs concurrent chat path's chatStream on same model
+
+  Same as 3.5 — serialized via _inFlightPromise, but cancel race exists.
+
+3.8 Agent cancel does not abort inference (carried over from Phase 16, P1-5)
+
+  /home/z/my-project/src/main/agent/core.ts:1841 (cancelTask):
+    task.cancelled = true
+    token.cancel(reason)
+    // ← DOES NOT call abortInference
+  
+  Effect: Agent's in-flight LLM call (planner, ReAct, recovery) runs to natural completion. Token cancel is only checked at checkpoints (between steps / before/after LLM calls). A long planner call (30+ seconds) cannot be interrupted.
+
+3.9 INSTRUMENTATION GAP: inferenceActive only true during 'planning' (P1-4)
+
+  /home/z/my-project/src/main/agent/core.ts:1969:
+    inferenceActive: active.status === 'planning'
+  
+  NOT true during:
+    - executeStep's ReAct LLM call (react-loop.ts:189)
+    - recovery-engine LLM call (recovery-engine.ts:570)
+    - replan LLM call (react-loop.ts:194)
+  So the System Monitor's "inferenceActive" flag is misleading.
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 4 — DATA FLOW NARRATIVES
+═══════════════════════════════════════════════════════════════════════════════
+
+4.1 CHAT PATH (local, ai-chat-stream)
+
+  1. Renderer: NexChatPanel.tsx:888 calls `window.nexAPI.brainRoute({message, history, projectPath, modelId, inAgentTask})`.
+  2. Main: brain-route IPC handler (main.ts:948) calls `getNexBrainRouter().route(request)` (nex-brain-router.ts:200).
+  3. NexBrainRouter.classifyRoute (nex-brain-router.ts:136) — keyword+path+command heuristic → returns 'chat' or 'agent'.
+  4. If 'chat': brain-route returns `{success:true, route:'chat', reason}`. NO inference happens here. ← Renderer must make a separate aiChatStream call.
+  5. Renderer: NexChatPanel.tsx:936 calls `window.nexAPI.aiChatStream(providerConfig, apiMessages)`.
+  6. Main: ai-chat-stream IPC handler (main.ts:785):
+     a. enforceAiMode(getCurrentAiMode(), config.provider) — block if aiMode='local' and provider=online (main.ts:798-802).
+     b. If config.provider === 'local':
+        - getModelRouter().routeForChat({userMessage, messages, modelIdOverride:config.localModelId}) (main.ts:813-819)
+        - ModelRouter.routeForChat (model-router.ts:179):
+          1. listModels().filter(fileExists)
+          2. getLoadedModel() (inference.ts canonical source)
+          3. classifyTaskTier(userMessage) → 'simple'|'medium'|'complex'
+          4. classifyCategory(userMessage) → 'chat'|'coding'|'reasoning'|'vision'
+          5. suggestContextSize(tier, hasGpu) → 4096 (GPU) or 2048/4096 (CPU tier)
+          6. Priority chain: override → user-pinned → session-sticky → auto-router → default
+          7. Returns ModelRouterVerdict {model, alreadyLoaded, needsSwitch, cacheHit, suggestedContextSize, suggestedGpuLayers, source, reason, loadTime}
+        - If !model: return error.
+        - If routerVerdict.cacheHit (model.id === currentlyLoaded.id):
+          - SKIP explicit loadModel.
+          - runtime = getDefaultRuntime() (main.ts:838).
+        - Else:
+          - runtime = getDefaultRuntime() (main.ts:842).
+          - await runtime.loadModel(model, {contextSize: suggestedContextSize, threads: 4, gpuLayers: suggestedGpuLayers, temperature, maxTokens}) (main.ts:843-849)
+          - LlamaCppRuntime.loadModel → inference.ts loadModel(model, opts):
+            - Idempotency check (inference.ts:512-531): if sameId && !disposed → reuse, log [MODEL_LOAD_PATH] selected=reuse-existing
+            - Else: waitForInFlight → _loadingPromise = (async)() → unloadModel() → llama.loadModel() → createContext with VRAM fallback → set _loadedModelId, _loadedModelInfo, _loadedModelGpuLayers, _loadedContextSize → log [MODEL_LOAD] → touchModel → noteLoadedModel → noteInferenceStats({contextMaxTokens})
+     c. createTokenStreamer(replyId, undefined, 'final', callback) (main.ts:857) — throttles tokens to chat-token IPC events.
+     d. await runtime.chatStream(messages, onChunk, {temperature, maxTokens: dynamicMaxTokens, systemPrompt}) (main.ts:879-887).
+        - LlamaCppRuntime.chatStream → inference.ts chatStream(model, messages, onChunk, opts):
+          - waitForInFlight (line 1051) — wait for any in-flight inference.
+          - loadModel(model, opts) (line 1053) — idempotent, reuses if loaded.
+          - new _LlamaChatSession({contextSequence: getSharedSequence(), systemPrompt, chatHistory}) (line 1078).
+          - _activeAbortController = new AbortController() (line 1072).
+          - log [INFERENCE_ABORT_CONTROLLER] (line 1076).
+          - log [GPU_INFERENCE] (line 1060).
+          - await session.prompt(lastUserMsg.content, {maxTokens, temperature, topP:0.9, repeatPenalty:1.1, signal, onTextChunk}) (line 1091-1109).
+          - onTextChunk → onChunk({content, done:false}) → streamer.push(chunk) → 'chat-token' IPC → renderer.
+          - On done: onChunk({done:true}), log [MODEL_TIMING] inference + [INFERENCE_METRICS], noteInferenceStats({active:false}).
+          - Return InferenceResult {content, tokensGenerated, modelId, modelName, stopped, durationMs}.
+     e. streamer.end() (main.ts:888).
+     f. Log [CHAT_RESPONSE] (main.ts:889-893).
+     g. Return {success, replyId, content, tokens, durationMs, modelId, modelName} to renderer.
+  7. Renderer: NexChatPanel.tsx:937-954 — updates message with content/tokens/durationMs.
+
+4.2 AGENT PATH (brain-route → createTask → runTask)
+
+  1. Renderer: NexChatPanel.tsx:888 calls `window.nexAPI.brainRoute({message, history, projectPath, modelId, inAgentTask})`.
+  2. Main: brain-route IPC handler (main.ts:948) → NexBrainRouter.route → classifyRoute → returns 'agent'.
+  3. brain-route handler:
+     a. Build agentRequest {userRequest, projectPath, sessionId, modelId, toolContextExtras:{}} (main.ts:962-968).
+     b. await wireAgentRequest(agentRequest) (main.ts:970):
+        - wireKnowledgePort(request) — wires knowledgeService into toolContextExtras.
+        - wireOnlineEnvironment(request) — reads settings.onlineProvider + getSecret('glmApiKey'|'aiApiKey'). If key exists, request.onlineEnvironment = {available:true, modelName, modelId}. NO aiMode CHECK (P0-3).
+     c. await createTask(agentRequest) (main.ts:971) — agent/core.ts:151.
+        - If request.modelId: getModel(request.modelId).
+        - Else: routeModel({intent, textLength}, onlineEnv, undefined, {preference: 'auto'|'local-first'|'online-first'}) (agent/model-router.ts:80):
+          - estimateComplexity → 'simple'|'moderate'|'complex'.
+          - selectModel({capability:'coding', category:'coding'}) or selectModel({capability:'chat'}) (agent/model-selector.ts).
+          - If preference='online-first' and onlineModel available → online.
+          - If preference='local-first' and hasLocal → local.
+          - Auto: if !hasLocal → online (or fail). If complex + online → online. If moderate + coding-intent + online → online. Else → local.
+        - backend = routing.backend; model = routing.localModel.
+        - If !model and backend='local' → throw.
+        - If backend='online' and !onlineModelName → throw.
+        - Build AgentTask object. _activeTasks.set(taskId, task). createCancellationToken.
+        - If knowledgePort.available: await knowledgePort.retrieve(userRequest, projectPath, 3) → task.context.relevantKnowledge.
+        - Emit task_created event with {intent, modelId, modelName, backend, routingReason}.
+     d. runTask(task.id).catch(...) (main.ts:972) — fire-and-forget, async.
+  4. runTask (core.ts:296):
+     a. Set 5-min timeout (TASK_TIMEOUT_MS=300_000) → cancelTask on timeout.
+     b. token.throwIfCancelled(). task.status='planning'. Emit planning_started.
+     c. runtime = await getRuntime(task.backend) (core.ts:329):
+        - If backend='local': getDefaultRuntime() → getRuntime('llamacpp', 'default') (SAME instance as chat).
+        - If backend='online': getRuntime('online', 'agent-shared') (DIFFERENT instance from chat's 'chat-shared').
+     d. model = await getModelForTask(task) (core.ts:330, 1993):
+        - If backend='online': return synthetic LocalModelInfo {id:'online:<name>', path:'', contextSize:32768, gpuLayers:0, ...}.
+        - Else: listModels().filter(fileExists).sort by lastUsedAt desc. Return first.
+     e. await runtime.loadModel(model, {contextSize:4096, threads:4, gpuLayers:-1, temperature:0.3, maxTokens:2048}) (core.ts:370).
+     f. Log [AGENT_MODEL] (core.ts:360) + [AGENT_VRAM] (core.ts:383).
+     g. tools = listToolDefinitions().
+     h. createTokenStreamer for planning tokens → emit agent_token events.
+     i. Memory retrieval (core.ts:417-445) — relevantMemories via memory-retrieval-engine.
+     j. await generatePlan(runtime, model, planRequest) (core.ts:447) — planner.ts:113:
+        - buildContext(model, {userRequest, intent, tools, recentConversation, projectPath, relevantKnowledge, relevantMemories, systemPrompt, toolSchemas}).
+        - chatOpts = {contextSize:4096, temperature:0.3, maxTokens:3072, systemPrompt}.
+        - If onToken: runtime.chatStream(messages, onChunk, chatOpts) (planner.ts:176).
+        - Else: runtime.chat(messages, chatOpts) (planner.ts:181).
+        - Log [PLANNER_DEBUG] raw response (first 1000 chars + last 200 chars).
+        - parsePlanResponse → cleanPlanResponse (strip </think> + code fences) → JSON parse → steps[].
+        - If 0 steps: retry with stricter prompt. If still 0: fallbackPlan (heuristic pattern match).
+        - Return PlanResult.
+     k. streamer.end(). task.plan = plan.steps. Emit planning_completed.
+     l. While currentStepIndex < plan.length:
+        - Check cancellation, time limit, step count, tool call count.
+        - await executeStep(task, step, token, runtime, model) (core.ts:545):
+          - If step.toolName: prepareToolCall → requestPermissionAndWait → executeToolWithPermission → result.
+          - Observe result, verify, ReAct decision (if shouldInvokeRePlanner).
+          - ReAct: await rePlanAfterObservation(runtime, model, request) (core.ts:1246) — react-loop.ts:140:
+            - buildContext + buildReActContextMessage.
+            - runtime.chat(messages, {contextSize: model.contextSize, temperature:0.2, maxTokens:800, systemPrompt}).
+            - parseReActResponse → ReActDecision (action: continue|replan|complete|abort).
+          - Apply decision: continue / replan (append newSteps) / complete (skip remaining) / abort (fail).
+        - currentStepIndex++.
+     m. Finalize: verifyTaskCompletion gate. If passed: emit task_completed (with artifact summary). Else: emit task_failed.
+
+4.3 CANCEL PATH
+
+  ai-chat-stream-cancel (main.ts:923):
+    - localAbort('ipc:ai-chat-stream-cancel') → inference.ts abortInference:
+      - Aborts _activeAbortController (whoever set it last — chat or agent).
+      - Logs [INFERENCE_ABORT] with caller stack.
+    - getRuntime('llamacpp','default').abort() → LlamaCppRuntime.abort → inference.ts abortInference (no-op if already aborted).
+    - getRuntime('online','chat-shared').abort() → OnlineRuntime.abort (sets _aborted=true; transport is single HTTP round-trip, can't truly abort).
+
+  agent-cancel-task (main.ts:5237):
+    - cancelTask(taskId, reason) → core.ts cancelTask:
+      - task.cancelled = true.
+      - token.cancel(reason).
+      - DOES NOT call abortInference. ← GAP (carried over from Phase 16).
+
+  local-runtime-abort (main.ts:2250):
+    - getMultiModelRuntimeManager().abort() → LocalModelProvider.abort → inference.ts abortInference.
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 5 — EXTERNAL AI/API DEPENDENCY AUDIT (offline-first)
+═══════════════════════════════════════════════════════════════════════════════
+
+5.1 Local inference path import graph
+
+  local-engine.ts
+    ├── model-registry.ts (fs, path, crypto, persistence) — offline
+    ├── inference.ts (model-registry, runtime-telemetry, dynamic import('node-llama-cpp')) — offline
+    └── ai-service.ts (electron.net, glm.ts) — MODULE LOAD ONLY, no network call on local path
+        └── getSystemPrompt() returns a static string — NO network call
+
+  llamacpp-runtime.ts
+    └── inference.ts — offline
+
+  local-model-provider.ts
+    ├── model-registry.ts — offline
+    ├── inference.ts — offline
+    ├── hardware-model-recommender.ts — offline
+    └── runtime-telemetry.ts — offline
+
+5.2 Verdict: local inference path is 100% OFFLINE ✓
+
+  - No fetch(), no net.request(), no https.request() on the local code path.
+  - The only network-capable module in the import graph is ai-service.ts (electron.net). It is loaded by local-engine.ts for getSystemPrompt() only — the local path never invokes callOpenAI/callClaude/callGLM.
+  - Architecture caveat (P2-4): local-engine.ts:15 imports from ai-service.ts, which imports electron.net at line 1. If a future change adds a top-level net.request call to ai-service.ts, it would execute on the local path. FRAGILE — should be refactored.
+
+5.3 aiMode enforcement matrix
+
+  Path | aiMode check | Enforcement point
+  ---- | ------------- | -----------------
+  ai-chat IPC (non-stream) | /home/z/my-project/src/main/ai/provider.ts:87 (routeChat) | Returns blocked ProviderResult if aiMode='local' and provider=online
+  ai-chat-stream IPC | /home/z/my-project/src/main/main.ts:798 (explicit) + /home/z/my-project/src/main/ai/provider.ts:87 (routeChat via transport) | Defense in depth — TWO checks
+  Agent path (local backend) | N/A | Local backend never makes network call
+  Agent path (online backend) | /home/z/my-project/src/main/ai/provider.ts:87 (routeChat via transport) | At transport call time — no preemptive check
+  local-runtime-generate IPC | None | Provider is always 'local' for this IPC — no online equivalent
+  local-runtime-route-task IPC | None | MultiModelRuntimeManager only routes to LOCAL models — no online
+  NexAgentExecutor.executePlan | None | Bypasses wireAgentRequest entirely — never sees online (accidentally safe)
+
+5.4 Hidden network calls in local path
+
+  None. Verified by:
+  - grep `fetch(` in src/main/ai: 0 matches in the local inference path.
+  - grep `net.request` in src/main/ai: matches only in web-tool.ts (agent tool — not inference path) and ai-service.ts (called only by routeChat for online providers).
+  - grep `https.request` in src/main/ai: matches only in model-download-manager.ts (model download, not inference).
+
+5.5 EXTERNAL DEP LEAK: wireOnlineEnvironment ignores aiMode (P0-3)
+
+  File: /home/z/my-project/src/main/main.ts:5180-5208 (wireOnlineEnvironment)
+  Function signature: `function wireOnlineEnvironment(request: any): void`
+
+  Logic:
+    1. Read settings.onlineProvider (default 'glm').
+    2. Read API key (glmApiKey for glm, aiApiKey for openai/claude).
+    3. If no API key → onlineEnvironment = {available:false}.
+    4. Else → onlineEnvironment = {available:true, modelName, modelId}.
+
+  MISSING: No check of `getCurrentAiMode()`. If aiMode='local' but API key exists, onlineEnvironment.available=true. Agent's routeModel then picks 'online' for complex tasks. The transport's routeChat blocks at call time, but the agent wastes an attempt and falls back to heuristic plan.
+
+  Severity: P0-3 (EXTERNAL DEP LEAK). The agent attempts an online call when the user has explicitly chosen 'local' mode. The block happens at routeChat (no actual HTTP request), but the agent's planner fails and falls back to a heuristic plan — confusing UX and a wasted LLM round-trip attempt.
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 6 — EXPECTED LOGS (for E2E test specs to grep)
+═══════════════════════════════════════════════════════════════════════════════
+
+6.1 Engine init (one-time, at first loadModel)
+  [NEX AI Local] Initializing llama.cpp engine...        (inference.ts:261)
+  [MODEL_TIMING] llama_module_import: ...ms              (inference.ts:272)
+  [MODEL_TIMING] gpu_preflight: ...ms (supportedGpus=[vulkan,...])  (inference.ts:282)
+  [NEX AI Local] Requesting Vulkan backend...            (inference.ts:295)
+  [MODEL_TIMING] vulkan_init: ...ms (backend=vulkan)    (inference.ts:304)
+  [GPU_RUNTIME]                                          (inference.ts:197-208, 7-line block)
+  [NEX AI Local] Engine ready (GPU backend: ..., supportsGpuOffloading: ...)  (inference.ts:395)
+
+6.2 Model load (per-load)
+  [NEX AI Local] Loading model: ... (size)               (inference.ts:567)
+  [MODEL_TIMING] model_load: ...ms (path=...)            (inference.ts:586)
+  [GPU_MODEL_LOAD]                                       (inference.ts:225-240, 9-line block — PROOF of GPU offload)
+  [MODEL_TIMING] context_create: ...ms                   (inference.ts:670)
+  [VRAM_FALLBACK] auto-fit context succeeded: ...        (inference.ts:676)
+  [VRAM_FALLBACK] fixed contextSize=... succeeded        (inference.ts:693)
+  [VRAM_FALLBACK] All context sizes failed — trying CPU-only reload  (inference.ts:717)
+  [MODEL_LOAD]                                           (inference.ts:770-778, 8-line block)
+  [NEX AI Local] Model loaded: ...                       (inference.ts:790)
+
+6.3 Model load path decision (reuse vs fresh)
+  [MODEL_LOAD_PATH]                                      (inference.ts:523-528, reuse / 547-553, fresh-load)
+    selected=reuse-existing | selected=fresh-load
+    modelId=... gpuLayers=... context=... kvCacheMode=...
+
+6.4 Chat router decision (per chat message)
+  [MODEL_ROUTER]                                         (model-router.ts:579-586, 7-line block)
+    task=... selectedModel=... switchRequired=... reason=... cacheHit=... loadTime=... source=...
+
+6.5 Inference start (per chat/agent inference)
+  [CHAT_REQUEST]                                         (local-engine.ts:168-173 / 262-267)
+    panel=chat-stream provider=local modelId=... modelPath=... messages=N
+  [INFERENCE_START]                                       (main.ts:836, 840, 850, 862)
+    Cache hit — reusing loaded model: ... | Loading model: ... | Model loaded successfully | Starting chatStream with N messages
+  [INFERENCE_ABORT_CONTROLLER]                           (inference.ts:973, 1076)
+    requestId=chatStream-... op=chatStream createdAt=... modelId=...
+  [GPU_INFERENCE]                                        (inference.ts:957, 1060)
+    chatComplete|chatStream modelId=... backend=... gpuLayersActual=... modelInstanceSame=YES|NO
+  [MODEL_TIMING] inference: TTFT=...ms generation=...ms tokens=N tps=...  (inference.ts:1118)
+  [INFERENCE_METRICS]                                    (inference.ts:998, 1119)
+  [CHAT_RESPONSE]                                        (main.ts:889-893 / local-engine.ts:206-209)
+    source=local-stream tokens=N error=none contentLength=N
+
+6.6 Brain router decision
+  [BRAIN_ROUTER]                                         (nex-brain-router.ts:183-186, 4-line block)
+    message="..." route=chat|agent reason=...
+
+6.7 Agent path
+  [AGENT_MODEL]                                          (core.ts:360-368, 1-line JSON)
+    id, name, path, backend, contextSize, gpuLayers, modelContextSize
+  [AGENT_VRAM]                                           (core.ts:383-390, 1-line JSON)
+    gpuBackend, vramBeforeModelLoad, vramAfterModelLoad, llamaMemoryUsage, ...
+  [PLANNER_DEBUG] generating plan...                     (planner.ts:165-171)
+  [PLANNER_DEBUG] raw response length: ...               (planner.ts:185)
+  [PLANNER_DEBUG] raw response (first 1000 chars): ...   (planner.ts:186)
+  [PLANNER_DIAG] stripped think block                    (planner.ts:268)
+  [PLANNER_DIAG] plan created with N steps               (planner.ts:338)
+  Routing decision: ...                                  (core.ts:181 — AgentLogger.info)
+  Knowledge: N chunks retrieved ...                     (core.ts:249 — emit log)
+  Memory retrieval: N relevant memories found ...       (core.ts:438)
+
+6.8 Model activation
+  [MODEL_ACTIVATE] Activating model: ...                 (main.ts:2096)
+  [MODEL_ACTIVATE] activeModelId persisted: ...         (main.ts:2103)
+  [MODEL_ACTIVATE] Model already loaded — skipping ...   (main.ts:2112)
+  [MODEL_ACTIVATE] Old model unloaded                    (main.ts:2121)
+  [MODEL_ACTIVATE] New model loaded: ...                (main.ts:2134)
+
+6.9 Startup preload
+  [STARTUP_PRELOAD] Preloading model: ... (+Nms)          (main.ts:6320)
+  [STARTUP_TIMING] model-preloaded: +Nms (load took Nms)  (main.ts:6331)
+  [STARTUP_TIMING] AI_READY: +Nms                        (main.ts:6332)
+
+6.10 Abort
+  [INFERENCE_ABORT]                                      (inference.ts:1177-1184, multi-line block with callerStack)
+    requestId=... reason=... elapsedMs=...
+  [NEX AI Local] Aborting active inference request       (inference.ts:1185)
+  [NEX AI Local] No active inference to abort           (inference.ts:1191)
+
+6.11 Error
+  [INFERENCE_ERROR]                                      (main.ts:905-916, multi-line)
+    message=... code=... name=... stack=... abortType=... note=...
+  [MODEL_PATH_MISSING]                                  (inference.ts:486, 941, 1046)
+    { id, name, path }
+  [NEX AI Local] llama.loadModel() FAILED:              (inference.ts:589-596)
+    { modelPath, modelName, error, code, stack }
+
+6.12 Unload
+  [NEX AI Local] Model unloaded                          (inference.ts:858)
+  [NEX AI Local] Sequence dispose warning: ...           (inference.ts:842)
+  [NEX AI Local] Context dispose warning: ...           (inference.ts:846)
+  [NEX AI Local] Model dispose warning: ...             (inference.ts:850)
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 7 — ISSUE TABLE (classification + severity)
+═══════════════════════════════════════════════════════════════════════════════
+
+P0 (blocking for offline-first / correctness):
+
+P0-1 [BUG] model-test-load unloads the user's active model as a side effect.
+   Location: /home/z/my-project/src/main/main.ts:2199-2207 (ipcMain.handle('model-test-load')).
+   Function: `ipcMain.handle('model-test-load', async (_event, modelId) => { ... await loadModel(model, {contextSize:512}); ... await unloadModel(); ... })`
+   Root cause: After load + unload, NO model remains loaded. The user's next chat fails or triggers a 5-15s reload.
+   Logs: [MODEL_LOAD_PATH] selected=fresh-load (test model) then [NEX AI Local] Model unloaded — but no log explicitly flags the side effect.
+   Fix: Save the currently-loaded model id BEFORE the test, restore it AFTER (or use a separate runtime instance for testing).
+
+P0-2 [BUG] cancel-chat kills agent's in-flight inference.
+   Location: /home/z/my-project/src/main/main.ts:923-938 (ai-chat-stream-cancel) + /home/z/my-project/src/main/ai/inference.ts:1172-1193 (abortInference).
+   Function: `ipcMain.handle('ai-chat-stream-cancel', async () => { localAbort('ipc:ai-chat-stream-cancel'); ... })`
+   Root cause: abortInference clears the GLOBAL _activeAbortController, which was set by whoever called chatStream/chatComplete last. If chat is waiting in waitForInFlight (because agent is mid-inference), canceling chat aborts the AGENT's request.
+   Logs: [INFERENCE_ABORT] callerStack shows the cancel IPC handler, but the requestId belongs to the agent's request.
+   Fix: Track per-request abort controllers keyed by request id; cancel only the chat's request, not the agent's.
+
+P0-3 [EXTERNAL DEP LEAK / BUG] wireOnlineEnvironment ignores aiMode.
+   Location: /home/z/my-project/src/main/main.ts:5180-5208 (wireOnlineEnvironment).
+   Function: `function wireOnlineEnvironment(request: any): void`
+   Root cause: Sets onlineEnvironment.available=true based on API key existence, without checking aiMode. Agent's routeModel then picks 'online' for complex tasks. The transport's routeChat blocks at call time, but the agent wastes an attempt and falls back to heuristic plan.
+   Logs: "Routing decision: Complex task → GLM 5.3 (planning/multi-step quality)" (core.ts:181) — but no log indicates the subsequent aiMode block.
+   Fix: At the top of wireOnlineEnvironment, check getCurrentAiMode(); if 'local', set onlineEnvironment.available=false.
+
+P1 (correctness / UX):
+
+P1-1 [DUPLICATE / BUG] Chat session-stale after agent load → reload churn.
+   Location: /home/z/my-project/src/main/ai/model-router.ts:162 (ModelRouter._session) + /home/z/my-project/src/main/agent/core.ts:370 (agent loadModel).
+   Root cause: ModelRouter's sticky session cache is CHAT-PATH ONLY. Agent doesn't consult or update it. After agent loads a different model, ModelRouter's session still points to the old model. Next chat triggers explicit loadModel of the old model, unloading the agent's model.
+   Logs: [MODEL_ROUTER] source=session-sticky ... cacheHit=false ... switchRequired=true → triggers [MODEL_LOAD_PATH] selected=fresh-load.
+   Fix: Either (a) ModelRouter should query inference.ts getLoadedModel() before trusting session-sticky, OR (b) agent should call ModelRouter.resetSession() when it loads a different model.
+
+P1-2 [BUG / RACE] Chat and agent mutually reload each other's model.
+   Location: /home/z/my-project/src/main/main.ts:843 (chat explicit loadModel) + /home/z/my-project/src/main/agent/core.ts:370 (agent loadModel).
+   Root cause: Both paths call explicit loadModel with their respective model. If they pick different models (likely, since they use different heuristics), each path unloads the other's model. inference.ts serializes via _inFlightPromise (no corruption), but reload churn is 5-15s per switch on 8B models.
+   Logs: [MODEL_LOAD_PATH] selected=fresh-load reason=different-model — repeated on every chat ↔ agent switch.
+   Fix: Add a "preferred model" hint to the runtime — if chat and agent both hint the same model, no churn. OR: use separate runtime instances for chat and agent (like online does with chat-shared/agent-shared).
+
+P1-3 [INSTRUMENTATION GAP] contextLargeEnough computed but not used in idempotency check.
+   Location: /home/z/my-project/src/main/ai/inference.ts:512-531.
+   Root cause: The variable `contextLargeEnough` is declared (line 515) but never used in the `if (exists && notDisposed)` condition (line 521). The comment (line 505) says "Options are compatible (same gpuLayers translation + context >= requested)" but the code only checks sameId + notDisposed.
+   Effect: A model loaded with 2048 context (after VRAM fallback) is REUSED even when the caller requested 4096. The caller's `suggestedContextSize` is silently ignored.
+   Logs: [MODEL_LOAD_PATH] selected=reuse-existing context=2048 (requested 4096 — smaller than requested, but reusing to avoid reload).
+   Fix: Either (a) add `&& contextLargeEnough` to the if condition (will cause more reloads — slower but matches the comment), OR (b) update the comment to match the actual behavior (current behavior is intentional — reload just to grow context is wasteful).
+
+P1-4 [INSTRUMENTATION GAP] inferenceActive only true during 'planning' status, not during ReAct/recovery LLM calls.
+   Location: /home/z/my-project/src/main/agent/core.ts:1969.
+   Root cause: `inferenceActive: active.status === 'planning'` — only true during the planner call. NOT true during executeStep's ReAct call (react-loop.ts:189), recovery-engine LLM call (recovery-engine.ts:570), or any replan.
+   Fix: Track inferenceActive via the inference.ts _activeAbortController (or _inFlightPromise) instead of the task status.
+   Logs: (none — the gap is in the monitor state, not logs).
+
+P1-5 [BUG] agent cancel does not abort inference (carried over from Phase 16).
+   Location: /home/z/my-project/src/main/agent/core.ts:1841 (cancelTask).
+   Root cause: cancelTask sets task.cancelled=true and token.cancel(reason), but does NOT call abortInference. The LLM chatStream runs to natural completion before the cancel takes effect at the next checkpoint.
+   Fix: In cancelTask, also call abortInference('agent-cancel-task').
+   Logs: [INFERENCE_ABORT] is NOT emitted on agent cancel — only the task_cancelled event.
+
+P1-6 [RACE] LocalModelProvider.loadedModelId goes stale when inference.ts loadModel internally calls unloadModel.
+   Location: /home/z/my-project/src/main/ai/local-model-provider.ts:122-123 (fields) + /home/z/my-project/src/main/ai/inference.ts:564 (internal unloadModel).
+   Root cause: inference.ts loadModel's fresh-load path calls `await unloadModel()` (line 564) before loading the new model. This disposes the old model in inference.ts, but LocalModelProvider._loadedModelId still points to the old id. MultiModelRuntimeManager.getLoadedModelId() (which delegates to provider.loadedModelId) returns the stale id.
+   Effect: After chat loads a different model, LocalRuntimePanel shows the OLD model as "loaded" until the user manually clicks Refresh.
+   Fix: LocalModelProvider should expose a `refresh()` method that re-reads from inference.ts getLoadedModelInfo(); OR the manager should always query inference.ts directly, not the provider's mirror.
+   Logs: (none — pure state inconsistency).
+
+P2 (minor / architecture):
+
+P2-1 [DUPLICATE] 9 routing decision points (see Section 1.1).
+   Fix: Consolidate. ModelRouter (chat) + routeModel (agent) + SmartModelRouter+NexBrainController (UI) should be unified into a single router with a clear API. ExpertRouter can stay separate (it's about skills, not models).
+
+P2-2 [DUPLICATE] 3 model-selection heuristics with different tiers/keywords/thresholds (see Section 1.2).
+   Fix: Unify the complexity classifier (simple/medium/moderate/complex → pick one canonical naming + threshold).
+
+P2-3 [LEGACY] NexAgentExecutor.executePlan bypasses wireAgentRequest.
+   Location: /home/z/my-project/src/main/ai/nex-agent-executor.ts:213-221.
+   Fix: Add `await wireAgentRequest(task)` before createTask, OR route NexAgentExecutor through brain-route / agent-create-task IPC.
+
+P2-4 [ARCHITECTURE] local-engine.ts imports ai-service.ts (which imports electron.net).
+   Location: /home/z/my-project/src/main/ai/local-engine.ts:15.
+   Fix: Move getSystemPrompt() to a separate system-prompt.ts module that doesn't import electron.
+
+P2-5 [DUPLICATE] contextSize inconsistency: agent core uses 4096, planner uses 4096, react-loop uses model.contextSize (2048), recovery uses model.contextSize (2048).
+   Location: /home/z/my-project/src/main/agent/core.ts:357 (4096) + /home/z/my-project/src/main/agent/planner.ts:154 (4096) + /home/z/my-project/src/main/agent/react-loop.ts:181 (model.contextSize) + /home/z/my-project/src/main/agent/recovery-engine.ts:576 (model.contextSize).
+   Fix: Define a single AGENT_CONTEXT_SIZE constant and use everywhere. OR pass it through the runtime opts.
+
+P2-6 [INSTRUMENTATION GAP] gpuLayers request silently ignored on cache hit.
+   Location: /home/z/my-project/src/main/ai/inference.ts:512-531.
+   Fix: Log a warning when requested gpuLayers != loaded gpuLayers.
+
+P2-7 [MINOR] OnlineRuntime.shutdown() never called (no resource leak, just dead code).
+   Location: /home/z/my-project/src/main/ai/runtimes/online-runtime.ts:151 + /home/z/my-project/src/main/ai/runtime.ts:264 (shutdownAllRuntimes — never invoked from main.ts).
+   Fix: Either call shutdownAllRuntimes() from main.ts before-quit, OR remove the shutdown method.
+
+P2-8 [MINOR] ai-chat-stream-cancel creates OnlineRuntime instance even if aiMode='local'.
+   Location: /home/z/my-project/src/main/main.ts:933.
+   Fix: Guard with `if (getCurrentAiMode() !== 'local')` before creating the online runtime.
+
+P2-9 [MINOR] ModelRouter._lastUserMessage is a side effect of classifyTaskTier (model-router.ts:451).
+   Root cause: classifyTaskTier sets this._lastUserMessage (line 451) for later use by isGreeting/isDeepReasoning in selectModelForTier (line 390, 404). This is stateful + fragile — if classifyTaskTier isn't called before selectModelForTier, _lastUserMessage is stale.
+   Fix: Pass userMessage explicitly to selectModelForTier.
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION 8 — CONSOLIDATED FINDINGS
+═══════════════════════════════════════════════════════════════════════════════
+
+Files audited: 28 source files in /home/z/my-project/src/main/ (ai/, agent/, main.ts, persistence/, security/).
+
+Total issues found: 17 (3 P0, 6 P1, 8 P2).
+
+Critical blockers for "offline-first" guarantee:
+  - P0-3 [EXTERNAL DEP LEAK]: wireOnlineEnvironment ignores aiMode. Agent attempts online call (blocked by routeChat, but wastes an attempt).
+  - P0-1 [BUG]: model-test-load unloads user's active model. Next chat fails or reloads.
+  - P0-2 [BUG]: cancel-chat kills agent's in-flight inference (conversational UX hazard).
+
+Local inference path is 100% offline ✓ (verified by import graph analysis — only network-capable module in the local path is ai-service.ts, imported by local-engine.ts for getSystemPrompt only, no network call on the local path).
+
+aiMode enforcement points (defense in depth):
+  - ai-chat IPC: routeChat (provider.ts:87). ✓
+  - ai-chat-stream IPC: main.ts:798 explicit check + routeChat via transport. ✓
+  - agent path (brain-route / agent-create-task / task-queue-create-agent-task): routeChat via transport when backend='online'. ✓ (but no preemptive check — wastes an attempt when aiMode='local' and API key exists)
+  - local-runtime-generate / local-runtime-route-task: provider='local' only, no online. ✓
+  - NexAgentExecutor: bypasses wireAgentRequest — never sees online. ✓ (accidentally safe, but for the wrong reason)
+
+Single source of truth for "loaded model": inference.ts `_loadedModelId` + `_loadedModelInfo`. Two mirrors (LocalModelProvider, runtime-telemetry) kept in sync via inference.ts side effects. One mirror (LocalModelProvider) can desync when inference.ts internally calls unloadModel (line 564).
+
+Single loadModel implementation: inference.ts:463. Four wrappers (LlamaCppRuntime, LocalModelProvider, MultiModelRuntimeManager, OnlineRuntime-no-op). No duplicate logic. ✓
+
+Race conditions:
+  - inference.ts serializes via _inFlightPromise — no concurrent inference corruption. ✓
+  - inference.ts _loadingPromise + _isShuttingDown prevent dispose-during-load. ✓
+  - LocalModelProvider mirror desync (P1-6). ← RACE
+  - Chat cancel kills agent inference (P0-2). ← RACE
+  - Chat reloads agent's model and vice versa (P1-2). ← RACE (churn, not corruption)
+
+Reload churn sources:
+  - ModelRouter session-stale after agent load (P1-1).
+  - Chat ↔ agent different model selections (P1-2).
+  - contextLargeEnough not gating idempotency (P1-3) — could cause reload loop on low-VRAM systems where _loadedContextSize shrinks via fallback.
+
+No zombies / VRAM leak:
+  - inference.ts tracks ONE loaded model. Loading a new unloads the old. ✓
+  - shutdownLlama at app exit. ✓
+  - _isShuttingDown prevents load during shutdown. ✓
+
+Stage Summary:
+  - 17 issues found (3 P0, 6 P1, 8 P2). 0 files modified, 0 commits made. READ-ONLY audit.
+  - Critical blockers: P0-1 (model-test-load side effect), P0-2 (cancel-chat kills agent inference), P0-3 (wireOnlineEnvironment ignores aiMode).
+  - Local inference path is 100% offline ✓ (with one architectural caveat: local-engine.ts imports ai-service.ts which imports electron.net — no current network call, but fragile).
+  - 9 routing decision points identified (DUPLICATE). 3 model-selection heuristics with conflicting tiers/keywords/thresholds (DUPLICATE).
+  - Single source of truth for loaded model: inference.ts (with 2 mirrors, one can desync).
+  - Single loadModel implementation: inference.ts:463 (with 4 wrappers, no duplicate logic).
+  - Race conditions: 3 (chat cancel kills agent, chat ↔ agent reload churn, LocalModelProvider mirror desync).
+  - All findings appended to /home/z/my-project/worklog.md in append mode (this block). No files modified, no commits made.
+
+---
+
+Task ID: P17-AUDIT-CONTEXT-LEGACY
+Agent: Explore (context/memory/IPC/zustand/legacy)
+Task: PHASE 17 — Runtime & Core Integration Audit: trace Context/history/maxTokens coordination with Runtime (10), Memory integration (11), Main↔Renderer IPC lifecycle (12), Zustand runtime/chat state consistency (13), Legacy/duplicate code consolidation (14), Offline-first architecture preservation (15), External AI/API dependency for main inference (16). Read-only audit — no files modified, no files created, no commits made. Codebase at commit 8e5ff6d on main.
+
+Work Log:
+- Read /home/z/my-project/worklog.md tail (Phase 16 audit block at lines 2658-3286) to inherit Phase 16 findings (BUG-14 planner contextSize 4096 hardcoded at planner.ts:154, 2 orphan webContents.send channels voice-conversation-partial + plugin-event, 41 bugs catalogued in Phase 16).
+- Deeply traced context-manager.ts (313 lines), context-contract.ts (378 lines), planner.ts (532 lines), react-loop.ts (397 lines), core.ts (2187 lines), inference.ts (1216 lines), llamacpp-runtime.ts (117 lines), main.ts (6463 lines), useStore.ts (363 lines), NexChatPanel.tsx (1436 lines).
+- Traced memory-consolidator.ts (190 lines), memory/index.ts (333 lines), semantic-memory-store.ts (391 lines), memory-retrieval-engine.ts (226 lines), long-term-memory-system.ts (261 lines), nex-voice-conversation.ts persistContext at lines 781-797.
+- Cross-checked IPC registration: setupIPC() called once at main.ts:6306 in app.whenReady (line 6170). 402 ipcMain channels registered once; no per-window re-registration. Confirmed voice-conversation-partial (main.ts:1833) and plugin-event (main.ts:5779) are still orphan channels with no ipcRenderer.on listener in preload.ts or renderer code.
+- Traced routing-layer duplication: ai/model-router.ts (chat path model selection, 619 lines), agent/model-router.ts (agent backend routing local/online, 162 lines), ai/nex-brain-controller.ts (brain-decide IPC, 233 lines), ai/nex-brain-router.ts (chat vs agent routing, 231 lines), ai/expert-router.ts (domain expert, 134 lines), ai/model-intelligence/smart-model-router.ts (used only by nex-brain-controller).
+- Verified ai-mode.ts enforceAiMode (110 lines), online-runtime.ts (155 lines), online-transport.ts (117 lines), ai-service.ts (253 lines), provider.ts routeChat (116 lines), security/index.ts ALLOWED_AI_ORIGINS (235 lines).
+- Traced local-engine.ts (316 lines) — duplicate of direct chat path; local-model-provider.ts (390 lines) — LocalModelProvider has its own _loadedModelId shadow state (split-brain risk); multi-model-runtime-manager.ts (452 lines) — used only by LocalRuntimePanel, not by chat path.
+- Traced ChatPanel.tsx (551 lines) — DEAD (only mentioned in comments, not imported). Verified via grep that AppShell only lazy-imports NexChatPanel (AppShell.tsx:35).
+- Traced interaction-loop.ts (393 lines) — NOT dead, used by BasicInteractionPanel via interaction-process-text IPC. Provides parallel text→LLM→TTS path distinct from ai-chat-stream.
+- Traced renderer state: useStore.ts (363 lines), download-store.ts (202 lines, separate store), voice-controller.ts (192 lines), voice-service.ts (590 lines). Confirmed messages/addMessage/clearMessages in useStore are dead (only used by dead ChatPanel). Confirmed setAIMode only updates top-level aiMode, NOT settings.aiMode — SettingsPanel's AI Mode toggle is NOT persisted (BottomStatusBar's cycleMode IS persisted via settingsSave).
+- Traced web-tool.ts (198 lines) — web_fetch/web_search tools have requiresNetwork:true flag but the flag is NEVER enforced. In 'local' aiMode, agent can still make external HTTP requests via web_fetch/web_search if user approves 'network' permission. No aiMode check at tool execution layer.
+- Traced embedding-select.ts (89 lines) — default HashEmbedder (offline, no model), optional LlamaCppEmbedder (local GGUF). No external embedding API. nex-personality-engine.ts and nex-expert-system.ts are pure in-memory data structures (no external calls).
+- Traced telemetry references — all are local runtime-telemetry / system-monitor. No PostHog/Amplitude/Sentry/Datadog/analytics SDKs. No phone-home or auto-update check (update-manager.ts is permission-gated, only invoked via user-clicked update-check IPC, which itself is not called by renderer).
+- Appended this audit block to worklog.md (append-only; no overwrites; no other file modifications).
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 10 — CONTEXT / HISTORY / maxTokens COORDINATION WITH RUNTIME
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 10-1 — MULTIPLE HARDCODED contextSize VALUES (no single source of truth)** — BUG / INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/agent/core.ts:357 — `const agentContextSize = 4096;  // MUST match chat path + preload` — hardcoded for AGENT loadModel
+- /home/z/my-project/src/main/agent/planner.ts:154 — `contextSize: 4096` — hardcoded for planner chatOpts
+- /home/z/my-project/src/main/agent/react-loop.ts:181 — `contextSize: model.contextSize` — uses model.contextSize for replanner (DIFFERENT from planner's 4096)
+- /home/z/my-project/src/main/agent/core.ts:207 — `maxContextTokens: (backend === 'online' ? 32768 : model?.contextSize) || 2048` — TaskContext.maxContextTokens (online=32768, local=model.contextSize, default=2048)
+- /home/z/my-project/src/main/agent/context-manager.ts:107 — `const contextSize = model.contextSize || 2048;` — yet another fallback to 2048 for budget calc
+- /home/z/my-project/src/main/ai/inference.ts:497 — `requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024` — last-resort default 1024
+- /home/z/my-project/src/main/ai/model-router.ts:501-508 — `suggestContextSize(tier, hasGpu)` returns 4096 (GPU) or 2048/4096 (CPU), DOES NOT respect model.contextSize
+- /home/z/my-project/src/main/main.ts:843-849 — chat path: `runtime.loadModel(model, { contextSize: routerVerdict.suggestedContextSize, ... })` — uses router's suggestion (4096 GPU)
+- /home/z/my-project/src/main/main.ts:6326-6330 — startup preload: hardcoded `contextSize: 4096` for preload
+- /home/z/my-project/src/main/ai/local-engine.ts:192 — non-stream chat: `contextSize: routerContextSize ?? config.localContextSize ?? model.contextSize ?? 1024`
+- /home/z/my-project/src/renderer/store/useStore.ts:230 — `localContextSize: 2048` — renderer default
+
+Root cause: contextSize is hardcoded in 5+ places with different defaults (1024/2048/4096/32768), and the model's actual contextSize is treated as a fallback (not a hard cap). The ModelRouter.suggestContextSize() ignores model.contextSize entirely — returns 4096 for GPU regardless of whether the model supports 32768 or only 2048. Phase 16 BUG-14 noted the planner-vs-chat mismatch; this audit confirms the mismatch is wider — react-loop, agent core, router, context-manager, inference all use different sources.
+
+Risk: If a model's actual contextSize is 2048 but router suggests 4096, llama.cpp will load with min:256/max:4096 auto-fit (inference.ts:666). The auto-fit might return 2048 if VRAM is constrained, or 4096 if not — silent truncation in the former case, over-allocation in the latter. No log emits the model's actual contextSize vs the requested contextSize at the chat path.
+
+**FINDING 10-2 — maxTokens NOT BOUNDED BY model.contextSize** — BUG:
+- /home/z/my-project/src/main/agent/planner.ts:161 — `maxTokens: 3072` — planner reserves 3072 for response
+- /home/z/my-project/src/main/agent/react-loop.ts:183 — `maxTokens: 800` — replanner reserves 800
+- /home/z/my-project/src/main/ai/inference.ts:1092 — `maxTokens: opts.maxTokens ?? 1024` — chatStream session.prompt
+- /home/z/my-project/src/main/main.ts:873-884 — chat path: `dynamicMaxTokens` (512 greeting, 2048 coding, 1024 default) or `config.localMaxTokens ?? config.maxTokens ?? dynamicMaxTokens` (default 1024)
+- /home/z/my-project/src/renderer/store/useStore.ts:232 — `localMaxTokens: 1024` — renderer default for local
+- /home/z/my-project/src/renderer/store/useStore.ts:122 — `maxTokens: 4096` for online GLM; line 134: `maxTokens: 4096` for OpenAI/Claude (hardcoded)
+
+None of these are bounded by `model.contextSize - promptTokens`. If a small model (contextSize=2048) is loaded and maxTokens=3072 is requested (planner), the response budget exceeds the context window → llama.cpp will silently truncate or fail.
+
+Risk: For online providers (GLM/OpenAI/Claude), maxTokens=4096 is hardcoded in renderer (useStore.ts:122, 134). If the user sends a long conversation, the prompt + maxTokens can exceed the provider's context window → API returns 400 error. No pre-flight token-count check.
+
+**FINDING 10-3 — CHAT PATH SENDS ALL MESSAGES (NO TOKEN TRUNCATION)** — BUG / RACE:
+- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx:877 — `apiMessages = [...toApiMessages(messages), {role:'user', content: fullContent}]`
+- /home/z/my-project/src/renderer/lib/chat-model.ts:66-70 — `toApiMessages` filters status==='complete' and strips UI fields; NO truncation, NO slice
+- /home/z/my-project/src/main/main.ts:880 — chat path passes `messages.map((m) => ({ role, content }))` directly to `runtime.chatStream` — no truncation
+- /home/z/my-project/src/main/ai/inference.ts:1065-1068 — chatStream builds `chatHistory = messages.filter(m=>m.role!=='system').slice(0,-1)` — strips system + drops last (current user), but does NOT truncate by tokens
+- llama.cpp's LlamaChatSession will internally truncate history when it exceeds contextSize (silent truncation — no log).
+
+Risk: With a 2048-context model + 100-message conversation, the chat path silently passes all 100 messages to llama.cpp. llama.cpp will internally drop oldest messages without warning. The user sees context loss without any indication. The AGENT path correctly truncates via context-manager.ts:238-249 (`recentConversation.slice(-10)` + per-message token budget check), but the CHAT path skips this entirely.
+
+**FINDING 10-4 — BUDGET CHECK BUG IN context-manager.ts** — BUG:
+- /home/z/my-project/src/main/agent/context-manager.ts:109 — `responseBudget = Math.floor(contextSize * 0.4)` — 40% of context for response
+- /home/z/my-project/src/main/agent/context-manager.ts:110 — `contextBudget = contextSize - responseBudget` — 60% for prompt
+- /home/z/my-project/src/main/agent/context-manager.ts:241 — `if (tokensUsed + msgTokens >= contextBudget) { truncated = true; break; }` — uses `>=` not `>`; the LAST message that would fit is rejected. Off-by-one minor.
+- /home/z/my-project/src/main/agent/context-manager.ts:257 — same `>=` pattern for observations
+- /home/z/my-project/src/main/agent/context-manager.ts:273 — same `>=` pattern for files
+- BUT: the responseBudget reserved at line 109 is NOT passed to the LLM call. The chatOpts.maxTokens (planner=3072, react=800, chat=1024) is independent of responseBudget. If maxTokens > responseBudget, the response can overflow. If maxTokens < responseBudget, the prompt budget is wasted.
+
+Risk: The context-manager reserves 40% for response, but the actual maxTokens passed to inference is from chatOpts (independent). For a 4096-context model with contextBudget=2458 + responseBudget=1638, planner's maxTokens=3072 > responseBudget=1638 → response may overflow.
+
+**FINDING 10-5 — loadModel opts.maxTokens is DEAD METADATA** — INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/agent/core.ts:375 — passes `maxTokens: 2048` to runtime.loadModel
+- /home/z/my-project/src/main/main.ts:848 — passes `maxTokens: config.localMaxTokens ?? config.maxTokens ?? dynamicMaxTokens` to runtime.loadModel
+- /home/z/my-project/src/main/ai/inference.ts:463-799 — loadModel only uses opts.contextSize, opts.threads, opts.gpuLayers, opts.temperature. opts.maxTokens is NOT stored or used.
+- maxTokens is actually consumed at chatComplete/chatStream time via session.prompt({ maxTokens: opts.maxTokens ?? 1024 }).
+
+Risk: Misleading — developers may think setting maxTokens in loadModel opts affects the response budget, but it doesn't. The value is dropped silently. Not a bug per se, but a code smell + instrumentation gap.
+
+**FINDING 10-6 — Idempotency check uses model.contextSize when chatStream doesn't pass contextSize** — BUG:
+- /home/z/my-project/src/main/main.ts:879-887 — chat path's chatStream call does NOT pass contextSize in opts (only temperature, maxTokens, systemPrompt)
+- /home/z/my-project/src/main/ai/inference.ts:1053 — `await loadModel(model, opts)` — opts.contextSize is undefined
+- /home/z/my-project/src/main/ai/inference.ts:497 — `requestedContextSize = opts.contextSize ?? model.contextSize ?? 1024` — falls back to model.contextSize (e.g., 2048)
+- /home/z/my-project/src/main/ai/inference.ts:515 — idempotency check `_loadedContextSize (4096 from main.ts:843 load) >= requestedContextSize (2048 from chatStream)` → reuse
+
+Result: chat path loads model with 4096 (line 843), then chatStream calls loadModel again with NO contextSize, which falls back to model.contextSize=2048 for the idempotency check. Since 4096 >= 2048, it reuses. Works in this case, but if the model's contextSize is 8192, the idempotency check would be `4096 >= 8192` → fail → wasteful reload to 8192.
+
+EXPECTED LOGS for Item 10 paths:
+- Agent path: `[AGENT_MODEL] { id, name, path, backend, contextSize: 4096, gpuLayers: -1, modelContextSize }` (core.ts:360) + `[MODEL_LOAD] path=... contextSize=... gpuLayers=... backend=...` (inference.ts:770) + `[PLANNER_DEBUG] contextSize: 4096, maxTokens: 3072` (planner.ts:165)
+- Chat path: `[CHAT_REQUEST] panel=ai-chat-stream provider=local messages=N` (main.ts:788) + `[MODEL_ROUTER] task=.../... selectedModel=... cacheHit=...` (model-router.ts:579) + `[MODEL_LOAD_PATH] selected=reuse-existing` (inference.ts:523) + `[INFERENCE_METRICS] model=... context=... firstTokenMs=... generatedTokens=...` (inference.ts:1119)
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 11 — MEMORY INTEGRATION
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 11-1 — THREE PARALLEL MEMORY SYSTEMS (DUPLICATED WRITE PATHS)** — DUPLICATE:
+1. /home/z/my-project/src/main/memory/index.ts (Phase 13) — 5-store JSON key-value (user/project/task/knowledge/session). Used by:
+   - memory-consolidator.ts:122-159 (consolidateTaskMemory) — agent path's WRITE
+   - context-manager.ts:196-233 — agent path's READ (recency-based: .slice(0,N))
+   - voice persistContext (via LTM wrapper)
+2. /home/z/my-project/src/main/memory/semantic-memory-store.ts (Phase 40) — Embedding + cosine similarity index on top of memory/index.ts. Index file: `userData/memory/semantic/semantic-memory-index.json`. Used by:
+   - memory-retrieval-engine.ts (semantic search)
+   - memory-consolidator.ts:92-109 (semanticStore.upsert — duplicate write of the same content as memory/index.ts set)
+3. /home/z/my-project/src/main/ai/long-term-memory-system.ts (Phase 52) — Permission-gated wrapper around memory/index.ts. Adds MemoryCategory + MemorySensitivity + permission request. Used by:
+   - nex-voice-conversation.ts:781-797 (persistContext) — stores voice context as 'session' with sensitivity 'public' (skips permission gate since 'public' doesn't trigger it)
+   - nex-executive-planner.ts:278, 361 — stores plan/executive memories
+   - nex-agent-executor.ts:250 — stores agent exec memories
+   - main.ts:4665-4719 (ltm-store IPCs) — IPC path
+
+DUPLICATE WRITE PATH: when agent completes, memory-consolidator.ts:86 calls `memory.set('task', key, value, ...)` AND `semanticStore.upsert(...)` (line 92-109) — both store the same content in different formats (JSON file vs embedding index). When voice persistContext runs, LongTermMemorySystem.store() calls setMemory(...) — adds a THIRD write path for the same underlying store.
+
+Risk: Triple-write amplification for agent tasks (memory/index.ts set + semanticMemoryStore upsert + TaskMemory via queue's memoryRecord). Storage grows 3x. No dedup across paths (each uses its own key scheme).
+
+**FINDING 11-2 — CHAT PATH SKIPS MEMORY RETRIEVAL ENTIRELY** — BUG / INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/agent/core.ts:414-445 — agent path: `engine.retrieve({query, projectId, limit:10})` before planning (BLOCKING — awaited synchronously)
+- /home/z/my-project/src/main/main.ts:785-921 — chat path (ai-chat-stream): NO memory retrieval call. Chat is "stateless" w.r.t. memory.
+- /home/z/my-project/src/main/ai/local-engine.ts:140-226 — non-stream chat (ai-chat IPC): NO memory retrieval.
+- /home/z/my-project/src/main/ai/interaction-loop.ts:136-248 — InteractionLoopManager: NO memory retrieval.
+
+Result: Memory retrieval ONLY happens for agent tasks. For chat (most common user interaction), memories are NEVER recalled — the system "forgets" user preferences during casual conversation. The context-manager.ts:192-234 recency-based fallback (ProjectMemory.list().slice(0,20), UserMemory.list().slice(0,10), TaskMemory.list().slice(0,30)) is ONLY called by buildContext (agent path), not by the chat path.
+
+Risk: User says "remember I prefer concise answers" via chat → LongTermMemorySystem stores it → next chat turn → memory NOT retrieved → user gets verbose answer. UX inconsistency between chat and agent.
+
+**FINDING 11-3 — MEMORY RETRIEVAL IS BLOCKING (NOT ASYNC-OVERLAPPED)** — RACE / INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/agent/core.ts:422 — `const memResult = await engine.retrieve(...)` — awaited synchronously before `generatePlan`
+- /home/z/my-project/src/main/memory/memory-retrieval-engine.ts:103-198 — `retrieve()`:
+  - For each of 6 stores: `semanticStore.search(query, ...)` — embeds query (async, O(embed_dim) GPU/CPU work) + computes cosine sim for each item
+  - If results < limit: `listMemory(store, projectId)` — reads ALL JSON files in store dir, parses each one (O(N) file I/O + JSON parse)
+- This blocks the planning LLM call. If memory has 1000 entries, retrieval can take 100ms-1s.
+
+Risk: Agent task latency increases by memory retrieval time. For simple "hello" agent tasks, this is wasted work. Should be cached or run in parallel with model loading.
+
+**FINDING 11-4 — MemoryRetrievalEngine null-check silently skips memory** — INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/agent/core.ts:419-421 — `const engine = getMemoryRetrievalEngine(); if (engine) { ... }`
+- /home/z/my-project/src/main/main.ts:6291-6304 — engine initialized in BACKGROUND async IIFE. If init fails (e.g., embedder creation fails), setMemoryRetrievalEngine is NEVER called → getMemoryRetrievalEngine returns null forever.
+- /home/z/my-project/src/main/main.ts:6302 — `console.warn('[NEX AI] Semantic Memory Engine init failed (non-blocking): ${err.message}')` — only a warn, no retry, no UI indication.
+
+Risk: If semantic memory init fails silently (e.g., on first run before any embedding model is configured), all agent tasks run without memory retrieval. No telemetry, no UI badge, no retry. The HashEmbedder fallback in embedding-select.ts:39-40 should prevent this, but if createConfiguredEmbedder() throws before HashEmbedder is returned (e.g., dynamic import fails), the whole engine init fails.
+
+EXPECTED LOGS for Item 11 paths:
+- Memory retrieval: `Memory retrieval: N relevant memories found (semantic: true/false, scanned: M)` (core.ts:438 — only logged if relevantMemories.length > 0, so SILENT when 0 hits)
+- Memory consolidation: `Memory consolidated: N written, M dup, K err` (core.ts:722 — only logged if written.length > 0 || errors.length > 0)
+- Semantic init: `[NEX AI] Semantic Memory Engine initialized (embedder: hash|llamacpp) — +Nms` (main.ts:6300)
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 12 — MAIN↔RENDERER IPC LIFECYCLE
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 12-1 — Two orphan webContents.send channels (confirmed from Phase 16, NOT fixed)** — INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/main.ts:1833 — `mainWindow?.webContents.send('voice-conversation-partial', { text })` — sent on onPartialTranscript callback (interim STT result). NO `ipcRenderer.on('voice-conversation-partial')` listener in preload.ts (verified by grep). NO subscription in renderer code.
+- /home/z/my-project/src/main/main.ts:5779 — `mainWindow?.webContents.send('plugin-event', e)` — sent on PluginLoader onEvent (sandbox plugin audit events). NO `ipcRenderer.on('plugin-event')` listener in preload.ts. NO subscription in renderer code.
+
+Result: Interim STT transcripts (partial transcriptions while user is still speaking) are dropped — renderer never displays them. Plugin sandbox events are dropped — no audit trail in UI. Phase 16 noted these as orphans; they remain orphans at Phase 17 audit. No code has been added to subscribe.
+
+Risk: Users get no visual feedback during voice STT (only the final transcript appears). Plugin events have no UI surface — users can't see what plugins are doing.
+
+**FINDING 12-2 — 5 brain-* IPC handlers exposed but never invoked by renderer** — LEGACY / DUPLICATE:
+- /home/z/my-project/src/main/preload.ts:563-568 — `brainDecide`, `brainStatus`, `brainSetMode`, `brainLastDecision`, `brainModelsByTask` exposed via contextBridge
+- /home/z/my-project/src/main/main.ts:4499-4547 — corresponding `ipcMain.handle('brain-decide'/'brain-status'/'brain-set-mode'/'brain-last-decision'/'brain-models-by-task')` registered
+- Verified by grep: NO renderer code calls `nexAPI.brainDecide(`, `nexAPI.brainStatus(`, `nexAPI.brainSetMode(`, `nexAPI.brainLastDecision(`, `nexAPI.brainModelsByTask(`. These are typed in electron.d.ts:441-446 but never invoked.
+
+Result: 5 IPC handlers + 5 preload bindings + 5 type declarations = ~30 lines of dead code. The NexBrainController singleton is also used internally by model-ecosystem-manager, multi-model-runtime-manager, nex-executive-planner (main-process only) — but the IPC entry points (the user-facing API) are dead.
+
+Risk: Confusing API surface — developers see `brainDecide` in nexAPI but it doesn't do anything from the renderer. Wastes ~5 ipcMain.handle slots.
+
+**FINDING 12-3 — No per-window IPC handler cleanup (acceptable for single-window)** — INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/main.ts:6306 — `setupIPC()` called ONCE at app.whenReady. 402 ipcMain channels registered, NEVER removed.
+- /home/z/my-project/src/main/main.ts:160-241 — createWindow() does NOT register any IPC handlers. mainWindow.on('closed', ...) at line 234 only sets `mainWindow = null` + kills terminals.
+- No ipcMain.removeHandler calls anywhere (verified by grep — 0 matches).
+- No ipcMain.removeAllListeners calls anywhere (Phase 115 fix noted in worklog line 2789 uses `removeListener` not `removeAllListeners` for the agent-event renderer-side listener — but that's renderer-side, not main-side).
+
+Result: All 402 handlers persist for app lifetime. For a single-window Electron app, this is fine. For a multi-window app (e.g., if a future feature opens a second window), all handlers would be shared across windows — could cause cross-window leaks. Not a current bug.
+
+**FINDING 12-4 — webContents.send targets mainWindow only (no broadcast)** — INSTRUMENTATION GAP:
+- Every `mainWindow?.webContents.send(...)` in main.ts assumes a single window. If `mainWindow` is null (closed), the send is dropped silently (the `?.` short-circuits).
+- Example: main.ts:1833 `mainWindow?.webContents.send('voice-conversation-partial', { text })` — if the user closes the window while voice is active, all partial transcripts are dropped.
+- No fallback queue, no retry, no log when send is dropped.
+
+Risk: Voice/plugin events generated during window-closed periods are lost. If a long-running agent task finishes after the user closes the window, the task_completed event is lost — the renderer never knows. (Though the agent task IS cancelled on app quit via cancelAllActiveTasks at main.ts:6393.)
+
+EXPECTED LOGS for Item 12 paths:
+- IPC handler errors: most handlers return `{success: false, error: err.message}` — no central [IPC_ERROR] log
+- Orphan sends: `console.warn('[NEX AI Security] Blocked request to:', url)` (main.ts:297) only for blocked webRequest; no log for dropped webContents.send
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 13 — ZUSTAND RUNTIME/CHAT STATE CONSISTENCY
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 13-1 — setAIMode does NOT persist aiMode across restarts** — BUG:
+- /home/z/my-project/src/renderer/store/useStore.ts:339 — `setAIMode: (mode) => set({ aiMode: mode })` — only updates top-level `aiMode`, NOT `settings.aiMode`
+- /home/z/my-project/src/renderer/components/SettingsPanel.tsx:541 — AI Mode buttons call `setAIMode(mode)` (in SettingsPanel's "AI Mode" section)
+- /home/z/my-project/src/renderer/components/SettingsPanel.tsx:655 — Same in Connectivity section
+- /home/z/my-project/src/renderer/components/SettingsPanel.tsx:330 — `localSettings = useState({ ...settings })` — initialized from Zustand settings (which has settings.aiMode)
+- /home/z/my-project/src/renderer/components/SettingsPanel.tsx:390-406 — handleSave persists `localSettings` via `settingsSave(localSettings, ...)` — but localSettings.aiMode was NEVER updated because setAIMode doesn't touch it
+
+Result: User clicks "Online" in SettingsPanel → useStore.aiMode = 'online' (top-level, works for current session) → useStore.settings.aiMode stays at 'local' (drift) → localSettings.aiMode stays at 'local' (drift) → user clicks Save → settingsSave persists `aiMode: 'local'` (the OLD value) → on restart, App.tsx:370-371 reads persisted.aiMode='local' → setAIMode('local') → user's "Online" choice is LOST.
+
+Confirmed: BottomStatusBar.tsx:126-146 (cycleMode) IS the correct path — it loads fresh settings, updates aiMode field, calls settingsSave. But SettingsPanel's setAIMode is a separate, broken path.
+
+Risk: User sets aiMode='online' in SettingsPanel, expects it to persist. On restart, app reverts to 'local'. User thinks the toggle is broken. The chat path uses the in-memory aiMode correctly during the session, but persistence is lost.
+
+**FINDING 13-2 — useStore.messages / addMessage / clearMessages are DEAD** — LEGACY:
+- /home/z/my-project/src/renderer/store/useStore.ts:166-170, 320-328 — `messages`, `addMessage`, `clearMessages` declared in useStore
+- Verified by grep: only consumer is the dead ChatPanel.tsx (line 116: `const { messages, addMessage, isAILoading, setAILoading, clearMessages, ... } = useStore()`). ChatPanel.tsx is NOT imported by any renderer code (only NexChatPanel is lazy-loaded by AppShell.tsx:35).
+- NexChatPanel uses LOCAL React state (line 41: `const [messages, setMessages] = useState<NexMessage[]>([])`).
+
+Result: useStore's chat state is dead. If a developer writes a new component that reads `useStore.messages`, it will always be `[]` — they'd be misled into thinking the chat state is in Zustand when it's actually in NexChatPanel's local state.
+
+Risk: Future development confusion. If a feature needs cross-component chat state (e.g., notification badge with unread count), it would have to be re-architected. Current NexChatPanel local state doesn't survive tab switches.
+
+**FINDING 13-3 — aiMode stored in TWO places in useStore (top-level + nested settings)** — BUG / RACE:
+- /home/z/my-project/src/renderer/store/useStore.ts:177-178 — top-level `aiMode: AIMode` + `setAIMode`
+- /home/z/my-project/src/renderer/store/useStore.ts:64, 222 — nested `settings.aiMode` (DEFAULT_SETTINGS.aiMode = 'local')
+- setAIMode only updates top-level. settings.aiMode is updated only via updateSettings (called by BottomStatusBar's cycleMode and App.tsx's persisted-load).
+- NexChatPanel.tsx:40 destructures `aiMode` from top-level. SettingsPanel.tsx:326 destructures `aiMode` from top-level.
+- BUT: any code reading `settings.aiMode` (e.g., getProviderConfig's `mode` arg is the top-level one, but if someone reads `settings.aiMode` they get stale value) — divergent.
+
+Risk: If any code path reads `settings.aiMode` instead of top-level `aiMode`, it gets stale data. Currently only the dead ChatPanel reads settings.aiMode implicitly via destructure. Not currently triggered, but a latent inconsistency.
+
+**FINDING 13-4 — NexChatPanel local state vs Zustand state desync risk** — INSTRUMENTATION GAP:
+- NexChatPanel holds: messages, input, attachments, isGenerating, chatStreaming, error, conversationId, conversationTitle, editingMessageId, editText, lastSavedAt — ALL LOCAL.
+- useStore holds: settings, aiMode, activeLocalModel, projectPath, activeFile — shared.
+- Voice state lives in voice-controller (singleton) + voice-service (singleton) — NEITHER in useStore NOR in NexChatPanel.
+- Download state lives in download-store.ts (separate Zustand) — NEITHER in useStore NOR in NexChatPanel.
+
+Result: 4 separate state stores (useStore, download-store, voice-service, NexChatPanel-local). No event bus between them. Cross-store communication happens via:
+- NexChatPanel → voice-controller: `voiceController.setCondition('chat', 'thinking')` (NexChatPanel:1032)
+- voice-controller → NexChatPanel: `voiceController.setCallbacks({onFinalTranscript: ...})` (AppShell wires this)
+- NexChatPanel → useStore: `useStore()` destructure for aiMode/activeLocalModel
+
+Risk: When aiMode changes in useStore (via BottomStatusBar.cycleMode), NexChatPanel re-renders (because it destructures `aiMode`). But the in-flight chat (if any) uses the OLD aiMode (captured in closure). The next chat uses the new aiMode. No desync in practice but no log when aiMode changes mid-conversation.
+
+**FINDING 13-5 — activeLocalModelId propagation has known stale-state fix** — BUG (FIXED):
+- /home/z/my-project/src/renderer/components/NexLibraryPanel.tsx:327-339 — comment documents the previous bug: `setActiveLocalModel(modelId)` was missing after `localRuntimeActivateModel`, so getProviderConfig read STALE settings.activeLocalModelId and sent the old model as modelIdOverride to ModelRouter.
+- Fix in place: line 338 calls `setActiveLocalModel(modelId)` to update Zustand state.
+
+Result: This bug was caught and fixed in Phase 116. The fix comment is preserved. No new bug here, but documents the fragility of the dual-state (Zustand + persisted) pattern.
+
+EXPECTED LOGS for Item 13 paths:
+- aiMode change: NO LOG (setAIMode is silent)
+- activeLocalModel change: NO LOG (setActiveLocalModel is silent)
+- Settings save: `[NEX AI] Failed to save settings:` (App.tsx:380 — only on error)
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 14 — LEGACY/DUPLICATE CODE CONSOLIDATION
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 14-1 — ChatPanel.tsx is DEAD (551 lines of dead code)** — LEGACY:
+- /home/z/my-project/src/renderer/components/ChatPanel.tsx (551 lines) — NOT imported by any renderer code. Only mentioned in comments (App.tsx:8, voice-controller.ts:71, runtime.ts:13/173, online-transport.ts:6, online-runtime.ts:9, provider.ts:13, agent/types.ts:4, lib/markdown.ts:13).
+- Verified: grep for `import.*ChatPanel|from.*['"]\./ChatPanel|from.*['"]\.\./components/ChatPanel` returns only AppShell.tsx:35 which imports NexChatPanel (`'../chat/NexChatPanel'`), NOT the legacy ChatPanel.
+- ChatPanel has its own `AIModeSelector` component (line 31-50), its own `addMessage` flow (line 250-312), its own markdown rendering — duplicates NexChatPanel functionality.
+
+Risk: 551 lines of dead code that confuse developers (looks active, has working code, but never runs). Should be deleted or moved to a `_legacy/` folder.
+
+**FINDING 14-2 — TWO PARALLEL CHAT→LLM PATHS (local-engine.ts vs direct runtime)** — DUPLICATE:
+- Path A (legacy non-stream): `main.ts:768 ai-chat` IPC → `localChatComplete(config, messages)` (local-engine.ts:140) → resolveModel + getModelRouter().routeForChat → `chatComplete(model, messages, opts)` (inference.ts)
+- Path B (modern stream): `main.ts:785 ai-chat-stream` IPC → `getModelRouter().routeForChat` + `getDefaultRuntime().loadModel` + `runtime.chatStream(messages, onChunk, opts)` → `_chatStream(loadedModel, ...)` (inference.ts)
+- Path C (legacy interaction): `main.ts:2713 interaction-process-text` IPC → `getInteractionLoopManager().processText(request)` (interaction-loop.ts:136) → `localChatComplete(config, messages)` → same as Path A
+- Both Path A and Path B use `getModelRouter().routeForChat` (model-router.ts) for model selection, but Path A goes through `local-engine.ts` which has its OWN router call (local-engine.ts:152) and inference call (local-engine.ts:191), while Path B goes directly through `runtime.chatStream`. They diverge in:
+  - contextSize handling: Path A uses `routerContextSize ?? config.localContextSize ?? model.contextSize ?? 1024` (local-engine.ts:192). Path B uses `routerVerdict.suggestedContextSize` (main.ts:844).
+  - maxTokens handling: Path A uses `config.localMaxTokens ?? config.maxTokens` (local-engine.ts:196). Path B uses `config.localMaxTokens ?? config.maxTokens ?? dynamicMaxTokens` (main.ts:884).
+  - System prompt: Both use `getSystemPromptFor(config)` (main.ts:885) / `getSystemPrompt()` (local-engine.ts:197).
+
+Risk: Two parallel paths mean two places to fix bugs. Path A (non-stream) is used by InteractionLoopManager (BasicInteractionPanel) and by `ai-chat` IPC (unused by NexChatPanel — it uses ai-chat-stream). The non-stream `ai-chat` IPC is essentially dead for the chat UI.
+
+**FINDING 14-3 — local-model-provider.ts has SPLIT-BRAIN state (same bug as Phase 86 fixed in LlamaCppRuntime)** — BUG / RACE:
+- /home/z/my-project/src/main/ai/local-model-provider.ts:122-123 — `private _loadedModelId: string | null = null; private loadedModel: LocalModelInfo | null = null;`
+- /home/z/my-project/src/main/ai/local-model-provider.ts:159-168 — `load(modelId, opts)` calls `inferenceLoadModel(model, opts)` (which sets inference.ts's `_loadedModelId`), then sets `this._loadedModelId = model.id` and `this.loadedModel = model`.
+- /home/z/my-project/src/main/ai/runtimes/llamacpp-runtime.ts:4-7 — Phase 86 P0-3 fix REMOVED `_loadedModel` from LlamaCppRuntime because it caused split-brain. The same fix was NOT applied to LocalModelProvider.
+
+Result: If the chat path (Path B) loads modelA via direct runtime.loadModel, inference.ts's `_loadedModelId` = 'modelA'. LocalModelProvider's `_loadedModelId` is STILL null (or whatever it was last set to). When LocalRuntimePanel calls `mgr.getLoadedModelId()` (multi-model-runtime-manager.ts:214), it reads `provider.loadedModelId` — which is the LocalModelProvider's stale value, NOT inference.ts's actual loaded model.
+
+Risk: LocalRuntimePanel shows "No model loaded" even when a model IS loaded (via chat path). User clicks "Load" again → wasteful reload. The fix (already proven in LlamaCppRuntime) is to read from `getLoadedModelInfo()` from inference.ts.
+
+**FINDING 14-4 — THREE model-selection layers (chat path, agent path, brain-decide) use different code** — DUPLICATE:
+- Chat path: `ai/model-router.ts:179 routeForChat()` (task-tier based: simple/medium/complex × hasGpu)
+- Agent path: `agent/model-router.ts:80 routeModel()` (local vs online backend, complexity + intent-based)
+- Brain-decide path: `ai/nex-brain-controller.ts:64 decide()` (uses `model-intelligence/smart-model-router.ts`)
+- All three: list `listModels()`, filter `fileExists`, sort by `lastUsedAt`, classify by `category`. Different heuristics, different return types.
+
+Result: User asks the same question to "Brain Decide" panel (dead — see Finding 12-2) vs ChatPanel vs Agent — gets 3 different model recommendations. Even though brain-decide IPC is not invoked from renderer, the existence of three parallel routers is a maintenance burden.
+
+**FINDING 14-5 — interaction-loop.ts is NOT dead, but duplicates chat logic** — LEGACY / DUPLICATE:
+- /home/z/my-project/src/main/ai/interaction-loop.ts:124-300 — InteractionLoopManager.processText does:
+  - Language detection (language-foundation.ts detectLanguage + buildSystemPrompt)
+  - Model resolution (getDefaultModel or getModel(request.modelId))
+  - Inference via `localChatComplete(config, messages)` (local-engine.ts:140 — same legacy path as `ai-chat` non-stream IPC)
+  - TTS via `engine.speak(text)` (local-voice-engine.ts)
+- Used by: BasicInteractionPanel (renderer/components/BasicInteractionPanel.tsx:56, 76, 86) via interaction-process-text/speak/stop IPCs. BasicInteractionPanel is loaded by AppShell (AppShell.tsx:43) as 'interact' panel.
+
+Result: BasicInteractionPanel is a parallel UI to NexChatPanel — both do "user types → LLM → response". BasicInteractionPanel uses interaction-loop.ts → local-engine.ts (legacy). NexChatPanel uses ai-chat-stream IPC → direct runtime (modern). Two parallel paths with different system prompts, different routing, different memory retrieval (neither uses memory).
+
+**FINDING 14-6 — nex-voice-conversation.ts vs interaction-loop.ts both have processVoice** — DUPLICATE:
+- /home/z/my-project/src/main/voice/nex-voice-conversation.ts:feedTranscript (line ~390) — voice conversation pipeline (whisper STT → AI model → piper TTS)
+- /home/z/my-project/src/main/ai/interaction-loop.ts:254-269 — `processVoice(transcript, opts)` — calls `processText({text: transcript, fromVoice: true, speakResponse: true})` — simple text→LLM→TTS via InteractionLoopManager
+- /home/z/my-project/src/main/voice/local-voice-engine.ts:353 — comment "legacy callers like InteractionLoopManager.speakText"
+
+Result: Two voice paths: (a) NexVoiceConversation (full pipeline with state machine, barge-in, wake word, persistContext) and (b) InteractionLoopManager.processVoice (simple text→LLM→speak). The voice conversation system uses NexVoiceConversation (the modern path); InteractionLoopManager.processVoice is a legacy simpler path used by BasicInteractionPanel. Both call `engine.speak()` but with different state management.
+
+EXPECTED LOGS for Item 14 paths:
+- Legacy ChatPanel: NO LOGS (never runs)
+- Legacy interaction-loop: `[INTERACTION_STOP] timestamp=... callerStack=...` (interaction-loop.ts:295)
+- Brain-decide: `[BRAIN_ROUTER] message="..." route=chat|agent reason=...` (nex-brain-router.ts:183)
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 15 — OFFLINE-FIRST ARCHITECTURE PRESERVATION
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 15-1 — enforceAiMode is ONLY at AI provider level, NOT at tool level** — OFFLINE VIOLATION:
+- /home/z/my-project/src/main/ai/ai-mode.ts:83-109 — enforceAiMode checks `mode === 'local' && provider !== 'local'` → block. Called by:
+  - /home/z/my-project/src/main/ai/provider.ts:87 — routeChat (chat path)
+  - /home/z/my-project/src/main/main.ts:799 — ai-chat-stream IPC
+  - /home/z/my-project/src/main/ai/runtimes/online-transport.ts (implicitly via routeChat)
+- /home/z/my-project/src/main/ai/tool-registry.ts:99 — `requiresNetwork?: boolean` is just a metadata flag, NEVER enforced. No code path checks `tool.requiresNetwork` against `aiMode='local'` to block the tool.
+- /home/z/my-project/src/main/ai/tools/web-tool.ts:53, 139 — `requiresNetwork: true` on web_fetch and web_search tools. These tools make `net.request(url)` calls (web-tool.ts:72, 157).
+- /home/z/my-project/src/main/ai/tools/browser/* — browser-navigate, browser-click, browser-extract, browser-screenshot, browser-type all have `requiresNetwork: true`. These tools launch Playwright (which spawns Chromium — a network browser).
+- /home/z/my-project/src/main/ai/tools/computer/* — mouse-move, keyboard-type, mouse-click, keyboard-hotkey, screenshot-desktop, scroll — all have `requiresNetwork: false` (local OS automation, no network).
+
+Result: When aiMode='local', the LLM itself is local, but the agent can still invoke web_fetch (makes HTTP request to any URL the user permits) or browser tools (launches Chromium). The user must approve the 'network' permission for each tool call, but the user might not realize that aiMode='local' is supposed to mean "no external calls".
+
+Risk: User sets aiMode='local' for privacy, then asks agent "search the web for X" → agent invokes web_search → user sees permission prompt → user approves (thinking it's safe because "aiMode=local") → external HTTP request is made. The intent of aiMode='local' (no external calls) is violated at the tool layer.
+
+**FINDING 15-2 — No telemetry/analytics phone-home (VERIFIED)** — PASS:
+- Verified by grep: no PostHog, Amplitude, Mixpanel, Sentry, Datadog, analytics SDKs.
+- All "telemetry" references are local: runtime-telemetry.ts (local inference stats), system-monitor (local hardware).
+- update-manager.ts:1-14 — explicitly permission-gated. `checkForUpdate` IPC is exposed but never called from renderer (verified by grep — only `updateCheck` in electron.d.ts:364, no caller).
+- No auto-update feed (no electron-updater's setFeed URL). No automatic update checks.
+
+**FINDING 15-3 — Model downloads are user-initiated (VERIFIED)** — PASS:
+- /home/z/my-project/src/main/main.ts:3118 — `download-start` IPC handler requires permission via `requestDownloadPermission(opts.url, opts.name, opts.expectedSize)` (line 3131). User must approve each download.
+- /home/z/my-project/src/main/main.ts:3159 — `download-start-recommended` IPC handler downloads a hardcoded `RECOMMENDED_FIRST_MODEL` — but is only invoked when user clicks a button in FirstRunWizard or similar UI. No automatic invocation.
+- /home/z/my-project/src/main/main.ts:3297 — `download-start-alternative` — same pattern.
+- /home/z/my-project/src/main/main.ts:3377 — `model-download-start` — used by NexLibraryPanel, user-initiated.
+- /home/z/my-project/src/main/main.ts:2990 — comment "CRITICAL FIX: The download-start IPC handler NO LONGER creates a downloadId until permission is resolved" — confirms no silent downloads.
+- No background download timer / no auto-download on startup.
+
+**FINDING 15-4 — No fetch() in local inference path (VERIFIED)** — PASS:
+- /home/z/my-project/src/main/ai/inference.ts (1216 lines) — verified: NO `fetch()`, NO `net.request`, NO `https.get`, NO HTTP calls. Only node-llama-cpp local inference.
+- /home/z/my-project/src/main/ai/runtimes/llamacpp-runtime.ts (117 lines) — verified: NO network calls.
+- /home/z/my-project/src/main/ai/local-engine.ts (316 lines) — verified: NO network calls.
+- /home/z/my-project/src/main/agent/core.ts (2187 lines) — verified: NO network calls (except via tools).
+- /home/z/my-project/src/main/ai/provider.ts:114 — `chatCompletion(config, messages)` (ai-service.ts) is ONLY called when `provider !== 'local'` (line 92 is the local branch, line 114 is online).
+- /home/z/my-project/src/main/ai-service.ts:89, 149, 206 — `net.request` calls (OpenAI/Claude/GLM) are ONLY used for online providers. ai-service.ts is NOT imported by inference.ts or local-engine.ts.
+
+**FINDING 15-5 — ALLOWED_AI_ORIGINS enforced for online AI calls** — PASS:
+- /home/z/my-project/src/main/security/index.ts:220-226 — `ALLOWED_AI_ORIGINS = { 'https://api.openai.com', 'https://api.anthropic.com', 'https://api.z.ai', 'https://open.bigmodel.cn' }`
+- /home/z/my-project/src/main/ai/provider.ts:98 — `if (!config.endpoint || !isAllowedAIOrigin(config.endpoint))` — online providers MUST be in allow-list.
+- /home/z/my-project/src/main/main.ts:281-298 — `sess.webRequest.onBeforeRequest` blocks ALL non-allowed origins (only self + dev server + AI origins + Google Fonts).
+- /home/z/my-project/src/main/security/index.ts:196 — CSP `connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn`
+
+Result: Online AI calls are restricted to 4 hosts. Local inference path doesn't touch network. Defense-in-depth: CSP + onBeforeRequest + isAllowedAIOrigin check.
+
+**FINDING 15-6 — System prompt for online says "running fully offline" — misleading** — INSTRUMENTATION GAP:
+- /home/z/my-project/src/main/ai-service.ts:242 — `getSystemPrompt()` returns: `"You are NEX AI, a calm and efficient AI assistant running fully offline on the user's machine."`
+- This system prompt is used by BOTH local AND online paths (local-engine.ts:197, main.ts:885 via getSystemPromptFor).
+- For online mode, the model is told "running fully offline" which is a lie — the model is running on GLM's cloud.
+
+Risk: The model may hallucinate "I'm running locally" when it's actually on GLM's API. Minor UX issue, not a security issue.
+
+EXPECTED LOGS for Item 15 paths:
+- Online blocked by aiMode: `Blocked by aiMode='local': online provider "X" not allowed.` (ai-mode.ts:92)
+- Online blocked by network: `No network connectivity detected.` (ai-mode.ts:101)
+- Online blocked by origin: `Blocked: AI endpoint "X" is not in the allowed origins list.` (provider.ts:101)
+- Web request blocked: `[NEX AI Security] Blocked request to: <url>` (main.ts:297)
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 16 — EXTERNAL AI/API DEPENDENCY FOR MAIN INFERENCE
+═══════════════════════════════════════════════════════════════════════════════
+
+**FINDING 16-1 — Main inference loop has NO external API dependency (VERIFIED)** — PASS:
+- Local chat path: ai-chat-stream → runtime.chatStream → inference.ts chatStream → session.prompt (node-llama-cpp, local). NO external API.
+- Local agent path: agent/core.ts runTask → runtime.chat / runtime.chatStream → inference.ts (local). NO external API.
+- Local non-stream chat (legacy): ai-chat → localChatComplete → chatComplete (inference.ts, local). NO external API.
+- Local interaction (legacy): interaction-process-text → InteractionLoopManager.processText → localChatComplete → chatComplete (local). NO external API.
+- All four local paths use ONLY node-llama-cpp (bundled native binary, runs in-process).
+
+**FINDING 16-2 — Embeddings are OFFLINE (HashEmbedder default, LlamaCppEmbedder optional)** — PASS:
+- /home/z/my-project/src/main/knowledge/embedding-select.ts:39-40 — `if (!id) return { embedder: new HashEmbedder(), backend: 'hash' };` — default is offline hash embedder (no model, no network).
+- /home/z/my-project/src/main/knowledge/embedding-select.ts:58-63 — Optional LlamaCppEmbedder uses a LOCAL GGUF file (model.path), NOT an external embedding API.
+- /home/z/my-project/src/main/knowledge/hash-embedder.ts — HashEmbedder uses a hash-based pseudo-embedding (no model, no network, fully offline).
+- /home/z/my-project/src/main/knowledge/llama-embedder.ts — LlamaCppEmbedder uses node-llama-cpp's embedding API on a LOCAL GGUF file.
+- No OpenAI embeddings API, no Cohere, no Pinecone. All embedding work is local.
+
+**FINDING 16-3 — Personality engine is OFFLINE** — PASS:
+- /home/z/my-project/src/main/ai/nex-personality-engine.ts (188 lines) — Pure in-memory data structure. PERSONALITY_PROFILES is a static Record<PersonalityType, PersonalityProfile>. NO network calls, NO file reads beyond initial import. Used by interaction-loop.ts:307 (setPersonality → getNexPersonalityEngine().setPersonality). The personality "rules" are baked into the source code.
+
+**FINDING 16-4 — Expert system is OFFLINE** — PASS:
+- /home/z/my-project/src/main/ai/nex-expert-system.ts (284 lines) — Pure in-memory data structure. EXPERT_PROFILES is a static array of ExpertProfile objects. NO network calls. Used by expert-router.ts (in-memory keyword matching). The expert "knowledge" is baked into the source code.
+
+**FINDING 16-5 — Voice STT/TTS are OFFLINE** — PASS:
+- /home/z/my-project/src/main/voice/local-voice-engine.ts — uses whisper.cpp (local binary) for STT + piper (local binary) for TTS. NO external API.
+- /home/z/my-project/src/renderer/services/voice-service.ts — has a `webkitSpeechRecognition` fallback (browser API, runs in renderer — uses OS speech services, not external API) and `SpeechSynthesis` (browser TTS, OS voices). Both are local OS services, not external API.
+- No cloud STT (no Google Speech-to-Text, no Azure Speech). No cloud TTS (no Amazon Polly, no Google TTS).
+
+**FINDING 16-6 — Update check is NOT automatic** — PASS:
+- /home/z/my-project/src/main/update/update-manager.ts:122 — `checkForUpdate(info)` requires explicit call.
+- /home/z/my-project/src/main/main.ts:3834 — `update-check` IPC handler. Exposed via preload (line 484), typed in electron.d.ts:364. Verified by grep: NO renderer code calls `nexAPI.updateCheck(`. So update-check is effectively unused — no automatic update polling, no "phone home" feature.
+
+EXPECTED LOGS for Item 16 paths:
+- HashEmbedder init: NO LOG (silent default)
+- LlamaCppEmbedder init: NO LOG (silent unless failure)
+- Personality set: NO LOG (silent)
+- Expert route: NO LOG (only IPC response)
+
+═══════════════════════════════════════════════════════════════════════════════
+P0 / P1 / P2 PRIORITY SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+P0 (Critical — blocks Phase 17 green):
+- 13-1: setAIMode does not persist aiMode across restarts (user's mode choice lost on restart). BUG.
+- 11-2: Chat path skips memory retrieval entirely (chat is "stateless" w.r.t. memory; agent path retrieves, chat doesn't). BUG.
+- 10-1: Multiple hardcoded contextSize values; model.contextSize treated as fallback not cap; ModelRouter ignores model.contextSize. BUG (compounds Phase 16 BUG-14).
+
+P1 (High — should fix before release):
+- 15-1: enforceAiMode is only at AI provider level, not at tool layer; web_fetch/browser tools can make external calls in aiMode='local' with user permission. OFFLINE VIOLATION.
+- 14-3: LocalModelProvider has split-brain _loadedModelId state (same bug pattern as Phase 86 LlamaCppRuntime fix). BUG / RACE.
+- 10-3: Chat path sends ALL messages with NO token truncation; llama.cpp silently truncates without log. BUG / RACE.
+- 10-2: maxTokens NOT bounded by model.contextSize; planner maxTokens=3072 + 2048-context model = overflow. BUG.
+- 14-1: ChatPanel.tsx is dead (551 lines). LEGACY.
+- 14-2: Two parallel chat→LLM paths (local-engine.ts legacy vs direct runtime modern). DUPLICATE.
+
+P2 (Medium — should fix for code health):
+- 11-1: Three parallel memory systems with triplicated write paths. DUPLICATE.
+- 11-3: Memory retrieval is BLOCKING (synchronous await) before planning. RACE / INSTRUMENTATION GAP.
+- 12-1: Two orphan webContents.send channels (voice-conversation-partial, plugin-event) — confirmed from Phase 16, still not fixed. INSTRUMENTATION GAP.
+- 12-2: 5 brain-* IPC handlers exposed but never invoked by renderer. LEGACY / DUPLICATE.
+- 14-4: Three model-selection layers (chat, agent, brain-decide) with different heuristics. DUPLICATE.
+- 14-5: interaction-loop.ts duplicates chat logic (parallel to ai-chat-stream). LEGACY / DUPLICATE.
+- 14-6: nex-voice-conversation vs interaction-loop both have processVoice. DUPLICATE.
+- 13-2: useStore.messages/addMessage/clearMessages are dead. LEGACY.
+- 13-3: aiMode stored in two places (top-level + settings.aiMode); only top-level updated by setAIMode. BUG / RACE.
+
+P3 (Low — code smells / instrumentation):
+- 10-4: context-manager.ts budget check uses `>=` (off-by-one minor). BUG.
+- 10-5: loadModel opts.maxTokens is dead metadata (not stored). INSTRUMENTATION GAP.
+- 10-6: chatStream doesn't pass contextSize, idempotency falls back to model.contextSize. BUG (latent).
+- 11-4: MemoryRetrievalEngine null-check silently skips memory. INSTRUMENTATION GAP.
+- 12-3: No per-window IPC handler cleanup (acceptable for single-window). INSTRUMENTATION GAP.
+- 12-4: webContents.send targets mainWindow only; events lost when window closed. INSTRUMENTATION GAP.
+- 13-4: NexChatPanel local state vs Zustand state desync risk. INSTRUMENTATION GAP.
+- 15-6: System prompt says "running fully offline" for online mode too. INSTRUMENTATION GAP.
+
+Stage Summary:
+- Audit complete. No code modified. No files created. No commits made. Read-only.
+- 7 Phase 17 audit items deeply traced with exact file paths (absolute), line numbers, root causes, duplicate/legacy paths, offline-first violations.
+- 24 findings total: 9 BUG, 7 DUPLICATE, 6 LEGACY, 3 RACE, 8 INSTRUMENTATION GAP, 1 OFFLINE VIOLATION.
+- 3 P0 findings (setAIMode persistence, chat skips memory, contextSize coordination), 6 P1 findings, 8 P2 findings, 8 P3 findings.
+- All 5 offline-first preservation checks PASS (no telemetry, no auto-update, no auto-download, no fetch in local path, embeddings offline). One OFFLINE VIOLATION (web tools bypass aiMode).
+- All 4 external-dependency checks PASS (main inference loop offline, embeddings offline, personality offline, expert system offline).
+- Two confirmed orphan IPC channels from Phase 16 (voice-conversation-partial, plugin-event) still unfixed.
+- One confirmed dead file (ChatPanel.tsx, 551 lines).
+- One confirmed split-brain bug pattern (LocalModelProvider._loadedModelId) — same pattern as Phase 86 LlamaCppRuntime fix, NOT applied to LocalModelProvider.
+- One confirmed persistence bug (setAIMode doesn't update settings.aiMode nor call settingsSave) — user's aiMode choice lost on restart when changed via SettingsPanel.
+- Full report delivered inline above. Worklog appended (this block).
+
+
+---
+Task ID: P17-AUDIT-ERROR-VOICE
+Agent: Explore (error/voice/orb)
+Phase: 17 — Runtime & Core Integration Audit (items 7, 8, 9)
+Codebase: /home/z/my-project @ 8e5ff6d (main)
+Mode: READ-ONLY — no files modified, no commits
+
+═══════════════════════════════════════════════════════════════════════════════
+WORK LOG
+═══════════════════════════════════════════════════════════════════════════════
+
+Files audited (read in full):
+- /home/z/my-project/src/main/ai/inference.ts (1216 lines)
+- /home/z/my-project/src/main/ai/runtimes/llamacpp-runtime.ts (117 lines)
+- /home/z/my-project/src/main/ai/ai-mode.ts (109 lines)
+- /home/z/my-project/src/main/ai/interaction-loop.ts (392 lines)
+- /home/z/my-project/src/main/ai/local-engine.ts (316 lines)
+- /home/z/my-project/src/main/agent/core.ts (2187 lines — runTask, executeStep, handleStepFailure, cancelTask)
+- /home/z/my-project/src/main/agent/recovery-engine.ts (799 lines)
+- /home/z/my-project/src/main/agent/error-classifier.ts (430 lines)
+- /home/z/my-project/src/main/agent/planner.ts (532 lines — generatePlan + fallbackPlan)
+- /home/z/my-project/src/main/agent/react-loop.ts (397 lines — rePlanAfterObservation)
+- /home/z/my-project/src/main/voice/local-voice-engine.ts (508 lines)
+- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (892 lines)
+- /home/z/my-project/src/main/ai/voice-manager.ts (627 lines — startConversation path)
+- /home/z/my-project/src/main/tasks/orb-bridge.ts (69 lines)
+- /home/z/my-project/src/main/main.ts (6463 lines — IPC handlers: brain-route, ai-chat-stream, ai-chat-stream-cancel, voice-conversation-*, voice-tts-ended, voice-conversation-error, interaction-*, agent-cancel-task, before-quit)
+- /home/z/my-project/src/main/preload.ts (824 lines — voice + interaction + voiceTtsEnded APIs)
+- /home/z/my-project/src/renderer/services/voice-service.ts (590 lines — VAD, setCondition, recomputeState, STATE_PRIORITY)
+- /home/z/my-project/src/renderer/services/voice-controller.ts (192 lines — toOrbState, handleStateChange, subscribeOrbState)
+- /home/z/my-project/src/renderer/components/orb/orb-state.ts (454 lines — 13 states, VALID_TRANSITIONS, safeOrbTransition, computeOrbVisual)
+- /home/z/my-project/src/renderer/components/orb/NexOrb.tsx (700 lines — visual renderer)
+- /home/z/my-project/src/renderer/components/layout/AppShell.tsx (592 lines — 3 state-driver wiring: queue, engine, voice-transcript)
+- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx (1436 lines — handleSend, brainRoute, aiChatStream fallback, speakResponseIfVoice, handleStop, onAgentEvent)
+- /home/z/my-project/src/renderer/App.tsx (412 lines — onVoiceTTSAudio, onVoiceTtsStopPlayback, voice-start/stop-mic-capture)
+- /home/z/my-project/src/renderer/components/BasicInteractionPanel.tsx (264 lines — verified legacy panel still wired to AppShell view='interact')
+- /home/z/my-project/src/renderer/components/VoiceCenterPanel.tsx (463 lines — confirmed DEAD CODE, never imported)
+
+Cross-referenced symbols:
+- _activeAbortController / _activeRequestId / _activeRequestCreatedAt (inference.ts:161-169)
+- _inFlightPromise (inference.ts:158) — singular
+- _loadingPromise / _isShuttingDown (inference.ts:151-152)
+- _activeTasks / _cancellationTokens / _eventListeners (core.ts:96-97, 105)
+- token.throwIfCancelled checkpoints (core.ts:320, 490, 828, 841, 937, 986, 1232, 1262)
+- TASK_TIMEOUT_MS = 300_000 (core.ts:307)
+- decideRecovery / decideRecoveryHeuristic / analyzeWithLLM (recovery-engine.ts:769, 149, 538)
+- classifyError 13 classes (error-classifier.ts:30-43, 214)
+- VALID_TRANSITIONS / safeOrbTransition / isValidOrbTransition (orb-state.ts:42, 72, 62)
+- STATE_PRIORITY (voice-service.ts:65-67): error=8 > offline=7 > speaking=6 > working=5 > thinking=4 > listening=3 > success/cancelled=2 > idle=1
+- 6 condition keys on voiceController: 'mic', 'tts', 'chat', 'agent', 'queue', 'engine'
+- currentTtsRequestId / ttsPlaybackResolve / ttsPlaybackRequestId / ttsPlaybackTimeout (nex-voice-conversation.ts:160-163)
+- _currentTtsRequestId / ttsActive (local-voice-engine.ts:183, 175)
+- wasVoiceInputRef / ttsCancelledRef (NexChatPanel.tsx:317, 316)
+
+Cross-references to P17-AUDIT-STREAMING (lines 3288-4424):
+- BUG-GAP-2 (re-confirmed): cancelTask does NOT call abortInference (see ITEM 7.7 below)
+- BUG-GAP-5 (re-confirmed): planner.ts:240-244 swallows AbortError → fallbackPlan (see ITEM 7.1)
+- CLEANUP-LEAK-1 (re-confirmed): handleInterruption setTimeout(50ms) NOT cleared on abort
+- CLEANUP-LEAK-2 (re-confirmed): captureVoiceConfirmation 10s timeout NOT cleared on abort
+- CLEANUP-LEAK-3 (re-confirmed): shutdown hang if agent mid-inference
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 7 — ERROR HANDLING AND RECOVERY
+═══════════════════════════════════════════════════════════════════════════════
+
+7.1 — Inference error propagation: chat path
+─────────────────────────────────────────────────
+inference.ts:587-597 (loadModel catch):
+  console.error('[NEX AI Local] llama.loadModel() FAILED:', { modelPath, error, code, stack })
+  throw loadErr;  // re-throws — propagates up
+inference.ts:935-1030 (chatComplete): NO try/catch around session.prompt — throws propagate to caller.
+inference.ts:1039-1154 (chatStream): inner async try at 1090, catch at 1134-1137 → onChunk({done:true, error:err.message}) + rethrow.
+main.ts:785-921 (ai-chat-stream handler):
+  - line 794-802: enforceAiMode block (returns {success:false, error:blocked.error})
+  - line 822-829: model null / fileExists=false → returns {success:false, error:'No local model...'}
+  - line 879-887: runtime.chatStream() — throws caught by outer try at 903
+  - line 903-920: catch block:
+      console.error('[INFERENCE_ERROR]') + message + code + name + stack
+      isAbort detection (line 913): /abort/i || err.name === 'AbortError' || err.code === 20
+      return { success: false, replyId, error: err?.message || 'Inference failed' }
+NexChatPanel.tsx:936-1007 (chat-mode error handling):
+  - line 961-968: /No local model|Model file not found/i → message status='error' + setError
+  - line 969-981: /abort|cancelled|canceled/i → message status='error' + setError
+  - line 982-1007: ELSE → falls through to non-streaming aiChat (line 984) which calls runtime.chat
+    - If aiChat ALSO returns success=false (line 999-1007): message status='error' + setError
+  - line 1009-1017: catch (err) → message status='error' + setError(err.message)
+
+VERDICT: Chat-mode inference errors DO propagate to the user via the chat message bubble (with err.message). The Orb does NOT go to 'error' state (see ITEM 7.3 below).
+
+7.2 — Inference error propagation: agent path
+─────────────────────────────────────────────────
+Two inference call sites in agent path:
+(a) PLANNER (planner.ts:113-245):
+    - line 176/181: runtime.chatStream / runtime.chat
+    - line 240-244: catch (err) → console.error('[PLANNER_ERROR] Planner threw:', err.message, err.stack)
+        AgentLogger.error(`Planner failed: ${err.message}`)
+        return fallbackPlan(request.userRequest, err.message)
+    ⚠ SILENT SWALLOW: planner returns fallbackPlan instead of throwing. The err.message is passed as `reason` to fallbackPlan but is ONLY logged via [PLANNER_DIAG] (line 367) — NOT surfaced in plan.warnings or any user-visible channel.
+
+(b) REACT LOOP (react-loop.ts:140-208):
+    - line 189/194: runtime.chatStream / runtime.chat
+    - line 198-207: catch (err) → AgentLogger.warn(`ReAct decision failed: ${err.message}`)
+        return { action: 'continue', reason: `ReAct decision failed (${err.message})...`, confidence: 0.0 }
+    ⚠ SILENT SWALLOW: react-loop returns 'continue' on inference error. The decision is to proceed with the original plan. err.message is in the `reason` field but NOT propagated to user.
+
+(c) LOAD MODEL (core.ts:370-376):
+    - runtime.loadModel throws → propagates to outer catch at core.ts:730
+    - core.ts:730-766: catch (err) → emit task_failed with err.message → return task
+
+(d) STEP EXECUTION THROWS (core.ts:1447-1468):
+    - executeStep outer try/catch wraps tool exec + ReAct + verification
+    - line 1447: catch (err) →
+        if (err.code === 'AGENT_CANCELLED') throw err  // re-throw to outer
+        step.status = 'failed'
+        step.error = err.message
+        task.errors.push({ type: 'tool_error', message: err.message })
+        emit step_failed (NOT task_failed)
+    ⚠ NO handleStepFailure call — Phase 7 recovery engine is BYPASSED for thrown exceptions.
+
+7.3 — Task status transition to 'failed' on inference error
+─────────────────────────────────────────────────
+Three paths to task_failed on inference error:
+
+PATH A — Load model fails (core.ts:370 throws → outer catch line 730):
+  - line 747-758: error type='unknown', message=err.message
+  - line 755-757: task.status = 'failed' (if not already completed/cancelled)
+  - line 759-764: emit task_failed
+  - User sees: '❌ Agent task failed: <err.message>' in chat (NexChatPanel.tsx:588-602)
+  - Orb: voiceController.setCondition('agent', 'error') at NexChatPanel.tsx:597
+
+PATH B — Inference error during a step's ReAct loop (react-loop catches → 'continue' → step completes):
+  - step.status = 'completed' (no failure)
+  - Loop continues to next step
+  - Next step's ReAct loop also fails → step completes again
+  - Eventually loop exits → Phase 9 completion gate (core.ts:606) checks verifyTaskCompletion
+  - If any step has unresolved errors or status='failed' (which only happens via executeStep catch at 1447), gate fails → task_failed
+  - If all steps "completed" but toolCalls.length === 0 → line 562-587 emits task_failed with "Agent executed 0 tool calls"
+  - User sees the gate failure message, NOT the original inference error
+
+PATH C — Inference error thrown inside executeStep (e.g. tool.execute throws — but tool-registry.ts:239-245 wraps throws → {success:false}):
+  - line 1447 catch → step.status='failed', emit step_failed (NOT task_failed)
+  - runTask loop continues to next step (line 547 task.currentStepIndex++)
+  - Phase 9 completion gate at end → task_failed
+
+VERDICT:
+- Load model failure (PATH A): task_failed fires with raw err.message — user sees the cause.
+- ReAct/Planner inference errors (PATH B): task may NOT fail at all (react-loop returns 'continue' → step completes). User sees "Task completed" with possibly empty/wrong content. OR if no tool calls execute, user sees "Agent executed 0 tool calls" — misleading.
+- Step-level throws (PATH C): user sees N x step_failed events before task_failed — slow cascade.
+
+7.4 — Orb state on inference failure
+─────────────────────────────────────────────────
+Agent path (task_failed event):
+  NexChatPanel.tsx:597: voiceController.setCondition('agent', 'error')
+  ⚠ NO setTimeout to clear 'agent' condition — unlike 'success' (line 575) and 'cancelled' (line 616) which clear after 1500ms.
+  STATE_PRIORITY['error'] = 8 (highest).
+  Orb STUCK on 'error' (red) FOREVER after a task_failed event — until next setCondition('agent', ...) call (e.g. next agent task's planning_started at line 421).
+
+Chat path (chat-mode inference error):
+  NexChatPanel.tsx:961-1007: message status='error', setError(err.message) — local React state.
+  ⚠ NO voiceController.setCondition('agent', 'error') or similar call.
+  The 'chat' condition (set by voiceController.setThinking(true) at NexChatPanel.tsx:377) is cleared by voiceController.setThinking(false) when isGenerating goes false (line 1019 + useEffect cleanup at 378).
+  Orb transitions: thinking → idle. NO 'error' state on chat-mode inference failure.
+
+DEAD BRANCH: AppShell.tsx:293-294:
+  } else if (orbState === 'error') {
+    voiceController.setCondition('engine', 'error');
+  }
+  LocalVoiceEngine.setState is NEVER called with 'error' (only idle/listening/thinking/speaking — see local-voice-engine.ts:293, 327, 333, 393, 453, 461). ConversationState type (nex-voice-conversation.ts:62) does NOT include 'error' — only idle/listening/thinking/speaking/interrupted. So the 'engine' error branch is unreachable dead code. Main process NEVER sends voice-conversation-state with state='error'.
+
+7.5 — Recovery engine coverage of inference errors
+─────────────────────────────────────────────────
+error-classifier.ts:122-133 — MODEL_INFERENCE_PATTERNS:
+  /parse failed|json parse error|invalid json/i
+  /model .* (error|failed|crashed)/i
+  /inference (failed|error)/i
+  /context (too large|window exceeded|length exceeded)/i
+  /context_too_large/i
+  /token limit (exceeded|reached)/i
+  /max tokens/i
+  /llm_error/i
+  /invalid response format/i
+  /empty (response|completion)/i
+
+classifyError returns class='model_inference' if any pattern matches.
+
+recovery-engine.ts:249-272 — model_inference recovery policy:
+  if (ctx.attempt < 1) → RETRY once (with exponential backoff)
+  else → SKIP (if more steps) or ABORT (if last step)
+
+BUT — handleStepFailure (core.ts:1471-1729) is ONLY invoked from:
+  - core.ts:1400: `await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model)` — when result.success === false (tool returned failure)
+  - core.ts:1432: `await handleStepFailure(task, step, verErrorMessage, token, runtime, model)` — when verification failed
+
+NOT invoked from:
+  - executeStep outer catch (line 1447) — for THROWN exceptions (including inference errors that propagate up from runtime.chat → LlamaCppRuntime.chat → inference.chatComplete)
+
+So:
+- Inference error returned as ToolResult.success=false (e.g. tool calls runtime.chat and catches internally) → handleStepFailure called → recovery engine classifies 'model_inference' → RETRY once → SKIP/ABORT
+- Inference error THROWN (e.g. react-loop's runtime.chat throws) → react-loop catches internally → returns 'continue' → NO recovery engine involvement
+- Inference error THROWN from executeToolWithPermission (impossible — tool-registry.ts:239-245 wraps throws → success=false)
+- Inference error THROWN from loadModel during runTask (core.ts:370) → outer catch at 730 → task_failed, no recovery
+
+VERDICT: Recovery engine's model_inference policy ONLY fires for tools that internally call inference and return success=false. For inference errors thrown during ReAct LLM call, react-loop swallows them. For loadModel failures, no recovery is attempted — task fails immediately.
+
+7.6 — Retry loops and infinite loops
+─────────────────────────────────────────────────
+Recovery engine retry caps:
+- model_inference: maxRetries = 1 (recovery-engine.ts:251 hard-coded `attempt < 1`)
+- tool_failure: maxRetries = task.maxRetries (line 276 — configurable per task)
+- transient_network: maxRetries = task.maxRetries (line 225)
+- timeout: maxRetries = task.maxRetries (line 225)
+- verification_failed: maxRetries = 1 (line 304 hard-coded)
+- browser_error: maxRetries = 1 (line 345)
+- computer_error: maxRetries = 1 (line 385)
+- unknown: maxRetries = 1 (line 410)
+- invalid_arguments: NO RETRY — MODIFY_AND_RETRY (one-shot) or ABORT (line 183-207)
+- permission_denied / security_policy / user_cancellation: NEVER RETRY (line 154, 168)
+
+RETRY loop in core.ts:1579-1608 (RETRY case):
+  step.retryCount = retryCount + 1
+  step.status = 'pending'
+  await sleep(decision.backoffMs)
+  await executeStep(task, step, token, runtime, model)
+  ⚠ NO check on step.retryCount before recursive executeStep call. If executeStep throws (not handleStepFailure), the throw propagates to executeStep's catch at 1447 → step.status='failed', step_failed emitted. Recovery NOT re-invoked. Loop terminates.
+
+  If executeStep succeeds → step.status='completed' → emit recovery_succeeded.
+  If executeStep fails again (result.success=false) → handleStepFailure called AGAIN with attempt=retryCount+1. Recovery decides again based on attempt count. Eventually exhausts retries → SKIP or ABORT.
+
+NO INFINITE LOOP RISK for the recovery engine — all retry paths have a hard cap (1 or task.maxRetries).
+
+⚠ POTENTIAL THRASH (already noted as THRASH-1 in P17-AUDIT-STREAMING):
+  inference.ts:521-531 idempotency check + line 564 unloadModel:
+  Two concurrent agent tasks with different models cause constant model reloads. Each chatStream/chat call invokes loadModel — if the loaded model differs from requested, unloadModel + fresh load. Multi-second thrash per step. Not an infinite loop but a performance death spiral.
+
+⚠ REPEATED FALLBACK (silent infinite-feeling loop):
+  planner.ts:240-244 swallows inference error → fallbackPlan. If heuristic matches, plan proceeds. If user sends similar request again, planner fails again → fallbackPlan again. User sees "successful" tasks that are actually heuristic-driven, never knowing inference is broken. Repeated silently until user investigates logs.
+
+7.7 — Voice engine errors and cross-subsystem contamination
+─────────────────────────────────────────────────
+LocalVoiceEngine error emission points (local-voice-engine.ts):
+  - line 263: startListening — no STT provider → onError('No STT provider registered')
+  - line 266: startListening — STT init failed → onError(`STT init failed: ...`)
+  - line 320: handleSpeechEnd — transcription failed → onError(`Transcription failed: ...`)
+  - line 378: speak — no TTS provider → onError('No TTS provider registered')
+  - line 381: speak — TTS init failed → onError(`TTS init failed: ...`)
+  - line 420: speak — TTS synthesis failed → onError(`TTS synthesis failed: ...`)
+  - line 424: speak — TTS threw → onError(`TTS failed: ...`)
+  - line 256: feedAudioChunk — error logged via console.warn ONLY (NOT routed to onError)
+
+main.ts wiring:
+  - line 1841-1843: conversation.setCallbacks.onError → mainWindow.webContents.send('voice-conversation-error', { message })
+  - line 1887-1890: engine.setCallbacks.onError → console.warn + mainWindow.webContents.send('voice-conversation-error', { message })
+
+Renderer subscriptions to 'voice-conversation-error':
+  - VoiceCenterPanel.tsx:108 — subscribes via window.nexAPI.onVoiceConversationError
+  - ⚠ VoiceCenterPanel.tsx is DEAD CODE (never imported anywhere — verified via grep)
+
+AppShell.tsx, NexChatPanel.tsx, voice-controller.ts, voice-service.ts: NO subscription to onVoiceConversationError.
+
+VERDICT: Voice engine errors (TTS init fail, transcription fail, piper fail, no STT/TTS provider) are SENT via 'voice-conversation-error' IPC but NEVER RECEIVED in the renderer. The only subscriber is in dead code (VoiceCenterPanel.tsx). SILENT VOICE ERROR GAP.
+
+Cross-subsystem contamination:
+- Voice engine errors do NOT affect the chat/agent path. The chat path runs independently of the voice engine state. A TTS failure does not block brainRoute, aiChatStream, or agent tasks.
+- A STT failure (line 320) means the transcript is not emitted via onFinalTranscript → conversation.feedTranscript is not called → no voice-conversation-user IPC → no nex:voice-transcript event → NexChatPanel doesn't get the transcript. So the user's voice input is SILENTLY DROPPED. The Orb transitions thinking → listening (via handleSpeechEnd finally block at line 321-335) with no transcript arriving.
+
+7.8 — Timeout errors vs inference errors distinguishability
+─────────────────────────────────────────────────
+Agent task-level timeout: TASK_TIMEOUT_MS = 300_000 (5 min) at core.ts:307
+  - line 309-315: setTimeout fires → cancelTask(taskId, `Global timeout (${TASK_TIMEOUT_MS}ms)`)
+  - cancelTask → token.cancel('Global timeout') → task.cancelled = true
+  - Next token.throwIfCancelled() throws err with code='AGENT_CANCELLED'
+  - Caught by outer catch at 730 → emit task_cancelled (if not timeoutFired) OR task_failed (if timeoutFired)
+  - error-classifier.ts:219: AGENT_CANCELLED code → class='user_cancellation' → neverRetry=true
+  - So task-level timeout is classified as user_cancellation, NOT timeout.
+
+Step-level timeout (from tool execution):
+  - If tool returns error message matching /timeout|timed out/ (error-classifier.ts:77-82 TIMEOUT_PATTERNS) → class='timeout' → RETRY with backoff (longer base)
+  - If tool returns 'Operation took too long' or 'deadline exceeded' → matches TIMEOUT_PATTERNS → 'timeout' class
+  - If tool returns 'inference failed' or 'context too large' → matches MODEL_INFERENCE_PATTERNS → 'model_inference' class
+  - The classifier checks patterns in priority order (lines 218-408): user_cancellation > security > permission > browser_error > computer_error > invalid_arguments > verification_failed > file_path > model_inference > timeout > transient_network > tool_failure > unknown
+
+Distinguishability at classifier:
+  - 'timeout' class: error message matches /\btimeout\b|\btimed out\b|exceeded.*time|deadline exceeded|operation took too long/i
+  - 'model_inference' class: error message matches /inference (failed|error)|context (too large|window exceeded)|max tokens|llm_error|empty (response|completion)/i
+  - These are MUTUALLY EXCLUSIVE patterns (no overlap). An error matching both would hit model_inference first (line 348 vs line 362 in classifyError — model_inference is checked BEFORE timeout).
+
+Distinguishability at recovery engine:
+  - 'timeout' → RETRY with exponentialBackoff (base = 800ms for timeout, vs 400ms for others) up to maxRetries
+  - 'model_inference' → RETRY ONCE (attempt < 1) then SKIP/ABORT
+  - Different recovery policies ✓
+
+Distinguishability at abort detection:
+  - main.ts:913: isAbort = /abort/i.test(err.message) || err.name === 'AbortError' || err.code === 20
+  - Renderer NexChatPanel.tsx:969: /abort|cancelled|canceled/i → abort branch
+  - abort is distinguished from inference error at IPC layer ✓
+
+7.9 — Recovery engine: inference errors vs tool errors (summary)
+─────────────────────────────────────────────────
+| Error class       | Retry cap            | Final action                |
+|-------------------|----------------------|-----------------------------|
+| model_inference   | 1 retry (hard-coded) | SKIP if more steps, ABORT otherwise |
+| tool_failure      | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+| transient_network | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+| timeout           | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+| verification_failed| 1 retry              | REPLAN if more steps, ABORT otherwise |
+| browser_error     | 1 retry              | REPLAN if more steps, ABORT otherwise |
+| computer_error    | 1 retry              | REPLAN if more steps, ABORT otherwise |
+| unknown           | 1 retry              | ABORT                       |
+| invalid_arguments | 0 (MODIFY_AND_RETRY) | ABORT                       |
+| permission_denied | 0 (never)            | SKIP if more steps, ABORT otherwise |
+| security_policy   | 0 (never)            | SKIP if more steps, ABORT otherwise |
+| user_cancellation | 0 (never)            | ABORT                       |
+
+Inference errors get FEWER retries (1 hard-coded) than tool failures (task.maxRetries which defaults to higher). This makes sense — inference errors are less likely to be transient.
+
+⚠ The recovery engine is ONLY invoked via handleStepFailure (core.ts:1471). handleStepFailure is called from:
+  - core.ts:1400 (result.success === false)
+  - core.ts:1432 (verification failed)
+NOT called from executeStep catch (line 1447). So THROWN exceptions (including inference errors that escape react-loop's catch) BYPASS recovery entirely. The Phase 7 recovery engine is half-wired: it handles returned errors but not thrown ones.
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 8 — VOICE → RUNTIME → RESPONSE
+═══════════════════════════════════════════════════════════════════════════════
+
+8.1 — InteractionLoopManager status: legacy or dead?
+─────────────────────────────────────────────────
+interaction-loop.ts:124-369 — class InteractionLoopManager
+  Singleton: getInteractionLoopManager() (line 383)
+  Methods: processText, processVoice, speakText, stop, setPersonality, getLastLanguage, getStatus, reset
+
+Wiring in main.ts (lines 2707-2769):
+  - line 2708: `const { getInteractionLoopManager, verifyInteractionSecurity } = await import('./ai/interaction-loop');`
+  - line 2710: `const interactionLoop = getInteractionLoopManager();` (loaded but `interactionLoop` variable never used after — only getInteractionLoopManager() called per-handler)
+  - line 2713: ipcMain.handle('interaction-process-text', ...)
+  - line 2723: ipcMain.handle('interaction-process-voice', ...)
+  - line 2733: ipcMain.handle('interaction-speak', ...)
+  - line 2743: ipcMain.handle('interaction-stop', ...)
+  - line 2753: ipcMain.handle('interaction-set-personality', ...)
+  - line 2763: ipcMain.handle('interaction-status', ...)
+
+preload.ts:378-383 — all 6 IPC methods exposed on window.nexAPI.
+
+Renderer callers (verified via grep):
+  - BasicInteractionPanel.tsx:32, 56, 76, 86 — uses interactionStatus, interactionProcessText, interactionSpeak, interactionStop
+  - BasicInteractionPanel.tsx is imported at AppShell.tsx:43 (`const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));`)
+  - AppShell.tsx:352: `case 'interact': return <Suspense><BasicInteractionPanel /></Suspense>;`
+
+VERDICT: InteractionLoopManager is LEGACY — actively wired via 6 IPC handlers + the BasicInteractionPanel debug panel (AppShell view='interact'). NOT DEAD CODE. Used for debug MVP testing of text/voice interaction without going through the full brain router.
+
+⚠ interaction-process-voice (main.ts:2723) is registered and exposed in preload (line 379) but has NO renderer caller. Dead IPC surface within the legacy panel.
+
+8.2 — Duplicate voice paths: NexVoiceConversation vs InteractionLoopManager
+─────────────────────────────────────────────────
+PATH A — NexVoiceConversation (the production voice path):
+  VoiceManager.startConversation → conv.start + engine.startListening (voice-manager.ts:417-458)
+  → mic capture → onaudioprocess (voice-service.ts:174) → voiceFeedAudioChunk → main → engine.feedAudioChunk → whisper-provider.feedAudioChunk
+  → VAD detects speech end → handleSpeechEnd (local-voice-engine.ts:302) → sttProvider.stopStream → transcribeFile → onFinalTranscript
+  → main.ts:1855-1860: conversation.feedTranscript(text) (nex-voice-conversation.ts:276)
+  → parseVoiceCommand / wake word / handleUserUtterance (line 369-404)
+  → onUserUtterance callback → main.ts:1820-1826: voice-conversation-user IPC
+  → AppShell.tsx:313-318: nex:voice-transcript DOM event with source='voice'
+  → NexChatPanel.tsx:322-347: handleSend → brainRoute → agent/chat
+  → task_completed event → NexChatPanel.tsx:558-586 → speakResponseIfVoice(spokenText)
+  → voiceConversationSpeak IPC (line 370) → main.ts:1613-1620 → NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556)
+  → engine.speak (with requestId) → onTTSAudioReady → main.ts:1873-1885 voice-tts-audio IPC
+  → App.tsx:92-177 Audio element → audio.onended → voiceTtsEnded IPC (line 138)
+  → main.ts:1690-1697 → notifyTtsPlaybackEnded → waitForTtsPlayback resolves
+  → enterListening (nex-voice-conversation.ts:550) → engine.startListening → setState('listening')
+  → main.ts:1809 voice-conversation-state IPC → AppShell.tsx:286 setCondition('engine','listening')
+  → Orb transitions to 'listening' AFTER audio playback ends (BUG-12 fixed)
+
+PATH B — InteractionLoopManager (the legacy debug path):
+  BasicInteractionPanel → interactionProcessText({ text, speakResponse: false }) (BasicInteractionPanel.tsx:56)
+  → main.ts:2713-2720 → InteractionLoopManager.processText (interaction-loop.ts:136-248)
+  → detectLanguage → buildSystemPrompt → localChatComplete (local-engine.ts)
+  → result.response returned to BasicInteractionPanel
+  → user clicks "Speak" → interactionSpeak(lastResponse.response) (BasicInteractionPanel.tsx:76)
+  → main.ts:2733-2740 → InteractionLoopManager.speakText (interaction-loop.ts:275-285)
+  → engine.speak(text) — NO requestId passed → engine auto-increments _currentTtsRequestId
+  → onTTSAudioReady fires → main.ts:1873-1885 voice-tts-audio IPC → App.tsx Audio element
+  → audio.onended → voiceTtsEnded IPC → main.ts:1690-1697 → NexVoiceConversation.notifyTtsPlaybackEnded
+  → BUT no speakResponse is awaiting waitForTtsPlayback (because speakText doesn't call speakResponse)
+  → notifyTtsPlaybackEnded: ttsPlaybackRequestId !== requestId → ignored (stale signal — logged at nex-voice-conversation.ts:614)
+  → engine stays in 'speaking' state forever (speak() doesn't transition out per BUG-12 fix)
+  → no enterListening call → STT not restarted → Orb stuck on 'speaking' (green) until user manually triggers something else
+
+VERDICT: Path A and Path B are PARALLEL but do not interfere with each other in normal usage (different UIs). Path A is the production path. Path B is for the debug 'interact' panel.
+
+⚠ PATH B STATE DESYNC: InteractionLoopManager.speakText does NOT go through NexVoiceConversation.speakResponse, so the BUG-12 fix (waitForTtsPlayback) doesn't apply. After Phase 16's engine.speak rewrite (no auto-transition out of 'speaking'), Path B leaves the engine STUCK in 'speaking' state. The Orb stays green ('speaking') forever after using BasicInteractionPanel's Speak button.
+
+8.3 — Voice → Brain → Tool → TTS full chain (with Phase 16 fixes)
+─────────────────────────────────────────────────
+Trace verified end-to-end (see PATH A above):
+  1. mic → voice-service.ts:174 onaudioprocess → voiceFeedAudioChunk → main → engine.feedAudioChunk → whisper-provider.feedAudioChunk
+  2. voice-service.ts:227 → voiceFeedAudioLevel → main → engine.feedAudioLevel → vad.feed(level)
+  3. VAD silence event → local-voice-engine.ts:197-204 → handleSpeechEnd
+  4. handleSpeechEnd (line 302): setState('thinking') → sttProvider.stopStream → transcribe → onFinalTranscript
+  5. main.ts:1855-1860 → conversation.feedTranscript
+  6. handleUserUtterance → setState('thinking') → onUserUtterance callback → main.ts:1820-1826 → voice-conversation-user IPC
+  7. AppShell.tsx:313-318 → nex:voice-transcript event (source='voice')
+  8. NexChatPanel.tsx:322-347 → setInput + dispatch Enter → handleSend (line 697)
+  9. brainRoute → route='agent' → createTask + runTask
+  10. runTask → planning_started event → step_started → tool_call_started → tool_call_completed → step_completed
+  11. task_completed event → NexChatPanel.tsx:558-586 → speakResponseIfVoice(spokenText)
+  12. voiceConversationSpeak IPC → NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556)
+  13. setState('speaking') → engine.speak (with requestId) → onTTSAudioReady → voice-tts-audio IPC
+  14. App.tsx:92-177 → new Audio(fileUrl).play() → audio.onended → voiceTtsEnded IPC
+  15. notifyTtsPlaybackEnded → waitForTtsPlayback resolves → GUARD 3 check
+  16. enterListening → setState('listening') → engine.startListening
+  17. voice-conversation-state IPC → AppShell → setCondition('engine','listening') → Orb 'listening'
+
+ALL 17 STEPS VERIFIED WORKING with Phase 16 fixes (BUG-12 + BUG-26). No silent swallows.
+
+⚠ BUG-21 STILL PRESENT (re-confirmed): voice-service.ts:269-278 barge-in path:
+  if (this._ttsActive && this._bargeInEnabled) {
+    console.log('[VOICE] Barge-in: user speaking during TTS — stopping TTS');
+    this.stopSpeaking();  // renderer-only state cleanup, NO IPC to main
+    if (this._mode === 'continuous' && !this._sttActive) {
+      this.startSTT();  // renderer-only browser STT no-op in Electron
+      this.setCondition('mic', 'listening');
+      this._shouldRestartSTT = true;
+    }
+  }
+  Does NOT call voiceConversationStopSpeaking IPC, voiceConversationAbort IPC, or notify main process.
+  Main process unaware of barge-in. Engine keeps synthesizing. App.tsx <audio> keeps playing.
+  User's mic keeps picking up TTS audio. STATE DESYNC.
+
+8.4 — Double-processing risk
+─────────────────────────────────────────────────
+For double-processing to occur, both paths must fire on the same transcript. Verified:
+  - engine.onFinalTranscript is wired ONLY to conversation.feedTranscript (main.ts:1855-1860)
+  - There is NO wiring from engine.onFinalTranscript to InteractionLoopManager.processVoice
+  - InteractionLoopManager.processVoice is invoked ONLY via the interaction-process-voice IPC (main.ts:2723), which has NO renderer caller
+
+VERDICT: NO double-processing risk in current wiring.
+
+═══════════════════════════════════════════════════════════════════════════════
+ITEM 9 — VOICE STATE → ORB STATE / AUDIO LEVEL
+═══════════════════════════════════════════════════════════════════════════════
+
+9.1 — Three+ independent state drivers writing to voiceController
+─────────────────────────────────────────────────
+The VoiceService._stateConditions map (voice-service.ts:73) is the central state registry. Six condition keys write to it:
+
+1. 'mic' (renderer VoiceService):
+   - voice-service.ts:323: setCondition('mic', 'error') on enableMicrophone failure
+   - voice-service.ts:328: setCondition('mic', 'listening') on startListening
+   - voice-service.ts:389: setCondition('mic', 'listening') after TTS fake completion in continuous mode
+   - voice-service.ts:493: setCondition('mic', 'listening') in startSTT browser fallback
+   - voice-service.ts:275: setCondition('mic', 'listening') in barge-in code (BUG-21)
+   - Cleared by: clearCondition('mic') in stopListening (line 335)
+
+2. 'tts' (renderer VoiceService.speak fake completion):
+   - voice-service.ts:371: setCondition('tts', 'speaking') in speak()
+   - voice-service.ts:384: clearCondition('tts') after setTimeout (speakDuration ms)
+   ⚠ This setTimeout is a FAKE completion — main-side actual TTS lifecycle is independent. Desync source.
+
+3. 'chat' (renderer VoiceController.setThinking):
+   - voice-controller.ts:141: setCondition('chat', 'thinking') when isGenerating
+   - voice-controller.ts:142: clearCondition('chat') when not generating
+   - Invoked by NexChatPanel.tsx:377-378 useEffect on isGenerating
+
+4. 'agent' (renderer NexChatPanel agent event listener):
+   - NexChatPanel.tsx:421: setCondition('agent', 'thinking') on planning_started
+   - NexChatPanel.tsx:427, 436, 512: setCondition('agent', 'working') on plan_created/step_started/tool_call
+   - NexChatPanel.tsx:493: setCondition('agent', 'thinking') on recovery_started
+   - NexChatPanel.tsx:574: setCondition('agent', 'success') + setTimeout(1500) clearCondition('agent') on task_completed
+   - NexChatPanel.tsx:597: setCondition('agent', 'error') on task_failed — ⚠ NO clearCondition!
+   - NexChatPanel.tsx:615: setCondition('agent', 'cancelled') + setTimeout(1500) clearCondition('agent') on task_cancelled
+
+5. 'queue' (renderer AppShell task-queue-event listener):
+   - AppShell.tsx:224: setCondition('queue', 'working') on task_started/task_progress
+   - AppShell.tsx:226: setCondition('queue', 'success') + setTimeout(1500) clearCondition('queue') on task_completed
+   - AppShell.tsx:230: setCondition('queue', 'error') + setTimeout(1500) clearCondition('queue') on task_failed/task_recovered
+   - AppShell.tsx:234: setCondition('queue', 'cancelled') + setTimeout(1500) clearCondition('queue') on task_cancelled
+
+6. 'engine' (renderer AppShell voice-conversation-state listener):
+   - AppShell.tsx:286: setCondition('engine', 'listening') on state='listening'
+   - AppShell.tsx:288: setCondition('engine', 'thinking') on state='thinking'
+   - AppShell.tsx:290: setCondition('engine', 'speaking') on state='speaking'
+   - AppShell.tsx:292: setCondition('engine', 'working') on state='working'/'active'
+   - AppShell.tsx:294: setCondition('engine', 'error') on state='error' — ⚠ DEAD BRANCH (main never sends state='error')
+   - AppShell.tsx:297: clearCondition('engine') on state='idle'/'ready'/'success'/'cancelled'/'initializing'
+
+All 6 condition keys are merged via recomputeState (voice-service.ts:439-450) — picks highest STATE_PRIORITY.
+
+CONFLICTS:
+- 'agent' priority 5 (working) vs 'engine' priority 6 (speaking) — if both active, 'speaking' wins
+- 'mic' priority 3 (listening) vs 'engine' priority 6 (speaking) — 'speaking' wins (correct: don't show listening during TTS)
+- 'agent' priority 8 (error) — highest, sticks forever after task_failed (CLEANUP GAP)
+- 'queue' brief 1.5s flashes may be overridden by 'agent' or 'engine' higher priorities
+
+9.2 — BUG-12 fix status: Orb 'listening' during TTS playback
+─────────────────────────────────────────────────
+Phase 16 fix (commit 8e789f4) rewrote engine.speak (local-voice-engine.ts:375-444):
+  - NO setState('listening')/'idle' after synthesis completes (line 429-443 comment)
+  - NO startListening() call after synthesis
+  - speak() returns audioReady boolean (true if onTTSAudioReady fired)
+
+NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556) now:
+  - line 537: await waitForTtsPlayback(requestId) — blocks until renderer's voice-tts-ended IPC arrives
+  - line 543-546: GUARD 3 — re-check requestId after wait, skip enterListening if cancelled/superseded
+  - line 550-555: enterListening only if still active and no interruption detected
+
+So the Orb correctly transitions 'speaking' → 'listening' only AFTER audio.onended fires (renderer → voice-tts-ended IPC → notifyTtsPlaybackEnded → waitForTtsPlayback resolves → enterListening → setState('listening') → voice-conversation-state IPC → setCondition('engine','listening')).
+
+VERDICT: BUG-12 is FIXED for the main production path. Orb no longer shows 'listening' while TTS is still playing through the speakers.
+
+⚠ RESIDUAL DESYNC on renderer fake-completion path (voice-service.ts:357-393):
+  VoiceService.speak() (called via voiceController.speak() — which is NOT called by NexChatPanel but IS the API) sets 'tts' → 'speaking' and uses setTimeout(speakDuration) to clear 'tts' and call startSTT() + setCondition('mic','listening'). This runs IN PARALLEL with main's actual TTS lifecycle. If voiceController.speak() is called from anywhere (currently no renderer caller — verified), the fake completion's startSTT() would attempt browser STT (no-op in Electron) and set 'mic' to 'listening' — while main is still in 'speaking'. STATE_PRIORITY: 'speaking' (6 from 'engine') > 'listening' (3 from 'mic'), so Orb still shows 'speaking'. Masked by priority. SEVERITY: LOW.
+
+9.3 — Orb 'idle' during agent execution
+─────────────────────────────────────────────────
+During an agent task:
+- 'agent' condition is set to 'thinking' (priority 4) or 'working' (priority 5)
+- 'engine' condition may be 'idle' (cleared) or 'listening' (if mic is active) — priority 3
+- 'mic' condition is 'listening' (priority 3) if mic is active in continuous mode
+- 'chat' condition is cleared (setThinking(false) because isGenerating=false during agent — wait, isGenerating is TRUE during agent task)
+
+Actually NexChatPanel.tsx:377-378 useEffect: voiceController.setThinking(isGenerating) — isGenerating is true while agent task is in progress (set true at handleSend line 869, set false at task_completed/failed/cancelled handlers). So 'chat' condition is 'thinking' (priority 4) during agent execution.
+
+State resolution during agent execution:
+- 'agent' = 'working' (5)
+- 'chat' = 'thinking' (4)
+- 'mic' = 'listening' (3)
+- 'engine' = ? (depends on main state — likely 'thinking' or cleared)
+- Resolved: 'working' (5)
+
+VERDICT: Orb shows 'working' during agent execution. NOT 'idle'. ✓ WORKING.
+
+9.4 — safeOrbTransition: BUG-37 re-confirmation at 8e5ff6d
+─────────────────────────────────────────────────
+orb-state.ts:42-56 — VALID_TRANSITIONS map defines 13 states and allowed transitions.
+orb-state.ts:62-66 — isValidOrbTransition(from, to) returns boolean.
+orb-state.ts:72-76 — safeOrbTransition(current, to) returns `to` if valid, else `current` + console.warn.
+
+Grep results (verified at 8e5ff6d):
+  /safeOrbTransition|isValidOrbTransition/ → ONLY 2 matches, both in orb-state.ts (the definitions).
+
+NO call site anywhere in:
+  - voice-controller.ts:171-176 (handleStateChange) — `this.orbStateRef.current = orbState;` directly, no validation
+  - voice-service.ts:439-450 (recomputeState) — `this._state = newState;` directly, no validation
+  - AppShell.tsx:147-149 (subscribeOrbState) — `setOrbState(state);` directly, no validation
+  - NexOrb.tsx — consumes orbState prop, no validation
+  - NexChatPanel.tsx — setCondition calls, no validation
+
+VERDICT: BUG-37 STILL PRESENT at 8e5ff6d. The state machine in orb-state.ts is documentation-only — not enforced. Invalid transitions (e.g. error → listening, speaking → thinking, success → working) silently happen. The console.warn at orb-state.ts:74 never fires because safeOrbTransition is never called.
+
+Examples of invalid transitions that can happen today:
+- task_failed → 'agent' = 'error' (priority 8, stuck). Then user types a chat message → 'chat' = 'thinking' (priority 4). Resolved: 'error' (8 > 4) — Orb still 'error' while user is just chatting. INVALID: error → thinking should not happen.
+- After 'speaking' (priority 6 from 'engine'), if main-side conversation emits 'working' (priority 5 from 'engine'), the resolved state goes speaking → working. INVALID per VALID_TRANSITIONS: speaking → working is NOT allowed (only speaking → ready/listening/idle/error/cancelled).
+
+9.5 — Audio level (rms) mute during TTS playback
+─────────────────────────────────────────────────
+Renderer VoiceService.onaudioprocess (voice-service.ts:174-232):
+  - Runs whenever AudioContext is active (mic enabled)
+  - Computes rms (line 219)
+  - Calls callbacks.onAudioLevel(level) (line 225) — drives Orb animation
+  - Calls window.nexAPI.voiceFeedAudioLevel(level) (line 227) — sends to main UNCONDITIONALLY (no mute during TTS)
+  - Calls processVAD(level) (line 231) — runs VAD logic
+
+Main LocalVoiceEngine.feedAudioLevel (local-voice-engine.ts:240-243):
+  - Calls callbacks.onAudioLevel(level) (for any subscribers)
+  - Calls vad.feed(level) — UNCONDITIONALLY (no sttActive check)
+
+Main VAD event handler (local-voice-engine.ts:197-204):
+  - On 'silence' event + sttActive + !isTranscribing → handleSpeechEnd
+  - During TTS: sttActive = false (because speak() calls stopListening at line 384)
+  - So handleSpeechEnd's guard at line 303 returns early — no transcription during TTS
+
+Renderer VoiceService.processVAD (voice-service.ts:256-293):
+  - During TTS: _ttsActive = true
+  - If level > vadSilenceThreshold (line 258) AND state was 'silence' (line 262) → barge-in code at line 269-278
+  - Barge-in: stopSpeaking() (renderer-only) + startSTT() (no-op) + setCondition('mic','listening') + _shouldRestartSTT = true
+
+VERDICT: NO explicit audio level muting during TTS. The main-side VAD is safely gated by sttActive=false (no transcription during TTS). The RENDERER-side VAD is NOT safely gated — it triggers barge-in (BUG-21) on any audio above threshold during TTS, which is exactly what happens when TTS audio bleeds into the mic.
+
+9.6 — Voice-driven agent task state transition chain
+─────────────────────────────────────────────────
+Expected sequence (verified by tracing each step):
+
+1. Idle (no voice activity)
+   - All conditions cleared
+   - Orb: 'idle'
+
+2. User starts speaking
+   - Mic captures → voiceFeedAudioLevel → main VAD detects speech
+   - LocalVoiceEngine state still 'listening' (VAD detects speech inside 'listening' state)
+   - Orb: 'listening' (from 'mic' condition, priority 3)
+
+3. User stops speaking (VAD silence event)
+   - handleSpeechEnd → setState('thinking') (local-voice-engine.ts:305)
+   - onStateChange → main.ts:1870 voice-conversation-state source='engine' state='thinking'
+   - AppShell.tsx:288 setCondition('engine','thinking')
+   - Orb: 'thinking' (priority 4 from 'engine')
+
+4. Transcript produced → onFinalTranscript → conversation.feedTranscript → handleUserUtterance
+   - setState('thinking') (nex-voice-conversation.ts:390)
+   - onStateChange → main.ts:1809 voice-conversation-state (color='purple')
+   - Orb: 'thinking' (priority 4 — still)
+
+5. onUserUtterance → voice-conversation-user IPC → AppShell → nex:voice-transcript → NexChatPanel
+   - handleSend → brainRoute → route='agent' → createTask + runTask
+   - planning_started event → NexChatPanel.tsx:421 setCondition('agent','thinking')
+   - Orb: 'thinking' (priority 4 — same, but now from 'agent' condition)
+
+6. Plan created → planning_completed → step_started → tool_call_started
+   - NexChatPanel.tsx:427/436 setCondition('agent','working')
+   - Orb: 'working' (priority 5)
+
+7. Tool execution → tool_call_completed → step_completed → ... (more steps) → task_completed
+   - NexChatPanel.tsx:574 setCondition('agent','success') + setTimeout(1500) clearCondition('agent')
+   - Orb: 'success' (priority 2) for 1.5s, then 'agent' clears
+   - ⚠ But during this 1.5s, speakResponseIfVoice is called (line 585) which triggers voiceConversationSpeak → speakResponse → setState('speaking') → main.ts:1809 voice-conversation-state state='speaking'
+   - AppShell.tsx:290 setCondition('engine','speaking') — fires immediately (within milliseconds)
+   - Orb: 'speaking' (priority 6 from 'engine' overrides 'success' priority 2)
+   - ⚠ The 'success' flash is BARELY VISIBLE — 'speaking' takes over almost immediately.
+
+8. TTS playing → audio.onended → voice-tts-ended IPC → notifyTtsPlaybackEnded → waitForTtsPlayback resolves → enterListening
+   - setState('listening') (nex-voice-conversation.ts enterListening → line 344)
+   - onStateChange → main.ts:1809 voice-conversation-state state='listening'
+   - AppShell.tsx:286 setCondition('engine','listening')
+   - Orb: 'listening' (priority 3)
+   - 'agent' condition was cleared by the 1.5s setTimeout (step 7)
+   - 'mic' condition may also be 'listening' (priority 3) — same state
+
+9. Back to step 1 (waiting for next utterance)
+
+VERDICT: The chain transitions correctly: idle → listening → thinking → working → (brief success) → speaking → listening. The 'success' flash at step 7 is masked by 'speaking' — likely invisible to the user.
+
+⚠ The 'error' state is missing from this chain — if task_failed fires instead of task_completed, the chain becomes: idle → listening → thinking → working → error (stuck). See ITEM 7.4.
+
+9.7 — Renderer ↔ main state desync
+─────────────────────────────────────────────────
+GAP-7 re-confirmed: voice-conversation-state channel overloaded (main.ts:1809 + 1870)
+  Both conversation.onStateChange and engine.onStateChange send to the SAME 'voice-conversation-state' IPC channel.
+  Payloads differ:
+    conversation: { state, prev, color }
+    engine: { state, source: 'engine' }
+  AppShell.tsx:258 listener receives both, processes the same way (ignores source/prev/color).
+  RACE: if conversation emits 'speaking' (state='speaking', color='green') and then engine emits 'idle' (state='idle', source='engine') shortly after, the renderer's setCondition('engine','speaking') is immediately overridden by clearCondition('engine') → Orb briefly flashes 'speaking' then drops to other-condition priorities.
+  In practice: NexVoiceConversation.setState is called AFTER engine.setState in the speakResponse flow (line 497 setState('speaking') comes after engine.speak at line 504 — wait, actually setState is called BEFORE engine.speak). Let me re-trace:
+    nex-voice-conversation.ts:497 setState('speaking') → conversation.onStateChange → main.ts:1809 IPC
+    nex-voice-conversation.ts:504 engine.speak(text) → engine.setState('speaking') → engine.onStateChange → main.ts:1870 IPC
+  Both fire 'speaking' → setCondition('engine','speaking') called twice (idempotent).
+  After speakResponse finishes: enterListening → setState('listening') → conversation.onStateChange → main.ts:1809 IPC state='listening'. Engine already transitioned to 'listening' via startListening (line 277 of local-voice-engine.ts). So both fire 'listening' — consistent.
+  DESYNC SCENARIO: engine emits 'idle' (e.g. from stopSpeaking at local-voice-engine.ts:453 `if (this.state === 'speaking') this.setState('idle')`) while conversation is still in 'speaking' (because speakResponse hasn't reached enterListening yet — still awaiting waitForTtsPlayback). Race window exists.
+
+STATE PRIORITY overrides:
+  If main-side 'engine' is 'idle' (cleared) but renderer-side 'mic' is 'listening' (priority 3), resolved state = 'listening'. The Orb shows 'listening' while main may be idle. OK if mic is actually listening. DESYNC if mic is NOT listening (e.g. permission denied but condition not cleared).
+
+DESYNC SCENARIOS:
+- VoiceService.speak fake-completion setTimeout (line 382-392) fires AFTER main has already transitioned to 'listening' — renderer's clearCondition('tts') is no-op (already cleared by main transitioning). Minor.
+- Barge-in (BUG-21): renderer sets 'mic' to 'listening' while main is still 'speaking'. STATE_PRIORITY: 'speaking' (6) > 'listening' (3) → Orb still shows 'speaking'. User is trying to interrupt but Orb shows speaking. DESYNC.
+- task_failed leaves 'agent' = 'error' forever. User starts a new chat (text input). 'chat' = 'thinking' (priority 4). 'agent' = 'error' (priority 8). Resolved: 'error'. Orb shows 'error' (red) while user is just typing. DESYNC.
+- task_completed clears 'agent' after 1.5s. If TTS starts within 1.5s, 'engine' = 'speaking' (6) overrides 'success' (2). After 1.5s, 'agent' clears, 'engine' still 'speaking' → 'speaking'. After TTS ends, 'engine' = 'listening' → 'listening'. OK.
+- 'queue' terminal conditions clear after 1.5s. If a new task_started arrives during the 1.5s window, 'queue' is set to 'working' (5). But the stale setTimeout from the previous terminal event still fires and clears 'queue'. STATE DESYNC: Orb briefly drops to lower priority while a new task is running. (GAP-4 re-confirmed — hasActiveQueueWork never called to gate the clear).
+
+═══════════════════════════════════════════════════════════════════════════════
+EXPECTED LOGS PER PATH (grep targets for E2E tests)
+═══════════════════════════════════════════════════════════════════════════════
+
+ITEM 7 — Error handling:
+  [INFERENCE_ERROR] (main.ts:905) — chat-stream catch
+    message=...
+    code=...
+    name=...
+    stack=...
+    abortType=AbortController(external)|llama.cpp internal(code=N)  (if abort)
+  [NEX AI Local] llama.loadModel() FAILED: (inference.ts:589) — load model catch
+  [MODEL_PATH_MISSING] chatComplete — model: ... (inference.ts:941)
+  [MODEL_PATH_MISSING] chatStream — model: ... (inference.ts:1046)
+  [PLANNER_ERROR] Planner threw: <err.message> (planner.ts:241)
+  [PLANNER_ERROR] stack: ... (planner.ts:242)
+  [PLANNER_DIAG] FALLBACK triggered — reason: <reason> (planner.ts:367)
+  [PLANNER_DIAG] no heuristic pattern matched — returning empty plan (planner.ts:516)
+  [AGENT] Task <taskId> timed out after <N>ms (core.ts:312)
+  [BRAIN_ROUTER] Agent task <taskId> failed: <err.message> (main.ts:973 — only if runTask itself rejects, which it never does)
+  [BRAIN_ROUTER] Error, falling back to chat: <err.message> (main.ts:984)
+  [CHAT_RESPONSE] source=local-stream error=<err.message> (main.ts:918)
+  [CHAT_RESPONSE] source=local error=<err.message> (local-engine.ts:220)
+  Recovery engine (handleStepFailure invoked):
+    [AGENT] recovery_started emitted → no log prefix, event-based only (subscribed via onAgentEvent)
+    AgentLogger.warn(`Recovery decision for step N: <action> (<class>) — <reason>`)
+
+ITEM 8 — Voice path:
+  [VOICE_PIPELINE] STT stream started (local-voice-engine.ts:271)
+  [VOICE_PIPELINE] Transcription: "<text>" (local-voice-engine.ts:312)
+  [VOICE_PIPELINE] Transcription empty — no speech detected (local-voice-engine.ts:316)
+  [VOICE_PIPELINE] Transcription failed: <err.message> (local-voice-engine.ts:319)
+  [VOICE_PIPELINE] Feeding transcript to conversation: "<text>" (main.ts:1857)
+  [VOICE_TEST] detected="<text>" transcription="<text>" (main.ts:1823-1825)
+  [VOICE] whisper transcript received: "<text>" (AppShell.tsx:316)
+  [BRAIN_ROUTER] message="<text>" route=agent|chat reason=...
+  [VOICE_PIPELINE] TTS speaking (req=N): "<text>" (local-voice-engine.ts:394)
+  [VOICE_PIPELINE] TTS synthesis completed for req=N but stale (...) — discarding (local-voice-engine.ts:406)
+  [VOICE_PIPELINE] TTS audio ready (req=N): <path> (local-voice-engine.ts:415)
+  [VOICE_PIPELINE] Sending TTS audio to renderer (req=N): <path> (main.ts:1882)
+  [VOICE_PIPELINE] Renderer received TTS audio (req=N): <path> (App.tsx:93)
+  [VOICE_PIPELINE] TTS audio playback completed (req=N) (App.tsx:128)
+  [VOICE_PIPELINE] TTS audio playback error (req=N): <err> (App.tsx:147)
+  [VOICE_PIPELINE] TTS playback ended signal for req=N — releasing wait (nex-voice-conversation.ts:608)
+  [VOICE_PIPELINE] TTS playback ended signal for req=N but current wait is for req=M — ignoring (stale) (nex-voice-conversation.ts:614)
+  [VOICE_PIPELINE] TTS playback wait timeout for req=N — releasing (renderer may have crashed) (nex-voice-conversation.ts:589)
+  [VOICE_PIPELINE] speakResponse: req=N superseded during synthesis — not waiting for playback (nex-voice-conversation.ts:515)
+  [VOICE_PIPELINE] speakResponse: req=N no audio ready — transitioning to idle (nex-voice-conversation.ts:522)
+  [VOICE_PIPELINE] speakResponse: req=N cancelled during playback — not entering listening (nex-voice-conversation.ts:544)
+  [VOICE_PIPELINE] Engine error: <message> (main.ts:1888)
+  [ORB_TRACE_MAIN] conversation state: <prev> -> <state> (main.ts:1807)
+  [ORB_TRACE_MAIN] engine state: <state> (main.ts:1868)
+  [ORB_TRACE_PRELOAD] received state=<state> source=<source> (preload.ts:193)
+  [ORB_TRACE_RENDERER] incoming state=<state> source=<source> (AppShell.tsx:261)
+  [ORB_TRACE_RENDERER] mapped orbState=<state> (AppShell.tsx:280)
+  [ORB_TRACE_CONTROLLER] conditions=engine:<state> resolvedState=<state> (AppShell.tsx:301)
+  [INTERACTION_STOP] (interaction-loop.ts:295) — caller stack trace
+  [INTERACTION_LOOP] — no log on interaction-process-text/voice
+  [VOICE] Barge-in: user speaking during TTS — stopping TTS (voice-service.ts:270) — BUG-21
+
+ITEM 9 — Orb state:
+  [ORB_AUDIO] VoiceService: rms=<n> smoothed=<n> (voice-service.ts:471)
+  [ORB_AUDIO] VoiceController: level=<n> orbAudioRef=<n> subscribers=<n> (voice-controller.ts:186)
+  [ORB_STATE] Invalid transition: <from> → <to> — keeping <from> (orb-state.ts:74) — NEVER FIRES (safeOrbTransition never called)
+  No specific logs for setCondition/clearCondition — silent operations
+
+═══════════════════════════════════════════════════════════════════════════════
+FINDINGS SUMMARY (sorted by severity)
+═══════════════════════════════════════════════════════════════════════════════
+
+CODE-NAME               SEVERITY  TYPE                   LOCATION                                                              DESCRIPTION
+────────────────────── ───────── ──────────────────── ──────────────────────────────────────────────────────────────────── ─────────────────────────────────────────────────────────────────────
+INFERENCE-PLAN-SWALLOW  HIGH      BUG/SILENT-SWALLOW     planner.ts:240-244 + fallbackPlan 366-522                             Planner's catch swallows ALL inference errors → fallbackPlan. err.message passed as `reason` but ONLY logged via [PLANNER_DIAG]. NOT surfaced in plan.warnings content (only generic 'Planner failed; using heuristic pattern-matched plan' or 'Planner failed; no heuristic fallback available'). User sees either a heuristic-driven "successful" task or a "0 tool calls" failure — never the root cause (e.g. OOM, model not loaded).
+INFERENCE-REACT-SWALLOW HIGH      BUG/SILENT-SWALLOW     react-loop.ts:198-207                                                  ReAct loop's catch swallows inference errors → returns 'continue' with err.message in `reason`. Step marked completed. Loop continues to next step (which also fails). User sees "Task completed" with wrong/empty content OR "0 tool calls" failure — never the inference error.
+STEP-THROW-NO-RECOVERY HIGH      BUG/GAP                core.ts:1447-1468                                                      executeStep outer catch marks step.status='failed' + emits step_failed but does NOT call handleStepFailure. Phase 7 recovery engine is BYPASSED for thrown exceptions. Only invoked for result.success=false (line 1400) or verification failures (line 1432). Inference errors that escape react-loop's catch (it doesn't escape — but if it did) or loadModel errors during a step would silently fail without retry/skip/abort decision.
+BUG-21-RECONFIRM        HIGH      BUG (re-confirmed)     voice-service.ts:269-278                                               Renderer VoiceService.processVAD barge-in: detects speech during TTS but only calls this.stopSpeaking() (renderer-only state) and this.startSTT() (renderer-only no-op in Electron). Does NOT call voiceConversationStopSpeaking IPC, voiceConversationAbort IPC, or notify main process. Main is unaware. <audio> keeps playing. Mic keeps picking up TTS audio. STATE DESYNC.
+AUDIO-NO-MUTE-TTS       HIGH      BUG (related to BUG-21) voice-service.ts:174-232 + 240-243                                          No explicit muting of audio level (rms) during TTS playback. Renderer mic capture keeps computing rms and sending to main. Main-side VAD safely gated by sttActive=false (no transcription). BUT renderer-side VoiceService.processVAD triggers barge-in (BUG-21) on any rms > threshold during TTS — exactly when TTS audio bleeds into mic.
+VOICE-ERROR-IPC-NOLISTENER MED    INSTRUMENTATION GAP    main.ts:1842, 1889 + VoiceCenterPanel.tsx:108                          'voice-conversation-error' IPC sent by main (conversation.onError + engine.onError). Only subscriber is VoiceCenterPanel.tsx which is DEAD CODE (never imported). AppShell, NexChatPanel, voiceController, voiceService: NO subscription. Voice engine errors (TTS init fail, transcription fail, piper fail, no provider) are SILENTLY DROPPED at the renderer.
+ORB-ERROR-NO-CLEAR      MED       CLEANUP GAP / DESYNC   NexChatPanel.tsx:597                                                   task_failed handler calls voiceController.setCondition('agent', 'error') but NEVER calls clearCondition('agent'). Unlike 'success' (line 575) and 'cancelled' (line 616) which clear after 1500ms. STATE_PRIORITY['error']=8 (highest). Orb STUCK on 'error' forever after a failed agent task — until next agent task starts (planning_started at line 421 sets 'thinking'). DESYNC.
+BUG-37-RECONFIRM        MED       BUG (re-confirmed)     orb-state.ts:72-76 (defined) vs voice-controller.ts:171-176, voice-service.ts:439-450, AppShell.tsx:147-149 (call sites)  safeOrbTransition is DEFINED but NEVER CALLED at 8e5ff6d. State machine in orb-state.ts is documentation-only. Invalid transitions (e.g. error → listening, speaking → working) silently happen. console.warn at orb-state.ts:74 never fires.
+GAP-7-RECONFIRM         MED       RACE / STATE DESYNC    main.ts:1809 + 1870 + AppShell.tsx:258                                 voice-conversation-state channel overloaded — both conversation.onStateChange and engine.onStateChange send to the SAME IPC channel. AppShell doesn't differentiate. Engine 'idle' can override conversation 'speaking' (or vice versa) if they emit out of order. Race window.
+INTERACTION-SPEAK-STATE-DESYNC MED STATE DESYNC        interaction-loop.ts:275-285 + local-voice-engine.ts:375-444           InteractionLoopManager.speakText calls engine.speak(text). After Phase 16 BUG-12 fix, engine.speak no longer transitions state out of 'speaking' or restarts STT. speakText doesn't go through NexVoiceConversation.speakResponse (no waitForTtsPlayback await). Engine STUCK in 'speaking' state forever after BasicInteractionPanel's Speak button. Orb stuck on 'speaking' (green). Legacy debug panel broken by Phase 16 fix.
+CHAT-ERROR-NO-ORB       LOW       STATE DESYNC           NexChatPanel.tsx:961-1007                                              Chat-mode inference errors mark message status='error' + setError(err.message) but do NOT call voiceController.setCondition('agent','error'). Orb transitions thinking → idle (via setThinking(false)). User sees error in chat bubble but NOT on the Orb. Inconsistent with agent path (which DOES set Orb to 'error' on task_failed).
+ORB-ERROR-DEAD-BRANCH   LOW       DEAD CODE              AppShell.tsx:293-294 + local-voice-engine.ts (setState calls) + nex-voice-conversation.ts:62 (ConversationState type)  AppShell maps voice-conversation-state state='error' → setCondition('engine','error'). BUT LocalVoiceEngine.setState is NEVER called with 'error' (only idle/listening/thinking/speaking). ConversationState type does NOT include 'error' (only idle/listening/thinking/speaking/interrupted). The 'engine' error branch is unreachable. Main NEVER sends voice-conversation-state with state='error'.
+INTERACTION-PROCESS-VOICE-DEAD LOW DEAD CODE            main.ts:2723 + preload.ts:379                                          interaction-process-voice IPC handler registered + exposed in preload. NO renderer caller. Dead IPC surface within the legacy interaction panel.
+VOICE-FAKE-COMPLETION  LOW       STATE DESYNC           voice-service.ts:357-393 (speak + setTimeout)                          VoiceService.speak() has a setTimeout-based fake completion (line 382-392) that runs in parallel with main's actual TTS lifecycle. If voiceController.speak() is called (currently no renderer caller — verified), the fake clearCondition('tts') + startSTT() would fire independently of main's voice-tts-ended. Masked by STATE_PRIORITY ('speaking' from 'engine' wins). Residual desync.
+GAP-4-RECONFIRM         LOW       GAP (re-confirmed)     orb-bridge.ts:62 + AppShell.tsx:219-239                                hasActiveQueueWork is exported but NEVER imported/called. AppShell.tsx maps task-queue events inline with hardcoded 1500ms clearAfterMs for ALL terminal events. Stale setTimeout from previous terminal event can fire during a new task's 'working' window — briefly clears 'queue' condition → Orb drops to lower priority. Multi-task UI flicker.
+GAP-9-RECONFIRM         LOW       GAP (re-confirmed)     orb-bridge.ts:48 (clearAfterMs: 2000 for task_recovered) vs AppShell.tsx:231 (1500ms hardcoded)  Inconsistency: main-side orb-bridge says task_recovered should clear after 2000ms, but renderer hardcodes 1500ms. Recovered tasks flash for 1500ms instead of 2000ms.
+GAP-8-PARTIAL-FIX       LOW       CLEANUP GAP (partial)  NexChatPanel.tsx:615-616 (cancelled — FIXED) vs 597 (error — NOT FIXED)  Phase 16 audit GAP-8 said "agent never cleared after cancel". Line 616 DOES clear after 1500ms for 'cancelled'. BUT line 597 does NOT clear for 'error'. Partial fix — 'cancelled' cleared, 'error' stuck forever.
+
+Cross-references to P17-AUDIT-STREAMING findings (re-confirmed here):
+- BUG-GAP-2 (cancelTask does NOT call abortInference) — re-confirmed at core.ts:1841-1850. Mid-LLM cancel = wasted tokens until natural completion.
+- BUG-GAP-5 (planner swallows AbortError → fallbackPlan) — re-confirmed at planner.ts:240-244. If only aiChatStreamCancel is called (not agentCancelTask), agent runs heuristic fallback plan instead of cancelling.
+- CLEANUP-LEAK-1 (handleInterruption setTimeout(50ms) not cleared on abort) — re-confirmed at nex-voice-conversation.ts:663.
+- CLEANUP-LEAK-2 (captureVoiceConfirmation 10s timeout not cleared on abort) — re-confirmed at nex-voice-conversation.ts:747.
+- CLEANUP-LEAK-3 (shutdown hang if agent mid-inference) — re-confirmed via BUG-GAP-2 cascade.
+
+═══════════════════════════════════════════════════════════════════════════════
+STAGE SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+PHASE 17 ITEMS 7-8-9 AUDIT — STATUS: 5 HIGH-severity issues, 4 MED, 7 LOW.
+
+CRITICAL (HIGH) — 3 NEW silent inference swallow paths + 2 reconfirmed bugs:
+  1. INFERENCE-PLAN-SWALLOW: planner.ts swallows inference errors → fallbackPlan. User never sees root cause (OOM, model not loaded, VRAM error). Either a heuristic-driven "successful" task or a misleading "0 tool calls" failure.
+  2. INFERENCE-REACT-SWALLOW: react-loop.ts swallows inference errors → 'continue' decision. Steps silently complete with wrong content. Same user-facing impact as #1.
+  3. STEP-THROW-NO-RECOVERY: executeStep catch (line 1447) marks step failed but does NOT call handleStepFailure. Phase 7 recovery engine bypassed for thrown exceptions. Only invoked for returned errors (result.success=false) and verification failures.
+  4. BUG-21-RECONFIRM: Renderer barge-in half-wired. VoiceService.processVAD detects speech during TTS but does NOT call voiceConversationStopSpeaking IPC. Main is unaware. Mic keeps hearing TTS. STATE DESYNC. (Same status as Phase 16 — not fixed by BUG-12/BUG-26 work.)
+  5. AUDIO-NO-MUTE-TTS: No explicit rms muting during TTS. Renderer VAD triggers barge-in on TTS bleed. Related to BUG-21.
+
+MEDIUM — Orb state machine gaps:
+  6. VOICE-ERROR-IPC-NOLISTENER: voice-conversation-error IPC sent by main but no renderer subscriber (only dead-code VoiceCenterPanel). Voice engine errors silently dropped.
+  7. ORB-ERROR-NO-CLEAR: 'agent' condition set to 'error' on task_failed but NEVER cleared. Orb stuck on 'error' forever.
+  8. BUG-37-RECONFIRM: safeOrbTransition defined but never called at 8e5ff6d. State machine not enforced.
+  9. GAP-7-RECONFIRM: voice-conversation-state channel overloaded. Conversation + engine both write to same channel. Race.
+  10. INTERACTION-SPEAK-STATE-DESYNC: InteractionLoopManager.speakText leaves engine stuck in 'speaking' after Phase 16 fix. Legacy debug panel broken.
+
+LOW — instrumentation / dead code / partial fixes:
+  11. CHAT-ERROR-NO-ORB: chat-mode inference errors don't trigger Orb 'error' state. Inconsistent with agent path.
+  12. ORB-ERROR-DEAD-BRANCH: AppShell's 'engine' error branch is unreachable (main never sends state='error').
+  13. INTERACTION-PROCESS-VOICE-DEAD: dead IPC surface (registered but no caller).
+  14. VOICE-FAKE-COMPLETION: VoiceService.speak's setTimeout fake completion runs parallel to main's TTS lifecycle. Masked by priority but residual desync.
+  15. GAP-4-RECONFIRM: hasActiveQueueWork never called. Multi-task Orb flicker.
+  16. GAP-9-RECONFIRM: task_recovered clearAfterMs mismatch (2000 main vs 1500 renderer).
+  17. GAP-8-PARTIAL-FIX: 'cancelled' condition cleared after 1500ms (FIXED). 'error' condition never cleared (NOT FIXED).
+
+RECOMMENDED FIXES (NOT implemented — READ-ONLY audit):
+
+For INFERENCE-PLAN-SWALLOW + INFERENCE-REACT-SWALLOW + STEP-THROW-NO-RECOVERY:
+  1. In planner.ts:240-244, distinguish AbortError (re-throw per BUG-GAP-5 from P17-AUDIT-STREAMING) AND surface non-abort inference errors in plan.warnings (e.g. `warnings: ['Inference failed during planning: ' + err.message]`). Surface plan.warnings in the renderer's planning_completed handler (NexChatPanel.tsx:424-429 currently displays only "Plan created. Executing steps...").
+  2. In react-loop.ts:198-207, on inference error (non-abort), return action='abort' with the err.message in reason — let the runTask outer catch fire task_failed with the actual root cause. OR: re-throw and let executeStep catch propagate to outer catch.
+  3. In core.ts:1447-1468, call handleStepFailure for non-AGENT_CANCELLED thrown exceptions. This invokes Phase 7 recovery engine for inference/tool throws. Recovery will classify via err.message (e.g. 'inference failed' → model_inference class → retry once).
+
+For ORB-ERROR-NO-CLEAR:
+  4. In NexChatPanel.tsx:597, add `setTimeout(() => voiceController.clearCondition('agent'), 5000)` (longer than success/cancelled since error is more important to surface) — match the pattern at lines 575 and 616.
+
+For BUG-37-RECONFIRM:
+  5. In voice-controller.ts:171-176, call safeOrbTransition(this.orbStateRef.current, orbState) before assignment. In voice-service.ts:439-450, call safeOrbTransition(this._state, newState) before assignment. The console.warn at orb-state.ts:74 will then fire on invalid transitions, exposing desync.
+
+For BUG-21-RECONFIRM + AUDIO-NO-MUTE-TTS:
+  6. In voice-service.ts:269-278 barge-in: replace `this.stopSpeaking()` with `window.nexAPI?.voiceConversationStopSpeaking?.()` (IPC to main). Also call `window.nexAPI?.voiceConversationAbort?.()` to invalidate the in-flight TTS request. This makes main aware of the barge-in and stops the actual TTS audio.
+  7. In voice-service.ts:174-232 onaudioprocess: skip the entire body (or skip voiceFeedAudioLevel + processVAD) when `this._ttsActive === true`. This prevents the renderer VAD from triggering on TTS bleed. (Main-side VAD is already safely gated by sttActive=false.)
+
+For VOICE-ERROR-IPC-NOLISTENER:
+  8. In AppShell.tsx, add a subscription to onVoiceConversationError that calls voiceController.setCondition('engine', 'error') + setTimeout(3000) clearCondition('engine'). This surfaces voice engine errors on the Orb briefly. Optionally also dispatch a DOM event that NexChatPanel can show as a toast.
+
+For GAP-7 (voice-conversation-state channel overloaded):
+  9. Use DIFFERENT IPC channels for conversation vs engine state: 'voice-conversation-state' (conversation) and 'voice-engine-state' (engine). AppShell subscribes to both, applies state from each to the 'conversation' and 'engine' condition keys respectively (already does). This eliminates the race where one overrides the other.
+
+For INTERACTION-SPEAK-STATE-DESYNC:
+  10. In interaction-loop.ts:275-285 speakText, either (a) call voiceController.speak() (renderer state) AND also call voiceConversationSpeak IPC (so main handles the full lifecycle), or (b) explicitly transition engine state out of 'speaking' after a fixed delay (matching the pre-Phase-16 behavior). Option (a) is cleaner — delegates to the production path.
+
+For GAP-4 (queue flicker):
+  11. In AppShell.tsx:225-237, before scheduling the clearAfterMs setTimeout, check if other tasks are running (subscribe to task-queue-state and check counts.running > 0). If so, skip the clear. Use orb-bridge.ts:hasActiveQueueWork (currently dead) — wire it up.
+
+For CHAT-ERROR-NO-ORB:
+  12. In NexChatPanel.tsx:999-1007 (chat-mode error fallback), call voiceController.setCondition('chat', 'error') + setTimeout(3000) clearCondition('chat'). This makes chat-mode inference errors visible on the Orb briefly. Add 'error' to the 'chat' condition key.
+
+NO CODE MODIFICATIONS MADE. NO COMMITS. NO NEW FILES. READ-ONLY AUDIT.
+Files reviewed (final list, no modifications):
+  All files in the WORK LOG list above. READ-ONLY audit — no files modified, no commits made.
+
+Audit complete. Findings appended to worklog.md.
+
+
+---
+Task ID: PHASE17-RUNTIME-INTEGRATION
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 17 — Runtime & Core Integration. Audit + implement fixes for ModelRouter/Runtime/Inference lifecycle, streaming/abort/cancel cleanup, concurrency, error handling, voice→runtime, orb state, context/memory/IPC/zustand, legacy/duplicate paths, offline-first preservation. No new features, no UI redesign. Additive only.
+
+Work Log:
+- Dispatched 4 parallel Explore audits (P17-AUDIT-MODEL, P17-AUDIT-STREAMING, P17-AUDIT-ERROR-VOICE, P17-AUDIT-CONTEXT-LEGACY) — 28 findings total (3 P0, 6 P1, 8 P2 in MODEL; 11 RACE/BUG/INSTRUMENTATION in STREAMING; 17 in ERROR-VOICE; 24 in CONTEXT-LEGACY)
+- Implemented 13 fixes addressing 16 root causes. All additive, no breaking signature changes (except cancelTask sync→async, with backward-compat cancelTaskSync).
+
+Files changed:
+- src/main/ai/inference.ts: RACE-1 fix (markInFlight before loadModel in chatComplete + chatStream — reserve in-flight slot BEFORE loadModel to eliminate the window where a second concurrent call could slip through and operate on the shared _ctxSequence causing KV-cache corruption). P1-3 fix (contextLargeEnough now actually used in idempotency check — previously declared but ignored, causing a model loaded via VRAM fallback with smaller context to be silently reused for larger-context requests).
+- src/main/agent/core.ts: P1-5/BUG-GAP-2 fix (cancelTask now async, calls abortInference to interrupt mid-LLM generation; previously only set token, agent waited for LLM to complete naturally). cancelAllActiveTasks async (awaits each cancelTask so abortInference completes before shutdownLlama). executeStep catch + runTask catch now detect AbortError (not just AGENT_CANCELLED) so cancelTask → abortInference → planner/ReAct throw chain correctly transitions task to 'cancelled'.
+- src/main/agent/planner.ts: BUG-GAP-5 + INFERENCE-PLAN-SWALLOW fix (AbortError re-thrown so cancel during planning cancels the task; real errors re-thrown so user sees root cause via task_failed instead of a misleading fallbackPlan "success").
+- src/main/agent/react-loop.ts: INFERENCE-REACT-SWALLOW fix (same pattern — AbortError re-thrown, real errors re-thrown).
+- src/main/main.ts: P0-1 model-test-load save+restore (snapshot user's active model before test load, reload it after — previously unloaded it unconditionally leaving no model loaded). P0-3 wireOnlineEnvironment aiMode check (if aiMode='local', force onlineEnvironment.available=false — previously agent attempted online call when user chose local). BUG-GAP-3 ai-chat-stream-cancel + agent-cancel-task handlers now abort 'online','agent-shared' runtime too. CLEANUP-LEAK-3 before-quit now awaits cancelAllActiveTasks before shutdownLlama (previously shutdownLlama's unloadModel→waitForInFlight waited 30s+ for in-flight LLM to complete naturally). Removed 5 dead brain-* IPC handlers (brainDecide/brainStatus/brainSetMode/brainLastDecision/brainModelsByTask) — never invoked by renderer. Updated queue wiring for async cancelTask.
+- src/main/tasks/queue.ts: agentCancelTask callback type updated to accept Promise<boolean>.
+- src/main/ai/local-model-provider.ts: P1 14-3 fix (split-brain _loadedModelId/loadedModel now read from inference.ts as source of truth via getEffectiveLoadedModel() — previously shadow state could go stale when inference.ts internally called unloadModel during fresh-load, causing LocalRuntimePanel to show "No model loaded" when chat path loaded via direct runtime). getInfo/healthCheck/loadedModelId all now use inference.ts source of truth.
+- src/main/preload.ts: Removed 5 dead brain-* IPC entries. Added comment noting the removal.
+- src/renderer/types/electron.d.ts: Removed 5 dead brain-* IPC types.
+- src/renderer/store/useStore.ts: P0 13-1 fix (setAIMode now also updates nested settings.aiMode so settingsSave persists the user's choice — previously user's AI Mode choice was lost on restart). Removed dead messages/addMessage/clearMessages (only used by dead ChatPanel.tsx).
+- src/renderer/components/chat/NexChatPanel.tsx: ORB-ERROR-NO-CLEAR fix (task_failed error condition now auto-clears after 1.5s like 'cancelled' — previously Orb stuck on red forever, STATE_PRIORITY['error']=8 was highest so nothing could override). CHAT-ERROR-NO-ORB fix (chat errors now flash Orb red 1.5s — previously chat errors left Orb at 'idle', user had no visual indication).
+- src/renderer/components/layout/AppShell.tsx: VOICE-ERROR-IPC-NOLISTENER fix (AppShell now subscribes to voice-conversation-error IPC — previously only dead VoiceCenterPanel subscribed; voice errors silently dropped, Orb stayed at 'listening' forever when Whisper/Piper failed).
+- src/renderer/components/ChatPanel.tsx: DELETED (dead code — 551 lines, no live importers, only consumer of dead useStore.messages).
+
+Stage Summary:
+- 16 root causes fixed across 11 source files (1 file deleted). 13 fixes total.
+- 5 P0/critical bugs fixed: model-test-load side effect, wireOnlineEnvironment aiMode bypass, cancelTask no abortInference, setAIMode persistence lost, RACE-1 serialization window.
+- 6 P1 bugs fixed: chat↔agent reload churn (via RACE-1+P1-3 combined), contextLargeEnough not used, planner/ReAct swallow AbortError, shutdown hang (CLEANUP-LEAK-3), LocalModelProvider split-brain, BUG-GAP-3 online agent unabortable.
+- 3 UX/cleanup fixes: Orb 'error' auto-clear, chat error Orb flash, voice error IPC subscription.
+- Legacy code removed: 551-line ChatPanel.tsx, 5 dead brain-* IPC handlers + preload + electron.d.ts entries, dead useStore.messages/addMessage/clearMessages.
+- Offline-first architecture PRESERVED: verified local inference path is 100% offline (no fetch/net.request on local code path). P0-3 fix prevents agent from even attempting online calls when aiMode='local'.
+- No new features. No UI redesign. All changes additive or removal of dead code.
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: Phase 6-16 = 1131/1131, Phase 116 = 326/326. All green.
+- No commits made. No pushes made. Awaiting user approval.
+- Remaining items NOT fixed (deferred to future phases): BUG-21 (barge-in half-wired — would need a deeper voice-service.ts refactor), AUDIO-NO-MUTE-TTS (renderer VAD triggers on TTS bleed — needs audio level gating during TTS), BUG-37 (safeOrbTransition never called — would need wiring into VoiceController.setCondition + voice-service.recomputeState), GAP-7 (voice-conversation-state IPC overloaded by conversation AND engine — would need splitting into two channels), 9 routing decision points consolidation (P2-1 — would require unifying 3 model-router modules), 3 parallel memory systems (P2 11-1 — would require consolidating semantic-memory-store + long-term-memory-system + memory/index.ts), contextSize hardcoded in 8+ places (P0 10-1 — would require a getEffectiveContextSize helper + propagation; deferred because changing the planner's contextSize from 4096 to model.contextSize risks breaking the chat↔agent reuse idempotency).
