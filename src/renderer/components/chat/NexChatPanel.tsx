@@ -307,11 +307,25 @@ export default function NexChatPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Phase 30: Voice transcript listener (final transcripts → sendMessage) ──
+  // Phase 14: Track whether the current request originated from voice.
+  // Set to true when a nex:voice-transcript event with source='voice' arrives.
+  // Reset to false when keyboard/text input is submitted.
+  // Used after response completion to decide whether to speak via TTS.
+  const wasVoiceInputRef = useRef<boolean>(false);
+  // Phase 14: Track whether the current request was cancelled before TTS.
+  // Prevents stale requests from triggering TTS after cancellation.
+  const ttsCancelledRef = useRef<boolean>(false);
+
+  // ── Phase 14: Voice transcript listener (final transcripts → sendMessage) ──
+  // When a voice transcript arrives with source='voice', we set wasVoiceInputRef
+  // so the response will be spoken via TTS after completion.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.text?.trim()) {
+        // Phase 14: Track voice origin for TTS
+        wasVoiceInputRef.current = detail.source === 'voice';
+        ttsCancelledRef.current = false; // reset cancellation flag for new request
         // Feed into the SAME pipeline as typed input
         setInput(detail.text.trim());
         // Trigger send on next tick (input state needs to flush)
@@ -334,6 +348,29 @@ export default function NexChatPanel() {
 
   // Phase 110: Track active agent task for session stickiness
   const activeAgentTaskRef = useRef<string | null>(null);
+
+  // Phase 14: Speak a response via TTS if the request came from voice.
+  // Guards:
+  //   - Only speaks if wasVoiceInputRef is true AND not cancelled
+  //   - Only speaks non-empty text (skips empty/error/intermediate)
+  //   - Best-effort: TTS failure doesn't crash the UI
+  //   - Resets wasVoiceInputRef after speaking (one-shot)
+  // Security: only the final assistant response text is passed to TTS.
+  // No API keys, tool params, or intermediate reasoning are spoken.
+  const speakResponseIfVoice = useCallback((responseText: string) => {
+    if (!wasVoiceInputRef.current) return; // text input → no TTS
+    if (ttsCancelledRef.current) return;  // cancelled → no stale TTS
+    const text = typeof responseText === 'string' ? responseText.trim() : '';
+    if (!text) return; // empty response → no TTS
+
+    // Reset voice flag (one-shot — next text request won't speak)
+    wasVoiceInputRef.current = false;
+
+    // Best-effort TTS — errors logged but don't crash UI
+    window.nexAPI?.voiceConversationSpeak?.(text).catch((err: any) => {
+      console.warn('[TTS] voiceConversationSpeak failed (non-blocking):', err?.message || err);
+    });
+  }, []);
 
   // ── Phase 30: Voice thinking state (tell Orb when AI is processing) ──
   useEffect(() => {
@@ -526,22 +563,27 @@ export default function NexChatPanel() {
               const finalText = last.metadata?.agentTokensStarted
                 ? last.content // Already has the streamed final answer
                 : (event.result || event.response || event.message || event.data?.content || '✅ Task completed.');
+              const spokenText = typeof finalText === 'string' ? finalText : '✅ Task completed.';
               next[next.length - 1] = {
                 ...last,
-                content: typeof finalText === 'string' ? finalText : '✅ Task completed.',
+                content: spokenText,
                 status: 'complete',
                 metadata: { ...last.metadata, completed: true },
               };
+              // Phase 116 JARVIS: Orb → SUCCESS then clear → idle/ready
+              voiceController.setCondition('agent', 'success');
+              setTimeout(() => voiceController.clearCondition('agent'), 1500);
+              // Phase 110: Clear active agent task + reset UI state
+              activeAgentTaskRef.current = null;
+              setIsGenerating(false);
+              setChatStreaming(false);
+              streamBufRef.current = '';
+              setTimeout(() => saveConversation(), 100);
+              // Phase 14: Speak the response via TTS if this was a voice request.
+              // Uses the finalText captured above (agent's actual answer, not
+              // intermediate tool events or reasoning).
+              speakResponseIfVoice(spokenText);
             }
-            // Phase 116 JARVIS: Orb → SUCCESS then clear → idle/ready
-            voiceController.setCondition('agent', 'success');
-            setTimeout(() => voiceController.clearCondition('agent'), 1500);
-            // Phase 110: Clear active agent task + reset UI state
-            activeAgentTaskRef.current = null;
-            setIsGenerating(false);
-            setChatStreaming(false);
-            streamBufRef.current = '';
-            setTimeout(() => saveConversation(), 100);
             break;
           case 'task_failed':
           case 'failed':
@@ -577,6 +619,9 @@ export default function NexChatPanel() {
             setChatStreaming(false);
             streamBufRef.current = '';
             setTimeout(() => saveConversation(), 100);
+            // Phase 14: Reset voice flag — cancelled tasks should NOT speak
+            wasVoiceInputRef.current = false;
+            ttsCancelledRef.current = true;
             break;
           case 'permission_request':
             next[next.length - 1] = {
@@ -910,6 +955,9 @@ export default function NexChatPanel() {
         });
         // Phase 33: auto-save on completed assistant response
         setTimeout(() => saveConversation(), 50);
+        // Phase 14: Speak the chat response via TTS if this was a voice request.
+        // Only for chat mode (not agent mode — agent has its own TTS call above).
+        speakResponseIfVoice(finalContent);
       } else if (stream.error && /No local model|Model file not found/i.test(stream.error)) {
         setMessages((prev) => {
           const next = [...prev];
@@ -946,6 +994,8 @@ export default function NexChatPanel() {
             }
             return next;
           });
+          // Phase 14: Speak the non-streamed chat response via TTS if voice
+          speakResponseIfVoice(result.content || '');
         } else {
           setMessages((prev) => {
             const next = [...prev];
@@ -975,12 +1025,17 @@ export default function NexChatPanel() {
   }, [input, messages, attachments, isGenerating, settings, aiMode, activeLocalModel, saveConversation]);
 
   const handleStop = useCallback(() => {
+    // Phase 14: Cancel TTS — prevents stale requests from speaking after cancel
+    ttsCancelledRef.current = true;
+    wasVoiceInputRef.current = false; // no TTS for cancelled request
     // Cancel chat streaming
     window.nexAPI.aiChatStreamCancel().catch(() => {});
     // Phase 110: Also cancel active agent task if any
     if (activeAgentTaskRef.current) {
       window.nexAPI.agentCancelTask?.(activeAgentTaskRef.current, 'User cancelled').catch(() => {});
     }
+    // Phase 14: Also stop any ongoing TTS playback
+    window.nexAPI?.voiceConversationStopSpeaking?.()?.catch?.(() => {});
   }, []);
 
   // Phase 115: Undo — restore a file from its snapshot.

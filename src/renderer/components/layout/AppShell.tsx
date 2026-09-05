@@ -156,15 +156,17 @@ export default function AppShell() {
       onPartialTranscript: (text) => setPartialTranscript(text),
       onFinalTranscript: (text) => {
         setPartialTranscript(null);
-        // Final transcript goes to chat via a custom event (ChatPanel listens)
-        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text } }));
+        // Phase 14: Final transcript goes to chat with source='voice'
+        // so NexChatPanel knows to speak the response via TTS.
+        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text, source: 'voice' } }));
       },
       onVoiceError: () => setPartialTranscript(null),
       // Phase 116 JARVIS: Wake word detected — dispatch as if user said "بله?"
       onWakeWord: () => {
         console.log('[VOICE] Wake word "NEX" detected — responding');
         setPartialTranscript(null);
-        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: 'بله?' } }));
+        // Phase 14: Wake word path also carries source='voice'
+        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: 'بله?', source: 'voice' } }));
       },
     });
     orbStateSubRef.current = unsubState;
@@ -312,8 +314,8 @@ export default function AppShell() {
       const text = ev?.text;
       if (!text || !text.trim()) return;
       console.log(`[VOICE] whisper transcript received: "${text.substring(0, 100)}"`);
-      // Dispatch to Chat (same path as browser STT)
-      window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: text.trim() } }));
+      // Phase 14: Whisper path also carries source='voice' for TTS
+      window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: text.trim(), source: 'voice' } }));
     });
 
     // Also listen for NEX responses (from the main-side conversation pipeline)
