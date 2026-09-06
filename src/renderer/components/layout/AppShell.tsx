@@ -294,9 +294,13 @@ export default function AppShell() {
     const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
       const state = ev?.state as string;
       if (!state) return;
-      console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${ev?.source || 'conversation'}`);
+      // Phase 18 Stage 4 (GAP-7 fix): default to 'engine' for backward-compat
+      // (engine sender already had source='engine'; conversation sender now
+      // sends source='conversation'). Both use the same orbStateMap.
+      const source = ev?.source || 'engine';
+      console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${source}`);
 
-      // Map conversation state to Orb state
+      // Map conversation/engine state to Orb state
       // Phase 116 JARVIS: Extended with new states (working, success, cancelled)
       const orbStateMap: Record<string, string> = {
         idle: 'idle',
@@ -315,26 +319,39 @@ export default function AppShell() {
       const orbState = orbStateMap[state] || 'idle';
       console.log(`[ORB_TRACE_RENDERER] mapped orbState=${orbState}`);
 
+      // Phase 18 Stage 4 (GAP-7 fix): route to separate condition keys based
+      // on the source field. Previously both conversation and engine FSMs
+      // used the same 'engine' condition key, causing a race where engine
+      // 'idle' (from stopSpeaking) cleared the condition while the
+      // conversation was still 'speaking' (waiting for playback). Now:
+      //   - conversation FSM → 'conversation' condition key
+      //   - engine FSM → 'engine' condition key (unchanged)
+      // Both contribute to the Orb state via the priority system
+      // (STATE_PRIORITY in voice-service.ts). The higher-priority active
+      // condition wins. This structurally eliminates the race: engine
+      // clearing its condition does NOT clear the conversation's condition.
+      const conditionKey = source === 'conversation' ? 'conversation' : 'engine';
+
       // Drive the voiceController's state machine with the main-side states.
-      // Use 'engine' as the condition key for engine states.
       // Phase 116: Map new states to VoiceState equivalents.
       if (orbState === 'listening') {
-        voiceController.setCondition('engine', 'listening');
+        voiceController.setCondition(conditionKey, 'listening');
       } else if (orbState === 'thinking') {
-        voiceController.setCondition('engine', 'thinking');
+        voiceController.setCondition(conditionKey, 'thinking');
       } else if (orbState === 'speaking') {
-        voiceController.setCondition('engine', 'speaking');
+        voiceController.setCondition(conditionKey, 'speaking');
       } else if (orbState === 'working' || orbState === 'active') {
-        voiceController.setCondition('engine', 'working');
+        voiceController.setCondition(conditionKey, 'working');
       } else if (orbState === 'error') {
-        voiceController.setCondition('engine', 'error');
+        voiceController.setCondition(conditionKey, 'error');
       } else {
-        // idle / ready / success / cancelled / initializing — clear engine condition
-        voiceController.clearCondition('engine');
+        // idle / ready / success / cancelled / initializing — clear the
+        // source-specific condition key.
+        voiceController.clearCondition(conditionKey);
       }
 
       // Log the controller's resolved state for diagnostics
-      console.log(`[ORB_TRACE_CONTROLLER] conditions=engine:${orbState} resolvedState=${voiceController.orbState}`);
+      console.log(`[ORB_TRACE_CONTROLLER] conditions=${conditionKey}:${orbState} resolvedState=${voiceController.orbState}`);
     });
 
     // ── Phase 116 FIX: Wire whisper STT transcripts to Chat ──────────────

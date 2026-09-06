@@ -9158,3 +9158,26 @@ Stage Summary:
 - 6 files changed, 751 insertions(+), 10 deletions(-)
 - Pushed to https://github.com/ali12345666/nex-ai.git main branch
 - Phase 18 Stage 3 complete and committed
+
+
+---
+Task ID: PHASE18-STAGE4-IMPL
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 18 Stage 4 — GAP-7 Separation. Separate conversation FSM and engine FSM into independent condition keys to eliminate the race where engine 'idle' clears the Orb's speaking state while conversation is still speaking (waiting for playback).
+
+Work Log:
+- Audited GAP-7: two senders (conversation.onStateChange + engine.onStateChange) both send to the same `voice-conversation-state` IPC channel with different payloads. AppShell receives both via one listener, only logs `ev.source`, and routes both to the same `'engine'` condition key. When engine stops synthesis → engine.setState('idle') → clearCondition('engine') → Orb drops to 'idle' even though conversation.state is still 'speaking' (waiting for playback).
+- Implemented fix: conversation sender now includes `source: 'conversation'` in the payload (main.ts:1875). AppShell reads `ev.source` and routes to a separate condition key: `'conversation'` for conversation FSM, `'engine'` for engine FSM (unchanged). Both contribute to the Orb state via the priority system independently. Engine clearing its condition does NOT clear the conversation's condition → race eliminated.
+- Backward compat: if source is missing (undefined), defaults to `'engine'` (old behavior).
+
+Files changed:
+- src/main/main.ts (+9): added `source: 'conversation'` to conversation.onStateChange payload
+- src/renderer/components/layout/AppShell.tsx (+39/-12): branch on `ev.source` to determine `conditionKey` ('conversation' vs 'engine'); use `conditionKey` for all setCondition/clearCondition calls
+- tests/tools/test-phase-18-stage4.ts (NEW, 28 assertions): source-level + runtime tests for GAP-7 separation
+
+Stage Summary:
+- GAP-7 root cause fixed: engine 'idle' from stopSpeaking no longer clears the conversation's 'speaking' condition. Both FSMs independently contribute to the Orb state via the priority system.
+- No changes to: preload.ts, electron.d.ts, voice-service.ts (setCondition/clearCondition are already generic — accept any key), VoiceManagerPanel.tsx (only reads ev.state).
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: 643/643 (0 failed). Phase 14 (43), 15 (35), 16 BUG-12 (50), 16 BUG-26 (60), 116 JARVIS (26), 116 Orb (48), 116 Lifecycle (12), 18 Stage 1 (82), 18 Orb Enforcement (120), 18 Orb Flows (38), 18 Stale Timers (33), 18 Stage 3 (68), 18 Stage 4 (28).
+- No commits made. No pushes made. Awaiting user approval.

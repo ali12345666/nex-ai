@@ -1865,7 +1865,14 @@ async function setupIPC(): Promise<void> {
     onStateChange: (state, prev) => {
       console.log(`[ORB_TRACE_MAIN] conversation state: ${prev} -> ${state}`);
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-        mainWindow.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state] });
+        // Phase 18 Stage 4 (GAP-7 fix): add `source: 'conversation'` to the
+        // payload so AppShell can route to a separate condition key
+        // ('conversation' instead of 'engine'). This eliminates the race
+        // where engine 'idle' (from stopSpeaking) clears the 'engine'
+        // condition while the conversation is still 'speaking' (waiting
+        // for playback). With separate keys, both FSMs independently
+        // contribute to the Orb state via the priority system.
+        mainWindow.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state], source: 'conversation' });
       }
     },
     onWakeWord: (match) => {
