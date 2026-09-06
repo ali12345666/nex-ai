@@ -1741,6 +1741,14 @@ async function setupIPC(): Promise<void> {
   ipcMain.handle('voice-tts-ended', async (_event, requestId: number) => {
     try {
       getNexVoiceConversation().notifyTtsPlaybackEnded(requestId);
+      // Phase 18 Stage 3: also tell the engine that playback ended so it
+      // sets ttsActive = false. This allows the VAD to stop detecting
+      // barge-in (no more TTS in progress). Idempotent — if stopSpeaking
+      // already set ttsActive = false, this is a no-op.
+      try {
+        const engine = getLocalVoiceEngine();
+        engine.onTtsPlaybackEnded();
+      } catch { /* best-effort — engine may not be initialized */ }
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1885,6 +1893,15 @@ async function setupIPC(): Promise<void> {
     },
     onInterruption: () => {
       mainWindow?.webContents.send('voice-conversation-interrupted', {});
+      // Phase 18 Stage 3: also broadcast voice-tts-stop-playback so the
+      // renderer pauses the currently-playing <audio> element. This is
+      // critical for barge-in — without it, the TTS audio would keep
+      // playing through the speakers even though the engine stopped
+      // synthesis. The renderer's App.tsx subscribes via
+      // onVoiceTtsStopPlayback and calls audio.pause() on currentAudioRef.
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        mainWindow.webContents.send('voice-tts-stop-playback', {});
+      }
     },
     onVoiceCommand: (command, phrase) => {
       mainWindow?.webContents.send('voice-conversation-command', { command, phrase });
@@ -1933,6 +1950,17 @@ async function setupIPC(): Promise<void> {
         console.log(`[VOICE_PIPELINE] Sending TTS audio to renderer (req=${requestId}): ${audioFilePath}`);
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
           mainWindow.webContents.send('voice-tts-audio', { audioFilePath, text, requestId });
+        }
+      },
+      // Phase 18 Stage 3: Barge-in detection on the main side.
+      // When the VAD detects user speech while ttsActive is true (during
+      // TTS synthesis OR playback), fire onBargeIn → conversation.handleBargeIn()
+      // → stop TTS + pause renderer audio + restart listening.
+      onBargeIn: () => {
+        try {
+          conversation.handleBargeIn();
+        } catch (err: any) {
+          console.warn('[VOICE_PIPELINE] Barge-in handler error:', err?.message);
         }
       },
       onError: (message: string) => {

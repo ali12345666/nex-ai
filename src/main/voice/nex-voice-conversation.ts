@@ -669,6 +669,73 @@ export class NexVoiceConversation {
   }
 
   /**
+   * Phase 18 Stage 3: Handle a barge-in detected by the main-side VAD.
+   *
+   * Called when the engine's `onBargeIn` callback fires (VAD detected user
+   * speech while `ttsActive` is true — during TTS synthesis OR playback).
+   *
+   * Actions (in order):
+   * 1. Guard: if not in 'speaking' state, return (idempotent — already
+   *    handled by stopSpeaking, abortCurrentTurn, or a previous barge-in).
+   * 2. Set `interruptionDetected = true` (so speakResponse's GUARD 3 skips
+   *    enterListening — prevents duplicate listening restart).
+   * 3. Fire `onInterruption` callback → main broadcasts
+   *    `voice-tts-stop-playback` (renderer pauses `<audio>`) +
+   *    `voice-conversation-interrupted` (Orb state).
+   * 4. Bump `currentTtsRequestId` (invalidates in-flight synthesis + stale
+   *    callbacks via engine's BUG-26 A stale guard).
+   * 5. Release `waitForTtsPlayback` (so speakResponse doesn't hang).
+   * 6. Stop engine TTS (engine.stopSpeaking → ttsActive=false, bumps engine
+   *    requestId, sets engine state to 'idle').
+   * 7. `setState('interrupted')` → Orb transitions speaking → working (via
+   *    interrupted→active→working mapping in AppShell).
+   * 8. `enterListening()` → restart STT for the user's barge-in utterance
+   *    → setState('listening') → Orb transitions working → listening.
+   *
+   * Race protection:
+   * - If a newer speakResponse started between barge-in detection and
+   *   handleBargeIn, the requestId bump in step 4 invalidates the newer
+   *   one's GUARD 1 check.
+   * - If stopSpeaking was called before handleBargeIn, ttsActive is already
+   *   false, engine.stopSpeaking() is a no-op.
+   * - If playback already ended before handleBargeIn, waitForTtsPlayback
+   *   already resolved, releaseTtsPlaybackWait is a no-op.
+   * - Rapid repeated barge-in: the first barge-in sets ttsActive=false (via
+   *   engine.stopSpeaking in step 6), so subsequent VAD 'speech' events
+   *   don't trigger onBargeIn (because ttsActive is false). Also, the
+   *   guard in step 1 returns if state is no longer 'speaking'.
+   */
+  handleBargeIn(): void {
+    // Guard: if not in 'speaking' state, ignore (idempotent).
+    // This handles: stopSpeaking already called, abortCurrentTurn already
+    // called, previous barge-in already handled, or not speaking at all.
+    if (this.state !== 'speaking') {
+      console.log('[VOICE_PIPELINE] handleBargeIn: not in speaking state — ignoring');
+      return;
+    }
+
+    console.log('[VOICE_PIPELINE] Barge-in: stopping TTS + restarting listening');
+    this.interruptionDetected = true;
+    this.callbacks.onInterruption?.();
+    // Invalidate any in-flight TTS (synthesis + playback).
+    this.currentTtsRequestId++;
+    this.releaseTtsPlaybackWait();
+    try {
+      const engine = getLocalVoiceEngine();
+      engine.stopSpeaking();
+    } catch { /* */ }
+    this.setState('interrupted');
+    // Restart listening for the user's barge-in utterance.
+    // enterListening() calls engine.startListening() which sets sttActive=true
+    // and setState('listening'). The VAD can then detect speech and transcribe.
+    if (this.active) {
+      this.enterListening().catch(() => {});
+    } else {
+      this.setState('idle');
+    }
+  }
+
+  /**
    * Handle a natural speech-control command (stop / resume / cancel).
    */
   private handleVoiceCommand(command: VoiceControlCommand, phrase: string | null): void {

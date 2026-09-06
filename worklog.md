@@ -9110,3 +9110,34 @@ Stage Summary:
 - 11 files changed, 1389 insertions(+), 50 deletions(-)
 - Pushed to https://github.com/ali12345666/nex-ai.git main branch
 - Phase 18 Stage 2 complete and committed
+
+
+---
+Task ID: PHASE18-STAGE3-IMPL
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 18 Stage 3 — Barge-in + TTS Mute. True main-side barge-in detection + renderer VAD gating + ttsActive lifecycle during playback.
+
+Work Log:
+- Traced current TTS playback owner: App.tsx currentAudioRef (<audio> element). Barge-in detection must be on MAIN side because ttsActive was only true during synthesis (not playback).
+- local-voice-engine.ts: Added onBargeIn callback to VoiceEngineCallbacks. In VAD onEvent callback: when event.state==='speech' && this.ttsActive, check event.audioLevel >= 2× silenceThreshold (filters TTS bleed from speakers). If passes, fire onBargeIn. Made VAD config readonly public (for threshold access).
+- local-voice-engine.ts: Changed speak() to NOT set ttsActive=false after synthesis. ttsActive stays true during playback (between onTTSAudioReady and onTtsPlaybackEnded). Added onTtsPlaybackEnded() method (idempotent: sets ttsActive=false if true). Removed ttsActive=false from stale guard (was racing with newer speak's ttsActive).
+- nex-voice-conversation.ts: Added handleBargeIn() public method. Guard: if state !== 'speaking' return (idempotent). Sets interruptionDetected, fires onInterruption (main broadcasts voice-tts-stop-playback + voice-conversation-interrupted), bumps currentTtsRequestId, releases waitForTtsPlayback, stops engine TTS, setState('interrupted'), enterListening() (restarts STT for barge-in utterance).
+- main.ts: Wired onBargeIn in engine.setCallbacks → conversation.handleBargeIn(). Added voice-tts-stop-playback broadcast in onInterruption callback (pauses renderer <audio>). Added engine.onTtsPlaybackEnded() call in voice-tts-ended IPC handler.
+- voice-service.ts: Gate processVAD with if (_stateConditions.get('engine') === 'speaking') return (AUDIO-NO-MUTE-TTS fix). Skip renderer VAD computation during TTS. Audio level still sent to main unconditionally (for main-side VAD barge-in detection).
+
+Files changed:
+- src/main/voice/local-voice-engine.ts (+81): onBargeIn callback, VAD barge-in detection with 2× threshold, ttsActive stays true during playback, onTtsPlaybackEnded method, removed ttsActive=false from speak() body + stale guard, VAD config readonly public
+- src/main/voice/nex-voice-conversation.ts (+67): handleBargeIn() public method with idempotent guard, full race protection
+- src/main/main.ts (+28): onBargeIn wiring in engine.setCallbacks, voice-tts-stop-playback in onInterruption, engine.onTtsPlaybackEnded() in voice-tts-ended handler
+- src/renderer/services/voice-service.ts (+15): processVAD gated with engine speaking check
+- tests/tools/test-phase-18-stage3.ts (NEW, 68 assertions): source + runtime tests for all Stage 3 behaviors
+
+Stage Summary:
+- TTS playback owner: App.tsx currentAudioRef (<audio> element)
+- Barge-in architecture: main-side VAD → onBargeIn → conversation.handleBargeIn() → stop TTS + broadcast voice-tts-stop-playback (renderer pauses audio) + restart STT
+- Race handling: handleBargeIn guard (state !== 'speaking' → return), requestId bump invalidates stale callbacks, GUARD 3 in speakResponse prevents duplicate enterListening, rapid barge-in idempotent (ttsActive=false after first stop, VAD won't fire again)
+- Orb behavior: speaking → interrupted (maps to working) → listening (all valid in Stage 2 relaxed graph)
+- Security: PermissionGate intact (no new IPC, no new permission surface)
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: 615/615 (0 failed). Phase 14 (43), 15 (35), 16 BUG-12 (50), 16 BUG-26 (60), 116 JARVIS (26), 116 Orb (48), 116 Lifecycle (12), 18 Stage 1 (82), 18 Orb Enforcement (120), 18 Orb Flows (38), 18 Stale Timers (33), 18 Stage 3 (68).
+- No commits made. No pushes made. Awaiting user approval.

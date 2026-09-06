@@ -273,8 +273,23 @@ export class VoiceService {
    * Phase 116: Voice Activity Detection — detects speech start and end
    * based on audio level. When speech ends (silence after speech), we
    * know the user finished their sentence and can process the transcript.
+   *
+   * Phase 18 Stage 3 (AUDIO-NO-MUTE-TTS fix): skip VAD processing when the
+   * engine is in 'speaking' state. This prevents TTS audio bleed from
+   * updating the `_vadState` (harmless but wasteful, and prevents stale
+   * 'speech' state from persisting after TTS ends). The main-side VAD
+   * handles barge-in detection with its own higher threshold — the
+   * renderer VAD is purely for the renderer-side speech/silence tracking
+   * which is no longer used for any action (barge-in was removed in P2-6).
+   *
+   * The audio level is still sent to main unconditionally (via
+   * `voiceFeedAudioLevel`) so the main-side VAD can detect barge-in. Only
+   * the renderer-side `processVAD` computation is skipped.
    */
   private processVAD(level: number): void {
+    // Phase 18 Stage 3: skip when engine is speaking (TTS in progress).
+    if (this._stateConditions.get('engine') === 'speaking') return;
+
     const now = Date.now();
     const isLoud = level > this.config.vadSilenceThreshold;
 

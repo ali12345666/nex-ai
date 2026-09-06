@@ -75,7 +75,9 @@ export interface VADEvent {
 }
 
 export class VoiceActivityDetector {
-  private config: VADConfig;
+  // Phase 18 Stage 3: made config public (read-only) so the engine can
+  // access `silenceThreshold` for the barge-in higher-threshold check.
+  readonly config: VADConfig;
   private state: VADState = 'silence';
   private speechStartMs: number | null = null;
   private silenceStartMs: number | null = null;
@@ -154,6 +156,18 @@ export interface VoiceEngineCallbacks {
   onError?: (message: string) => void;
   onPermissionChange?: (granted: boolean | null) => void;
   /**
+   * Phase 18 Stage 3: Called when the main-side VAD detects user speech
+   * while TTS is playing (synthesis OR playback). The conversation handler
+   * uses this to implement barge-in: stop TTS, pause renderer audio,
+   * restart listening for the user's interrupting utterance.
+   *
+   * Uses a HIGHER threshold (2× the normal VAD silence threshold) to
+   * filter TTS audio bleed from speakers. With headphones, bleed is
+   * minimal and barge-in works reliably. With speakers, barge-in may
+   * trigger on the TTS audio itself — this is an inherent limitation.
+   */
+  onBargeIn?: () => void;
+  /**
    * Called when TTS has synthesized audio — the renderer should play this file.
    *
    * Phase 16: `requestId` is a monotonic ID identifying this TTS turn. It
@@ -201,6 +215,26 @@ export class LocalVoiceEngine {
         this.handleSpeechEnd().catch((err) => {
           console.warn(`[VOICE_PIPELINE] handleSpeechEnd error: ${err?.message}`);
         });
+      }
+      // Phase 18 Stage 3: Barge-in detection.
+      // When TTS is active (synthesis OR playback) and the VAD detects
+      // speech, fire the onBargeIn callback. Uses a HIGHER threshold
+      // (2× the normal VAD silence threshold) to filter TTS audio bleed
+      // from speakers. With headphones, bleed is minimal and barge-in
+      // works reliably. With speakers, barge-in may trigger on the TTS
+      // audio itself — this is an inherent limitation.
+      //
+      // `ttsActive` stays true from engine.speak() until either:
+      //   - stopSpeaking() is called (cancel/stop/barge-in)
+      //   - onTtsPlaybackEnded() is called (playback completed naturally)
+      // This ensures the VAD can detect barge-in during BOTH synthesis
+      // and playback (not just synthesis).
+      if (event.state === 'speech' && this.ttsActive) {
+        const bargeInThreshold = (this.vad.config.silenceThreshold || 0.02) * 2;
+        if (event.audioLevel >= bargeInThreshold) {
+          console.log(`[VOICE_PIPELINE] Barge-in detected (level=${event.audioLevel.toFixed(3)} >= ${bargeInThreshold})`);
+          this.callbacks.onBargeIn?.();
+        }
       }
     });
   }
@@ -402,9 +436,15 @@ export class LocalVoiceEngine {
       // If a newer speak() or stopSpeaking() ran, the request ID was bumped.
       // In either case, this synthesis result is stale — DISCARD it. Do NOT
       // fire onTTSAudioReady. The renderer never receives the audio path.
+      //
+      // Phase 18 Stage 3: Do NOT set ttsActive = false here. If the discard
+      // is because of a requestId mismatch (a newer speak bumped the ID),
+      // setting ttsActive = false would kill the NEWER speak's ttsActive.
+      // If the discard is because of stopSpeaking (ttsActive already false),
+      // setting it false again is a harmless no-op. Either way, don't touch
+      // ttsActive — let the caller (stopSpeaking or the newer speak) own it.
       if (!this.ttsActive || this._currentTtsRequestId !== requestId) {
         console.log(`[VOICE_PIPELINE] TTS synthesis completed for req=${requestId} but stale (ttsActive=${this.ttsActive}, current=${this._currentTtsRequestId}) — discarding`);
-        this.ttsActive = false;
         return false;
       }
 
@@ -424,7 +464,20 @@ export class LocalVoiceEngine {
       this.callbacks.onError?.(`TTS failed: ${err.message}`);
     }
 
-    this.ttsActive = false;
+    // Phase 18 Stage 3: Do NOT set ttsActive = false here.
+    // Previously this set ttsActive = false after synthesis completed,
+    // which meant the VAD couldn't detect barge-in during PLAYBACK (the
+    // period between onTTSAudioReady and the renderer's voice-tts-ended).
+    // Now ttsActive stays true until either:
+    //   - stopSpeaking() is called (cancel/stop/barge-in) → ttsActive = false
+    //   - onTtsPlaybackEnded() is called (playback completed) → ttsActive = false
+    // This ensures the VAD can detect user speech during BOTH synthesis
+    // and playback, enabling true barge-in.
+    //
+    // The stale guard above still works: it checks !ttsActive OR
+    // _currentTtsRequestId !== requestId. If stopSpeaking() set ttsActive
+    // = false, the guard discards. If a new speak() set a new requestId,
+    // the guard discards via the requestId mismatch.
 
     // ── BUG-12 FIX ──────────────────────────────────────────────────────
     // Do NOT transition state back to `listening`/`idle` here, and do NOT
@@ -433,14 +486,22 @@ export class LocalVoiceEngine {
     // resolves when the renderer sends `voice-tts-ended` after the audio
     // element fires `onended`), THEN transitions to `listening` and restarts
     // STT. This prevents the mic from hearing the still-playing TTS audio.
-    //
-    // Legacy callers (InteractionLoopManager.speakText) that don't go
-    // through the conversation handler will leave the engine in the
-    // `speaking` state until they explicitly call `setThinking(false)` or
-    // `startListening()`. This matches the old behavior closely enough
-    // for the legacy debug panel (BasicInteractionPanel) and is the
-    // cleanest separation of concerns.
     return audioReady;
+  }
+
+  /**
+   * Phase 18 Stage 3: Called when the renderer's audio element finishes
+   * playing (audio.onended → voice-tts-ended IPC → main → this method).
+   * Sets `ttsActive = false` so the VAD stops detecting barge-in.
+   *
+   * Idempotent: if ttsActive is already false (stopSpeaking was called
+   * first), this is a no-op.
+   */
+  onTtsPlaybackEnded(): void {
+    if (this.ttsActive) {
+      this.ttsActive = false;
+      console.log('[VOICE_PIPELINE] TTS playback ended — ttsActive=false');
+    }
   }
 
   stopSpeaking(): void {
