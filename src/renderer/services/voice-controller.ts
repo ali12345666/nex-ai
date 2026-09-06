@@ -126,15 +126,21 @@ export class VoiceController {
     return voiceService.mode;
   }
 
-  /** Speak text (TTS). */
-  speak(text: string): void {
-    voiceService.speak(text);
-  }
+  // Phase 18 (P2-6 fix): REMOVED `speak(text: string)` method.
+  // Was `voiceService.speak(text)` — but voiceService.speak() was removed
+  // (dead code — no production caller invoked voiceController.speak()).
+  // Real TTS is handled EXCLUSIVELY by the main-side Piper pipeline:
+  //   NexChatPanel.speakResponseIfVoice → voiceConversationSpeak IPC
+  //   → nex-voice-conversation.speakResponse → local-voice-engine.speak
+  //   → piper → voice-tts-audio IPC → App.tsx Audio playback.
+  // See voice-service.ts P2-6 comment block for the full reference search.
 
-  /** Stop TTS. */
-  stopSpeaking(): void {
-    voiceService.stopSpeaking();
-  }
+  // Phase 18 (P2-6 fix): REMOVED `stopSpeaking()` method.
+  // Was `voiceService.stopSpeaking()` — but voiceService.stopSpeaking() is
+  // now a no-op (kept only because dispose() calls it). Real TTS cancellation
+  // is handled by the `voiceConversationStopSpeaking` IPC (main process).
+  // The only external caller of voiceController.stopSpeaking() was the dead
+  // VoiceCenterPanel.tsx — no live caller exists.
 
   /** Chat sets 'thinking' while AI processes. */
   setThinking(thinking: boolean): void {

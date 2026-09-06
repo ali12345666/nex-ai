@@ -1556,12 +1556,33 @@ async function setupIPC(): Promise<void> {
   const { getNexVoiceConversation, CONVERSATION_ORB_COLOR } = await import('./voice/nex-voice-conversation');
   const { getWakeWordDetector, parseVoiceCommand, WakeWordDetector, AudioEnergyGate } = await import('./voice/wake-word-detector');
 
-  // Wire the conversation system's voice-capture hook into PermissionGate
-  // (Phase 43) so sensitive actions can be confirmed by voice.
+  // Phase 18 (P1-6 fix): REMOVED the recursive voice-confirmation wiring.
+  // Previously this block called `conversation.setPermissionVoiceCapture(async () => {
+  //   return await conversation.captureVoiceConfirmation();
+  // })` which wired `permissionVoiceCaptureFn` to `captureVoiceConfirmation`
+  // — but `captureVoiceConfirmation` internally calls `permissionVoiceCaptureFn`
+  // → infinite recursion if ever invoked. The path was unreachable because:
+  //   - No external caller invokes `conversation.captureVoiceConfirmation()`
+  //     (verified by reference search).
+  //   - All PermissionGate users either use their own voiceVerifier
+  //     (update-manager.ts:91 — `onCaptureVoiceInput: () =>
+  //     this.voiceVerifier.captureConfirmation()`) OR have no
+  //     `onCaptureVoiceInput` set at all (model-deployment-manager,
+  //     knowledge-pack-manager, nex-agent-executor — they only wire
+  //     `onRequestPermission`).
+  //   - `update-manager.ts`'s `voiceVerifier.captureFn` is also never set
+  //     (no `setCaptureFunction` caller anywhere in the codebase), so its
+  //     `captureConfirmation()` returns null.
+  // So the entire voice-confirmation path (PermissionGate.respondViaVoice →
+  // onCaptureVoiceInput → voiceVerifier.captureConfirmation → captureFn,
+  // OR conversation.captureVoiceConfirmation → permissionVoiceCaptureFn →
+  // captureVoiceConfirmation → ...) is dead.
+  // The conversation's `setPermissionVoiceCapture`, `captureVoiceConfirmation`,
+  // `handlePermissionConfirmation`, `permissionVoiceCaptureFn` field, and
+  // `pendingPermission` field have all been removed from
+  // nex-voice-conversation.ts. The `feedTranscript` routing no longer checks
+  // `pendingPermission` (dead branch).
   const conversation = getNexVoiceConversation();
-  conversation.setPermissionVoiceCapture(async () => {
-    return await conversation.captureVoiceConfirmation();
-  });
 
   // Voice conversation: lifecycle
   ipcMain.handle('voice-conversation-start', async () => {
@@ -1662,6 +1683,36 @@ async function setupIPC(): Promise<void> {
   // continue playing through the speakers despite Stop being clicked.
   ipcMain.handle('voice-conversation-stop-speaking', async () => {
     try {
+      // Phase 18 (P0-1 fix): call abortCurrentTurn() BEFORE
+      // engine.stopSpeaking() so the conversation's
+      // `waitForTtsPlayback(requestId)` promise is released immediately.
+      //
+      // Previously this handler only called `engine.stopSpeaking()` which
+      // bumps the engine's `_currentTtsRequestId` and sets engine state to
+      // 'idle', AND broadcasts `voice-tts-stop-playback` to pause the
+      // renderer's `<audio>` element. But it did NOT release the
+      // conversation's `ttsPlaybackResolve` promise — `speakResponse` was
+      // still awaiting `waitForTtsPlayback(N)` and would hang for up to 30s
+      // (safety timeout) before resuming. During those 30s:
+      //   - conversation.state === 'speaking' while Orb shows 'idle'
+      //     (engine setState('idle') won the IPC race) → STATE DESYNC
+      //   - any new voice utterance was misrouted to `handleInterruption`
+      //     (barge-in path) because `state === 'speaking'`
+      //   - after 30s, the safety timeout released the wait; speakResponse
+      //     resumed and (incorrectly) called `enterListening()` to restart
+      //     STT — even though the user explicitly clicked Stop.
+      //
+      // `abortCurrentTurn()` is idempotent: bumps `currentTtsRequestId`,
+      // calls `releaseTtsPlaybackWait()` (releases the promise), stops
+      // engine + stops listening, sets state to 'idle'. Calling it BEFORE
+      // `engine.stopSpeaking()` ensures the wait is released first; the
+      // subsequent `engine.stopSpeaking()` is then a no-op for the engine
+      // state (already 'idle' from abortCurrentTurn) but still bumps the
+      // engine's requestId for any in-flight synthesis (BUG-26 A guard).
+      try {
+        getNexVoiceConversation().abortCurrentTurn();
+      } catch { /* best-effort — conversation may not be initialized */ }
+
       const engine = getLocalVoiceEngine();
       engine.stopSpeaking();
       // Phase 16 (BUG-26 B): broadcast to renderer to pause the

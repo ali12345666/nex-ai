@@ -21,6 +21,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Activity, Cpu, MemoryStick, Wifi, WifiOff, Cloud, Cpu as CpuIcon, Zap, Gauge, Bot, HardDrive } from 'lucide-react';
 import type { SystemMonitorSnapshot } from '../../types/electron';
+import { useStore } from '../../store/useStore';
 
 type AIMode = 'local' | 'online' | 'auto';
 
@@ -67,7 +68,19 @@ function Sparkline({ data, color, width = 48, height = 16 }: { data: number[]; c
 
 export default function BottomStatusBar() {
   const [snap, setSnap] = useState<SystemMonitorSnapshot | null>(null);
-  const [aiMode, setAiModeState] = useState<AIMode>('local');
+  // Phase 18 (P1-5 fix): read aiMode from Zustand (single source of truth).
+  // Previously this component kept its own local `useState<AIMode>` and
+  // called `settingsSave` IPC + `setAiModeState` (local) — bypassing
+  // `useStore.setAIMode`. Phase 17 P0 13-1 fix made `setAIMode` sync both
+  // the top-level `aiMode` AND nested `settings.aiMode`, but BottomStatusBar
+  // didn't use it — so the user's mode choice from the status bar was lost
+  // on restart (NexChatPanel + SettingsPanel read from useStore, saw stale).
+  // Now: read from useStore via selector; cycleMode calls setAIMode (which
+  // syncs both Zustand fields) AND settingsSave (persists to disk). The
+  // initial-load useEffect is no longer needed — useStore is hydrated from
+  // settingsLoad in App.tsx on startup, so aiMode is already correct.
+  const aiMode = useStore((s) => s.aiMode);
+  const setAIMode = useStore((s) => s.setAIMode);
   const [modeSwitching, setModeSwitching] = useState(false);
   const [networkOnline, setNetworkOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
@@ -95,20 +108,6 @@ export default function BottomStatusBar() {
     };
   }, [poll]);
 
-  // UI-02: Load persisted aiMode from settings on mount.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await window.nexAPI.settingsLoad();
-        if (!cancelled && r?.settings?.aiMode) {
-          setAiModeState(r.settings.aiMode as AIMode);
-        }
-      } catch { /* keep default 'local' */ }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
   // UI-02: Subscribe to browser online/offline events.
   useEffect(() => {
     const onOnline = () => setNetworkOnline(true);
@@ -122,7 +121,16 @@ export default function BottomStatusBar() {
   }, []);
 
   // UI-02: Cycle through modes on click — LOCAL → ONLINE → AUTO → LOCAL.
-  // Saves via the existing `settings-save` IPC; backend enforces server-side.
+  //
+  // Phase 18 (P1-5 fix): use `setAIMode` (Zustand canonical path) to sync
+  // both `aiMode` AND `settings.aiMode` in the Zustand store, AND persist
+  // via `settingsSave` IPC. This ensures:
+  //   - NexChatPanel.tsx (reads useStore.aiMode) sees the new mode immediately
+  //   - SettingsPanel.tsx (reads useStore.settings.aiMode) sees the new mode
+  //   - On restart, settingsLoad() populates both fields from the persisted
+  //     settings (which now have the correct aiMode)
+  // Previously this called `settingsSave` + local `setAiModeState`, bypassing
+  // Zustand → other components saw stale aiMode until app restart.
   const cycleMode = useCallback(async () => {
     if (modeSwitching) return;
     setModeSwitching(true);
@@ -132,18 +140,18 @@ export default function BottomStatusBar() {
       const currentSettings = loaded?.settings || {};
       const currentMode = (currentSettings.aiMode as AIMode) || 'local';
       const nextMode = MODE_CYCLE[(MODE_CYCLE.indexOf(currentMode) + 1) % MODE_CYCLE.length];
+      // Phase 18 (P1-5): sync both Zustand fields via the canonical setAIMode.
+      setAIMode(nextMode);
+      // Persist to disk so the choice survives restart.
       const updatedSettings = { ...currentSettings, aiMode: nextMode };
-      const result = await window.nexAPI.settingsSave(updatedSettings);
-      if (result?.success) {
-        setAiModeState(nextMode);
-      }
+      await window.nexAPI.settingsSave(updatedSettings);
     } catch (err) {
       // Silently fail — keep current mode. Log for debugging only.
       console.warn('[NEX AI] Failed to switch aiMode:', err);
     } finally {
       setModeSwitching(false);
     }
-  }, [modeSwitching]);
+  }, [modeSwitching, setAIMode]);
 
   const cpuHistory = useHistory(snap?.cpu.usagePercent);
   const ramHistory = useHistory(snap?.memory.usagePercent);

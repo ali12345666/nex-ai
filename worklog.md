@@ -9008,3 +9008,36 @@ Files reviewed (final list, no modifications):
   All files in the WORK LOG list above. READ-ONLY audit — no files modified, no commits made.
 
 Audit complete. Findings appended to worklog.md.
+
+
+---
+Task ID: PHASE18-STAGE1-IMPL
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 18 Stage 1 — Voice Runtime & Orb State Integration. Implement P0-1 (Stop-during-TTS wait hang), P1-5 (AI Mode desync in BottomStatusBar), P1-6 (dead recursive voice confirmation), P2-6 (dead renderer voice/TTS path). No new features. Additive + dead code removal.
+
+Work Log:
+- P0-1: Added getNexVoiceConversation().abortCurrentTurn() BEFORE engine.stopSpeaking() in voice-conversation-stop-speaking handler (main.ts:1663). abortCurrentTurn bumps currentTtsRequestId + calls releaseTtsPlaybackWait + stops engine + stops listening + setState('idle'). Now waitForTtsPlayback releases immediately on Stop (not 30s timeout). Eliminates the state desync where conversation.state stayed 'speaking' for 30s while Orb showed 'idle'.
+- P1-5: BottomStatusBar.tsx — removed local useState<AIMode>, removed settingsLoad on mount useEffect. Now reads aiMode from useStore(s => s.aiMode) and calls setAIMode(nextMode) in cycleMode (which syncs both aiMode AND settings.aiMode via Phase 17 P0 13-1 fix). Still calls settingsSave to persist to disk. NexChatPanel + SettingsPanel now see the same aiMode immediately.
+- P1-6: Removed dead recursive voice-confirmation wiring. main.ts:1562 no longer calls conversation.setPermissionVoiceCapture(async () => conversation.captureVoiceConfirmation()) (infinite recursion if ever called). NexVoiceConversation: removed setPermissionVoiceCapture method, captureVoiceConfirmation method, handlePermissionConfirmation method, permissionVoiceCaptureFn field, pendingPermission field from ConversationContext + constructor + reset(). feedTranscript no longer checks pendingPermission (dead branch). Verified all PermissionGate users: update-manager uses its own voiceVerifier (separate path), model-deployment + knowledge-pack + nex-agent-executor only wire onRequestPermission. Active permission paths NOT affected.
+- P2-6: Removed dead renderer voice/TTS path. voice-service.ts: removed _ttsActive field, _bargeInEnabled field, isSpeaking getter, speak(text: string) method (was state-only fake-completion running parallel to main Piper pipeline). stopSpeaking() is now a no-op (kept because dispose() calls it). Removed renderer-side barge-in branch from processVAD (was dead code — _ttsActive never true). Removed if(this._ttsActive) this.stopSpeaking() from startListening. voice-controller.ts: removed speak() and stopSpeaking() methods (zero external callers). Phase 15 test updated to assert the REMOVAL invariants (speak method gone, _ttsActive gone, stopSpeaking is no-op). Phase 16 BUG-26 test: increased window for stop-speaking handler from 1200 to 3000 chars (handler is longer now due to P0-1 abortCurrentTurn call).
+
+Files changed:
+- src/main/main.ts (+61): P0-1 abortCurrentTurn in stop-speaking handler; P1-6 removed recursive setPermissionVoiceCapture wiring (replaced with comment block)
+- src/main/voice/nex-voice-conversation.ts (+97/-...): P1-6 removed setPermissionVoiceCapture, captureVoiceConfirmation, handlePermissionConfirmation, permissionVoiceCaptureFn, pendingPermission field + feedTranscript branch
+- src/renderer/components/layout/BottomStatusBar.tsx (+50/-...): P1-5 use useStore + setAIMode; removed local useState + settingsLoad-on-mount
+- src/renderer/services/voice-controller.ts (+24/-...): P2-6 removed speak() + stopSpeaking() methods
+- src/renderer/services/voice-service.ts (+152/-...): P2-6 removed _ttsActive, _bargeInEnabled, isSpeaking getter, speak() method, renderer-side barge-in branch, startListening _ttsActive check; stopSpeaking() now no-op
+- tests/tools/test-phase-15-voice-unification.ts (+86/-...): updated section 1, 5, 6 to assert P2-6 REMOVAL invariants (speak method gone, _ttsActive gone, stopSpeaking no-op) instead of old implementation assertions
+- tests/tools/test-phase-16-bug26.ts (+4): increased stop-speaking handler window from 1200 to 3000 chars for P0-1
+- tests/tools/test-phase-18-stage1.ts (NEW, 600+ lines, 82 assertions): source-level + runtime tests for all 4 fixes
+
+Stage Summary:
+- P0-1 root cause fixed: voice-conversation-stop-speaking handler now calls abortCurrentTurn() before engine.stopSpeaking(). waitForTtsPlayback releases immediately (verified by runtime test 2.1 — elapsed < 1000ms, not 30s). Stop does NOT restart listening (verified by runtime test 3.1 — GUARD 3 prevents enterListening after cancel). Orb/conversation state correct after Stop (both 'idle').
+- P1-5 root cause fixed: BottomStatusBar uses useStore canonical path. cycleMode calls setAIMode(nextMode) which syncs both aiMode AND settings.aiMode (verified by runtime test 5.1 — both fields in sync after each cycle). settingsSave persists to disk.
+- P1-6 root cause fixed: recursive voice-confirmation wiring removed. All dead code (setPermissionVoiceCapture, captureVoiceConfirmation, handlePermissionConfirmation, permissionVoiceCaptureFn, pendingPermission) removed. Active PermissionGate paths intact (verified by test 7.1-7.5 — requestPermission, respondViaVoice, update-manager onCaptureVoiceInput, VoicePermissionVerifier, deploymentManager + knowledgePackManager callbacks).
+- P2-6 root cause fixed: dead renderer voice/TTS path removed. _ttsActive, _bargeInEnabled, isSpeaking getter, speak() method, renderer-side barge-in branch all gone. stopSpeaking() is a no-op (kept for dispose). voiceController.speak() + stopSpeaking() methods removed (zero external callers). Phase 15 invariant (no renderer calls voiceController.speak()) now doubly enforced — method doesn't exist.
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: Phase 14 (43/43), 15 (35/35), 16 BUG-12 (50/50), 16 BUG-26 (60/60), 116 JARVIS (26/26), 116 Orb (48/48), 116 Lifecycle (12/12). All green.
+- New: Phase 18 Stage 1 tests (82/82).
+- Total: 356/356 (0 failed).
+- No commits made. No pushes made. Awaiting user approval.

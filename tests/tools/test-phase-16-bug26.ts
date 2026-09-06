@@ -72,9 +72,11 @@ async function runTests() {
   await testSection('1. voice-tts-stop-playback IPC exists', async () => {
     console.log('\nTest 1.1: main.ts broadcasts voice-tts-stop-playback in stop-speaking handler');
     // Find the stop-speaking handler
+    // Phase 18 (P0-1): the handler now also calls abortCurrentTurn() before
+    // engine.stopSpeaking(), so the handler is longer. Window increased to 2000.
     const stopIdx = mainSource.indexOf("'voice-conversation-stop-speaking'");
     assert(stopIdx > 0, 'voice-conversation-stop-speaking handler exists');
-    const stopSection = mainSource.substring(stopIdx, stopIdx + 1200);
+    const stopSection = mainSource.substring(stopIdx, stopIdx + 3000);
     assert(stopSection.includes("webContents.send('voice-tts-stop-playback'"), 'broadcasts voice-tts-stop-playback');
 
     console.log('\nTest 1.2: preload exposes onVoiceTtsStopPlayback listener');

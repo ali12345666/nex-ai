@@ -46,32 +46,34 @@ async function runTests() {
   // 1. voice-service.ts: no browser TTS
   // ════════════════════════════════════════════════════════════════════════
   await testSection('1. voice-service.ts: no browser TTS', async () => {
-    console.log('\nTest 1.1: speak() does NOT call window.speechSynthesis.speak');
-    // Extract the speak() method body (not comments)
-    const speakSection = voiceServiceSource.substring(
-      voiceServiceSource.indexOf('speak(text: string): void {'),
-      voiceServiceSource.indexOf('stopSpeaking(): void {'),
-    );
-    assert(!speakSection.includes('window.speechSynthesis.speak'), 'no speechSynthesis.speak in speak()');
-    assert(!speakSection.includes('SpeechSynthesisUtterance'), 'no SpeechSynthesisUtterance in speak()');
+    console.log('\nTest 1.1: no window.speechSynthesis.speak anywhere in voice-service.ts');
+    // Phase 18 (P2-6): speak() method was REMOVED (dead code). The whole
+    // browser-TTS path is gone. Assert no speechSynthesis in the file at all.
+    assert(!voiceServiceSource.includes('window.speechSynthesis.speak'), 'no speechSynthesis.speak in voice-service.ts');
+    assert(!voiceServiceSource.includes('SpeechSynthesisUtterance'), 'no SpeechSynthesisUtterance in voice-service.ts');
 
-    console.log('\nTest 1.2: speak() manages Orb state (setCondition tts speaking)');
-    assert(speakSection.includes("this.setCondition('tts', 'speaking')"), 'sets speaking state');
+    console.log('\nTest 1.2: speak() method REMOVED (Phase 18 P2-6)');
+    // Phase 18 (P2-6): the dead `speak(text: string): void` method was removed.
+    // The string `speak(text: string): void {` should no longer appear in the
+    // source (the method definition is gone). Comments mentioning `speak()` are OK.
+    const speakMethodMatch = voiceServiceSource.match(/^\s*speak\(text: string\): void \{/m);
+    assert(!speakMethodMatch, 'speak(text: string): void method definition removed');
 
-    console.log('\nTest 1.3: speak() pauses STT during speaking');
-    assert(speakSection.includes('this.stopSTT()'), 'pauses STT');
+    console.log('\nTest 1.3: _ttsActive field REMOVED (Phase 18 P2-6)');
+    assert(!voiceServiceSource.includes('private _ttsActive'), '_ttsActive field removed');
 
-    console.log('\nTest 1.4: speak() auto-resumes listening after TTS in continuous mode');
-    assert(speakSection.includes('this._shouldRestartSTT'), 'checks restart flag');
-    assert(speakSection.includes("this.startSTT()"), 'restarts STT');
+    console.log('\nTest 1.4: _bargeInEnabled field REMOVED (Phase 18 P2-6)');
+    assert(!voiceServiceSource.includes('private _bargeInEnabled'), '_bargeInEnabled field removed');
 
-    console.log('\nTest 1.5: stopSpeaking() does NOT use window.speechSynthesis.cancel');
+    console.log('\nTest 1.5: stopSpeaking() is a no-op (Phase 18 P2-6)');
+    // The stopSpeaking() method is kept (called by dispose()) but is now a no-op.
+    // It should NOT clear _ttsActive (removed) or clearCondition('tts') (dead).
     const stopSection = voiceServiceSource.substring(
       voiceServiceSource.indexOf('stopSpeaking(): void {'),
       voiceServiceSource.indexOf('setCondition(key: string'),
     );
-    assert(!stopSection.includes('window.speechSynthesis'), 'no speechSynthesis in stopSpeaking()');
-    assert(stopSection.includes("this.clearCondition('tts')"), 'clears tts condition');
+    assert(!stopSection.includes('this._ttsActive'), 'stopSpeaking does not touch _ttsActive (removed)');
+    assert(!stopSection.includes("this.clearCondition('tts')"), 'stopSpeaking does not clear tts condition (dead)');
   });
 
   // ════════════════════════════════════════════════════════════════════════
@@ -148,22 +150,31 @@ async function runTests() {
   // ════════════════════════════════════════════════════════════════════════
   await testSection('5. No duplicate TTS', async () => {
     console.log('\nTest 5.1: voice-service.ts does NOT produce audio');
-    const speakSection = voiceServiceSource.substring(
-      voiceServiceSource.indexOf('speak(text: string): void {'),
-      voiceServiceSource.indexOf('stopSpeaking(): void {'),
-    );
-    assert(!speakSection.includes('new Audio'), 'no new Audio in speak()');
-    assert(!speakSection.includes('.play()'), 'no .play() in speak()');
+    // Phase 18 (P2-6): speak() method removed — no `new Audio(` (note the
+    // opening paren to avoid matching `new AudioContext`) or `.play()` in
+    // voice-service.ts at all (no browser TTS path).
+    assert(!voiceServiceSource.includes('new Audio('), 'no new Audio( in voice-service.ts');
+    assert(!voiceServiceSource.includes('.play()'), 'no .play() in voice-service.ts');
 
-    console.log('\nTest 5.2: voice-controller.ts.speak() delegates to voice-service (state only)');
+    console.log('\nTest 5.2: voice-controller.ts.speak() method REMOVED (Phase 18 P2-6)');
     const controllerSource = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'renderer', 'services', 'voice-controller.ts'),
       'utf-8',
     );
-    assert(controllerSource.includes('voiceService.speak(text)'), 'delegates to voiceService.speak');
+    // The `speak(text: string): void` method definition should be gone.
+    const controllerSpeakMatch = controllerSource.match(/^\s*speak\(text: string\): void \{/m);
+    assert(!controllerSpeakMatch, 'voiceController.speak() method removed');
+    // voiceService.speak call should also be gone. Match code lines only
+    // (not comments — the P2-6 comment block mentions the old method name).
+    const controllerSpeakCallLines = controllerSource.split('\n').filter(l =>
+      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('voiceService.speak(')
+    );
+    assert(controllerSpeakCallLines.length === 0, `no voiceService.speak( call in voice-controller.ts code (found ${controllerSpeakCallLines.length})`);
 
     console.log('\nTest 5.3: no renderer component calls voiceController.speak() for TTS');
-    // Check all .tsx files for voiceController.speak
+    // This invariant is preserved from Phase 15 — no renderer component
+    // should call voiceController.speak(). After Phase 18 P2-6, the method
+    // doesn't even exist, so this assertion is doubly enforced.
     const tsxFiles = fs.readdirSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'components'))
       .filter(f => f.endsWith('.tsx'));
     let foundSpeakCall = false;
@@ -181,13 +192,20 @@ async function runTests() {
   // 6. stop/cancel still works
   // ════════════════════════════════════════════════════════════════════════
   await testSection('6. stop/cancel still works', async () => {
-    console.log('\nTest 6.1: stopSpeaking clears _ttsActive and tts condition');
+    console.log('\nTest 6.1: stopSpeaking is a no-op (Phase 18 P2-6)');
+    // Phase 18 (P2-6): stopSpeaking() is kept (called by dispose()) but is
+    // now a no-op. It should NOT touch _ttsActive (removed) or clearCondition
+    // ('tts') (dead — the 'tts' condition was only set in the removed
+    // speak() method). The method body should be empty or a comment-only
+    // no-op. Real TTS cancellation is via voiceConversationStopSpeaking IPC.
     const stopSection = voiceServiceSource.substring(
       voiceServiceSource.indexOf('stopSpeaking(): void {'),
       voiceServiceSource.indexOf('setCondition(key: string'),
     );
-    assert(stopSection.includes('this._ttsActive = false'), 'clears _ttsActive');
-    assert(stopSection.includes("this.clearCondition('tts')"), 'clears tts condition');
+    assert(!stopSection.includes('this._ttsActive'), 'stopSpeaking does not touch _ttsActive (removed)');
+    assert(!stopSection.includes("this.clearCondition('tts')"), 'stopSpeaking does not clear tts condition (dead)');
+    // The no-op method should still exist (called by dispose).
+    assert(voiceServiceSource.includes('stopSpeaking(): void {'), 'stopSpeaking method still exists (called by dispose)');
 
     console.log('\nTest 6.2: NexChatPanel handleStop calls voiceConversationStopSpeaking');
     const chatSource = fs.readFileSync(

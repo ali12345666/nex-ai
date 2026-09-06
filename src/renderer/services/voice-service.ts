@@ -81,16 +81,26 @@ export class VoiceService {
   private _recognition: any = null;
   private _sttActive = false;
   private _shouldRestartSTT = false;
-  private _ttsActive = false;
+  // Phase 18 (P2-6 fix): REMOVED `_ttsActive` field.
+  // The entire renderer-side TTS path (speak/stopSpeaking/_ttsActive/
+  // _bargeInEnabled/isSpeaking) was dead — no production caller invoked
+  // voiceController.speak() or voiceService.speak(). Real TTS flows
+  // EXCLUSIVELY through the main-side Piper pipeline (voiceConversationSpeak
+  // IPC → nex-voice-conversation.speakResponse → local-voice-engine.speak
+  // → voice-tts-audio IPC → App.tsx Audio). The renderer-side barge-in
+  // branch (processVAD line 269) was dead code that never fired because
+  // _ttsActive was never set to true. See the P2-6 comment block in
+  // voice-service.ts (former speak() location) for the full reference search.
 
-  // Phase 116: Voice mode + wake word + VAD + barge-in
+  // Phase 116: Voice mode + wake word + VAD
   private _mode: VoiceMode = 'continuous';
   private _wakeWordDetected = false;
   private _wakeWordBuffer = '';
   private _vadState: 'silence' | 'speech' = 'silence';
   private _vadSilenceStart = 0;
   private _vadSpeechStart = 0;
-  private _bargeInEnabled = true;
+  // Phase 18 (P2-6 fix): REMOVED `_bargeInEnabled` field.
+  // The renderer-side barge-in path was dead (see P2-6 comment block).
 
   // PCM audio capture for LocalVoiceEngine (whisper STT)
   private _scriptProcessor: ScriptProcessorNode | null = null;
@@ -112,7 +122,9 @@ export class VoiceService {
   get audioLevel(): number { return this._smoothedLevel; }
   get micPermission(): boolean | null { return this._micPermission; }
   get isListening(): boolean { return this._sttActive; }
-  get isSpeaking(): boolean { return this._ttsActive; }
+  // Phase 18 (P2-6 fix): REMOVED `isSpeaking` getter.
+  // Was `return this._ttsActive` — but `_ttsActive` was removed (always false).
+  // No external caller used this getter (verified by reference search).
   get mode(): VoiceMode { return this._mode; }
 
   /** Phase 116: Set voice mode (continuous / push-to-talk / disabled) */
@@ -263,19 +275,21 @@ export class VoiceService {
         this._vadState = 'speech';
         this._vadSpeechStart = now;
         this._vadSilenceStart = 0;
-
-        // Phase 116: Barge-in — if TTS is active and user starts speaking,
-        // immediately stop TTS to let the user interrupt
-        if (this._ttsActive && this._bargeInEnabled) {
-          console.log('[VOICE] Barge-in: user speaking during TTS — stopping TTS');
-          this.stopSpeaking();
-          // Restart STT if in continuous mode
-          if (this._mode === 'continuous' && !this._sttActive) {
-            this.startSTT();
-            this.setCondition('mic', 'listening');
-            this._shouldRestartSTT = true;
-          }
-        }
+        // Phase 18 (P2-6 fix): REMOVED the renderer-side barge-in branch.
+        // Previously: `if (this._ttsActive && this._bargeInEnabled) {
+        //   this.stopSpeaking(); if (this._mode === 'continuous' && !this._sttActive)
+        //   { this.startSTT(); this.setCondition('mic', 'listening'); ... } }`
+        // This was dead code — `_ttsActive` was never set to true (no caller
+        // invoked voiceService.speak()). The renderer VAD cannot distinguish
+        // user speech from TTS audio bleed (browser echo cancellation is
+        // imperfect with speakers). Barge-in detection should be on the
+        // MAIN side (where sttActive gates VAD) — see Phase 18 audit P1-1
+        // for the recommended main-side barge-in fix (Stage 3, not yet
+        // implemented). For now, the renderer VAD only transitions state —
+        // it does NOT trigger barge-in. This is safe because the main-side
+        // VAD (local-voice-engine.ts:199) is gated by `sttActive` and
+        // `ttsActive` (engine.speak sets ttsActive=true during synthesis),
+        // so the main side correctly suppresses transcription during TTS.
       }
     } else {
       // Silence detected
@@ -322,7 +336,8 @@ export class VoiceService {
       const ok = await this.enableMicrophone();
       if (!ok) { this.setCondition('mic', 'error'); return; }
     }
-    if (this._ttsActive) this.stopSpeaking();
+    // Phase 18 (P2-6 fix): REMOVED `if (this._ttsActive) this.stopSpeaking();`
+    // — `_ttsActive` was removed (always false). Real TTS is on the main side.
     this.setIPCFeedingEnabled(true);
     this.startSTT();
     this.setCondition('mic', 'listening');
@@ -336,71 +351,50 @@ export class VoiceService {
     this._shouldRestartSTT = false;
   }
 
-  /**
-   * Phase 15: Speak text — STATE-ONLY, no audio production.
-   *
-   * Real TTS is handled EXCLUSIVELY by the main-side Piper pipeline:
-   *   NexChatPanel → voiceConversationSpeak IPC → nex-voice-conversation.speakResponse()
-   *   → local-voice-engine.speak() → piper → voice-tts-audio IPC → App.tsx Audio playback
-   *
-   * This method only manages Orb state transitions (speaking → listening) and
-   * pauses STT during "speaking" so the mic doesn't hear itself. It does NOT
-   * produce any audio — the main process does that via Piper.
-   *
-   * The old browser `window.speechSynthesis` path was removed in Phase 15
-   * because Electron doesn't support it reliably, and it caused duplicate TTS
-   * when both the browser path and the Piper path were active.
-   *
-   * If `speechSynthesis` IS available (e.g. in a browser), it could be used
-   * as a fallback — but in Electron, we skip it entirely.
-   */
-  speak(text: string): void {
-    // Phase 15: No browser TTS — only state management.
-    // Real audio is produced by the Piper pipeline (main process → App.tsx).
-
-    // Pause STT during speaking (prevent self-hearing)
-    if (this._sttActive) {
-      this.stopSTT();
-      if (this._mode === 'continuous') {
-        this._shouldRestartSTT = true;
-      }
-    }
-
-    // Set speaking state (Orb → speaking)
-    this._ttsActive = true;
-    this.setCondition('tts', 'speaking');
-
-    // Simulate TTS completion after a minimal delay.
-    // Real TTS completion is driven by the main process:
-    //   nex-voice-conversation.speakResponse() → enterListening()
-    //   → voice-conversation-state IPC → AppShell → voiceController
-    // But if this method is called directly (e.g. from VoiceCenterPanel),
-    // we need to eventually clear the 'speaking' state.
-    // The main-side Piper pipeline sends its own state transitions, so
-    // this timeout is a safety net for the browser-only fallback path.
-    const speakDuration = Math.max(500, text.length * 50); // ~50ms per char, min 500ms
-    setTimeout(() => {
-      this._ttsActive = false;
-      this.clearCondition('tts');
-      // Auto-resume listening after TTS in continuous mode
-      if (this._mode === 'continuous' && this._shouldRestartSTT && !this._sttActive) {
-        setTimeout(() => {
-          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
-          this.setCondition('mic', 'listening');
-        }, 200);
-      }
-    }, speakDuration);
-  }
+  // Phase 18 (P2-6 fix): REMOVED the `speak(text: string)` method.
+  //
+  // Reference search confirmed ZERO production callers of voiceService.speak()
+  // or voiceController.speak(). The Phase 15 regression test
+  // (tests/tools/test-phase-15-voice-unification.ts:165-177) explicitly
+  // asserts `!foundSpeakCall` ("no renderer component calls
+  // voiceController.speak()") — this is a TESTED invariant.
+  //
+  // The previous implementation was state-only (no audio) — it set
+  // `_ttsActive = true`, setCondition('tts', 'speaking'), then a setTimeout
+  // cleared both after `Math.max(500, text.length * 50)` ms. This was a
+  // fake-completion path that ran in parallel with the main-side Piper
+  // pipeline (voiceConversationSpeak IPC → nex-voice-conversation.speakResponse
+  // → local-voice-engine.speak → voice-tts-audio → App.tsx Audio). It was
+  // a source of STATE DESYNC (the 'tts' condition was set/cleared on a
+  // different timeline than the real TTS playback).
+  //
+  // Real TTS is handled EXCLUSIVELY by the main-side Piper pipeline:
+  //   NexChatPanel.speakResponseIfVoice → voiceConversationSpeak IPC
+  //   → nex-voice-conversation.speakResponse() → local-voice-engine.speak()
+  //   → piper → voice-tts-audio IPC → App.tsx Audio playback
+  // The Orb's 'speaking' state is driven by the main-side
+  // `voice-conversation-state` IPC → AppShell → voiceController.setCondition
+  // ('engine', 'speaking'). No renderer-side TTS state is needed.
 
   /**
-   * Phase 15: Stop speaking — state-only, no audio cancel.
-   * Real TTS cancellation is handled by voiceConversationStopSpeaking IPC
-   * (main process). This method only clears the Orb state.
+   * Phase 18 (P2-6 fix): stopSpeaking() is now a no-op.
+   *
+   * Previously this cleared `_ttsActive = false` + `clearCondition('tts')`.
+   * Both are dead:
+   *   - `_ttsActive` was removed (always false)
+   *   - The 'tts' condition was only set in the removed `speak()` method
+   *     (also dead), so `clearCondition('tts')` is a no-op (deleting a
+   *     non-existent key from the Map).
+   *
+   * The method is kept as a no-op (rather than removed) because `dispose()`
+   * calls it. Removing the call from dispose() would be a larger diff;
+   * the no-op is harmless and clearly documents the dead path. Real TTS
+   * cancellation is handled by the `voiceConversationStopSpeaking` IPC
+   * (main process) — see main.ts voice-conversation-stop-speaking handler
+   * (Phase 16 BUG-26 B + Phase 18 P0-1 fix).
    */
   stopSpeaking(): void {
-    // Phase 15: No browser speechSynthesis to cancel — only state cleanup
-    this._ttsActive = false;
-    this.clearCondition('tts');
+    // No-op. See method comment above.
   }
 
   setCondition(key: string, state: VoiceState): void {

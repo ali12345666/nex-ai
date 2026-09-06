@@ -95,8 +95,8 @@ export interface ConversationContext {
   startedAt: number;
   /** Last activity timestamp. */
   lastActivityAt: number;
-  /** Whether a sensitive-action permission is pending voice confirmation. */
-  pendingPermission: boolean;
+  // Phase 18 (P1-6 fix): REMOVED `pendingPermission: boolean` field.
+  // The entire voice-confirmation path was dead (see P1-6 comment block).
 }
 
 export interface ConversationTurn {
@@ -140,7 +140,9 @@ export class NexVoiceConversation {
   private wakeEnabled = true;
   private active = false;
   private interruptionDetected = false;
-  private permissionVoiceCaptureFn: (() => Promise<string>) | null = null;
+  // Phase 18 (P1-6 fix): REMOVED `permissionVoiceCaptureFn` field.
+  // The entire voice-confirmation path was dead (see comment at the
+  // former `setPermissionVoiceCapture` location below).
 
   // ── Phase 16 (BUG-12 + BUG-26): TTS request coordination ──────────────
   //
@@ -172,7 +174,6 @@ export class NexVoiceConversation {
       turnCount: 0,
       startedAt: 0,
       lastActivityAt: 0,
-      pendingPermission: false,
     };
   }
 
@@ -284,11 +285,15 @@ export class NexVoiceConversation {
       return;
     }
 
-    // If a permission is pending, route the transcript to permission confirmation
-    if (this.context.pendingPermission) {
-      this.handlePermissionConfirmation(text);
-      return;
-    }
+    // Phase 18 (P1-6 fix): REMOVED the `pendingPermission` branch.
+    // The voice-confirmation path was dead — see the P1-6 comment block
+    // at the former `setPermissionVoiceCapture` location. Removing this
+    // branch also fixes P2-4 (VOICE-CONFIRMATION-COMMAND-LEAK) — previously
+    // if `pendingPermission` were ever true (it never was) and the user
+    // said "stop", the voice command would fire BEFORE the pending check,
+    // causing `captureVoiceConfirmation` to wait 10s and return '' →
+    // permission silently denied. Now the routing goes straight to the
+    // barge-in / wake-word / utterance branches.
 
     // If we're speaking and the user talks → interruption (barge-in)
     if (this.state === 'speaking') {
@@ -719,62 +724,23 @@ export class NexVoiceConversation {
   }
 
   // ── Permission voice confirmation (Phase 43 integration) ──
-
-  /**
-   * Register a voice-capture function for permission confirmations.
-   * Called by the PermissionGate via `onCaptureVoiceInput`.
-   */
-  setPermissionVoiceCapture(fn: () => Promise<string>): void {
-    this.permissionVoiceCaptureFn = fn;
-  }
-
-  /**
-   * Capture a voice confirmation for a pending permission request.
-   * Puts the conversation into 'listening' state, captures one utterance,
-   * and returns the transcript. The PermissionGate matches it against the
-   * required Persian phrase ("بله تایید می‌کنم" / "تایید می‌کنم").
-   */
-  async captureVoiceConfirmation(): Promise<string> {
-    this.context.pendingPermission = true;
-    const prev = this.state;
-    await this.enterListening();
-    try {
-      if (this.permissionVoiceCaptureFn) {
-        return await this.permissionVoiceCaptureFn();
-      }
-      // Fallback: wait for the next transcript via feedTranscript
-      return await new Promise<string>((resolve) => {
-        const timeout = setTimeout(() => {
-          this.context.pendingPermission = false;
-          resolve('');
-        }, 10000); // 10s timeout
-        const orig = { ...this.callbacks };
-        this.callbacks.onUserUtterance = (text: string) => {
-          clearTimeout(timeout);
-          this.context.pendingPermission = false;
-          this.callbacks = orig;
-          resolve(text);
-        };
-      });
-    } finally {
-      this.context.pendingPermission = false;
-      if (prev !== 'listening') this.setState(prev);
-    }
-  }
-
-  /**
-   * Handle an incoming transcript when a permission is pending.
-   * Routes it as the permission confirmation (does NOT start a new turn).
-   */
-  private handlePermissionConfirmation(text: string): void {
-    // The PermissionGate's respondViaVoice flow calls captureVoiceConfirmation,
-    // which resolves the promise with the transcript. This path is for the
-    // fallback case where the conversation's feedTranscript receives the
-    // confirmation directly.
-    this.context.pendingPermission = false;
-    // Re-emit so the capture promise (if waiting) can resolve.
-    this.callbacks.onUserUtterance?.(text);
-  }
+  //
+  // Phase 18 (P1-6 fix): The entire voice-confirmation path was REMOVED.
+  // The previous code wired `permissionVoiceCaptureFn` to
+  // `captureVoiceConfirmation` (recursive) and exposed
+  // `setPermissionVoiceCapture` + `captureVoiceConfirmation` +
+  // `handlePermissionConfirmation` + `pendingPermission` field.
+  // Reference search confirmed:
+  //   - No external caller invokes `captureVoiceConfirmation`.
+  //   - All PermissionGate users either use their own voiceVerifier
+  //     (update-manager.ts) or have no `onCaptureVoiceInput` set.
+  //   - `update-manager.ts`'s `voiceVerifier.captureFn` is never set.
+  // So the path was dead AND the wiring was recursive (infinite loop
+  // if ever called). Removed to prevent confusion + reduce surface.
+  // Active PermissionGate paths (requestPermission + respondViaVoice
+  // for update-manager's own verifier, model-deployment, knowledge-pack,
+  // nex-agent-executor) are NOT affected — they don't use the conversation's
+  // capture hook.
 
   // ── Context persistence (Long-Term Memory) ──
 
@@ -842,7 +808,6 @@ export class NexVoiceConversation {
       turnCount: 0,
       startedAt: this.active ? Date.now() : 0,
       lastActivityAt: Date.now(),
-      pendingPermission: false,
     };
     this.turns = [];
     this.interruptionDetected = false;
