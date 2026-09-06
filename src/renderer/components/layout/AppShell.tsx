@@ -215,7 +215,29 @@ export default function AppShell() {
   useEffect(() => {
     if (!window.nexAPI?.onTaskQueueEvent) return;
 
-    const queueTimers: number[] = [];
+    // Phase 18 (P2-1): Stale-timer protection for 'queue' condition
+    // auto-clears. Previously `queueTimers` accumulated ALL timer IDs and
+    // only cleared them on unmount — a stale timer from a completed/failed
+    // task could fire during a NEW task and clear the NEW task's condition
+    // (brief Orb blip from working → idle). Now we track ONLY the latest
+    // timer for the 'queue' condition and clear the previous one before
+    // scheduling a new one. The invariant is:
+    //   A stale timer from an old task must NEVER clear the condition
+    //   belonging to a newer task.
+    let queueClearTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleQueueClear = () => {
+      // Clear any previously-scheduled timer for the 'queue' condition.
+      if (queueClearTimer !== null) {
+        clearTimeout(queueClearTimer);
+        queueClearTimer = null;
+      }
+      // Schedule the new 1500ms auto-clear, capturing the timer ID.
+      queueClearTimer = setTimeout(() => {
+        voiceController.clearCondition('queue');
+        queueClearTimer = null;
+      }, 1500);
+    };
+
     const off = window.nexAPI.onTaskQueueEvent((event: any) => {
       const type = event?.type as string;
       if (!type) return;
@@ -224,23 +246,22 @@ export default function AppShell() {
         voiceController.setCondition('queue', 'working');
       } else if (type === 'task_completed') {
         voiceController.setCondition('queue', 'success');
-        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
-        queueTimers.push(t);
+        // Phase 18 (P2-1): capture timer ID; clears previous 'queue' timer.
+        scheduleQueueClear();
       } else if (type === 'task_failed' || type === 'task_recovered') {
         voiceController.setCondition('queue', 'error');
-        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
-        queueTimers.push(t);
+        scheduleQueueClear();
       } else if (type === 'task_cancelled') {
         voiceController.setCondition('queue', 'cancelled');
-        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
-        queueTimers.push(t);
+        scheduleQueueClear();
       }
       // task_enqueued, task_paused, queue_state → no Orb change
     });
 
     return () => {
       off();
-      for (const t of queueTimers) clearTimeout(t);
+      // Phase 18 (P2-1): clear the pending timer on unmount.
+      if (queueClearTimer !== null) clearTimeout(queueClearTimer);
     };
   }, []);
 
@@ -255,6 +276,21 @@ export default function AppShell() {
   // registered in App.tsx (root level) to ensure they're ready before the
   // main process sends events during startup.
   useEffect(() => {
+    // Phase 18 (P2-1): Stale-timer protection for 'engine' condition
+    // auto-clear (voice-conversation-error). Track ONLY the latest timer
+    // and clear the previous one before scheduling a new one.
+    let engineClearTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleEngineClear = () => {
+      if (engineClearTimer !== null) {
+        clearTimeout(engineClearTimer);
+        engineClearTimer = null;
+      }
+      engineClearTimer = setTimeout(() => {
+        voiceController.clearCondition('engine');
+        engineClearTimer = null;
+      }, 1500);
+    };
+
     const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
       const state = ev?.state as string;
       if (!state) return;
@@ -340,7 +376,8 @@ export default function AppShell() {
       const message = ev?.message || 'Voice engine error';
       console.warn(`[VOICE] voice-conversation-error: ${message}`);
       voiceController.setCondition('engine', 'error');
-      setTimeout(() => voiceController.clearCondition('engine'), 1500);
+      // Phase 18 (P2-1): capture timer ID; clears previous 'engine' timer.
+      scheduleEngineClear();
     });
 
     return () => {
@@ -348,6 +385,8 @@ export default function AppShell() {
       if (offUser) offUser();
       if (offNex) offNex();
       if (offError) offError();
+      // Phase 18 (P2-1): clear the pending 'engine' timer on unmount.
+      if (engineClearTimer !== null) clearTimeout(engineClearTimer);
     };
   }, []);
 

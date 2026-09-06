@@ -57,19 +57,27 @@ async function runTests() {
   assert(source.includes('VALID_TRANSITIONS'), 'VALID_TRANSITIONS map should exist');
 
   console.log('\nTest 17: IDLE can transition to INITIALIZING');
-  assert(source.includes("idle: ['initializing'"), 'IDLE should allow transition to INITIALIZING');
+  // Phase 18 (BUG-37): the VALID_TRANSITIONS was relaxed. The formatting
+  // changed (aligned with extra spaces). Check by regex instead of exact string.
+  assert(/idle:\s*\[.*?'initializing'/.test(source), 'IDLE should allow transition to INITIALIZING');
 
   console.log('\nTest 18: READY can transition to LISTENING');
-  assert(source.includes("ready: ['listening'"), 'READY should allow transition to LISTENING');
+  assert(/ready:\s*\[.*?'listening'/.test(source), 'READY should allow transition to LISTENING');
 
   console.log('\nTest 19: WORKING can transition to SUCCESS');
-  assert(source.includes("working: ['ready', 'idle', 'error', 'success'"), 'WORKING should allow transition to SUCCESS');
+  assert(/working:\s*\[.*?'success'/.test(source), 'WORKING should allow transition to SUCCESS');
 
-  console.log('\nTest 20: SUCCESS can only go to IDLE or READY');
-  assert(source.includes("success: ['idle', 'ready']"), 'SUCCESS should only transition to IDLE or READY');
+  console.log('\nTest 20: SUCCESS can transition to IDLE, READY, and active states (relaxed)');
+  // Phase 18 (BUG-37): SUCCESS is now a flash state that can transition to ALL
+  // active states (not just idle/ready). This supports the flash-recovery UX.
+  assert(/success:\s*\[.*?'idle'.*?'ready'.*?'listening'.*?'thinking'.*?'speaking'.*?'working'/.test(source),
+    'SUCCESS should transition to IDLE, READY, and active states (relaxed for flash recovery)');
 
-  console.log('\nTest 21: CANCELLED can go to IDLE, READY, LISTENING');
-  assert(source.includes("cancelled: ['idle', 'ready', 'listening']"), 'CANCELLED should transition to IDLE/READY/LISTENING');
+  console.log('\nTest 21: CANCELLED can go to IDLE, READY, LISTENING, and active states (relaxed)');
+  // Phase 18 (BUG-37): CANCELLED is now a flash state that can transition to ALL
+  // active states (not just idle/ready/listening). This supports the flash-recovery UX.
+  assert(/cancelled:\s*\[.*?'idle'.*?'ready'.*?'listening'.*?'thinking'.*?'speaking'.*?'working'/.test(source),
+    'CANCELLED should transition to IDLE, READY, LISTENING, and active states (relaxed for flash recovery)');
 
   console.log('\nTest 22: No-op transitions always allowed');
   assert(source.includes('if (from === to) return true'), 'no-op transitions should be allowed');
@@ -177,10 +185,13 @@ async function runTests() {
   );
 
   console.log('\nTest 38: ChatPanel clears agent condition on task_completed');
+  // Phase 18 (P2-1): clearCondition is now called via scheduleConditionClear
+  // helper (timer ID captured for stale-timer protection). The helper calls
+  // voiceController.clearCondition(key) internally after 1500ms.
   assert(
     chatSource.includes("case 'task_completed'") &&
-    chatSource.includes("voiceController.clearCondition('agent')"),
-    'ChatPanel should clear agent condition on task_completed'
+    chatSource.includes("scheduleConditionClear('agent'"),
+    'ChatPanel should schedule agent condition clear on task_completed'
   );
 
   console.log('\nTest 39: ChatPanel sets WORKING on step_started');
@@ -209,9 +220,12 @@ async function runTests() {
   );
 
   console.log('\nTest 40: ChatPanel clears agent condition on task_cancelled');
+  // Phase 18 (P2-1): clearCondition is now called via scheduleConditionClear
+  // helper (timer ID captured for stale-timer protection).
   assert(
-    chatSource.includes("voiceController.clearCondition('agent')"),
-    'ChatPanel should clear agent condition on task_cancelled'
+    chatSource.includes("case 'task_cancelled'") &&
+    chatSource.includes("scheduleConditionClear('agent'"),
+    'ChatPanel should schedule agent condition clear on task_cancelled'
   );
 
   console.log('\nTest 40b: VoiceState includes working/success/cancelled');

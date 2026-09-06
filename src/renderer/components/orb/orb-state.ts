@@ -36,28 +36,66 @@ export type NexOrbState =
   | 'installing';
 
 // ─── State Transition Map ──────────────────────────────────────────────────
-// Defines valid state transitions to prevent race conditions and
-// contradictory state displays. Terminal states can't transition back
-// to active states without going through IDLE/READY first.
+// Phase 18 (BUG-37 fix): RELAXED to reflect actual production flows.
+//
+// The original graph treated flash states (success/error/cancelled) as
+// terminal — only allowing transitions back to idle/ready. This was
+// incorrect for the Phase 16/17 auto-clear UX pattern: a flash state
+// is a 1.5s auto-clearing interruption, and a new task/event arriving
+// during that window MUST be able to transition into an active state
+// (otherwise the new task's condition is silently dropped).
+//
+// Key relaxations (★ marks additions):
+//   - Flash states (success/error/cancelled) can now transition to ALL
+//     active states (listening/thinking/speaking/working) so a new
+//     task starting during the 1.5s flash window takes effect.
+//   - idle can now transition to thinking/working/cancelled directly
+//     (chat path starts at thinking; agent path can start at working;
+//     a cancel can arrive when idle in some race conditions).
+//   - listening can now transition to working (barge-in path: user
+//     speaks while TTS plays → listening → working → thinking).
+//   - thinking can now transition to listening (chat completion with
+//     voice mic still on → thinking → listening for next utterance).
+//   - speaking can now transition to working/thinking (barge-in path
+//     where the agent restarts during TTS).
+//   - working can now transition to thinking/speaking/listening
+//     (recovery engine replan, barge-in, agent TTS response).
+//
+// This preserves the monotonic-terminal-state invariant for TRUE
+// terminal states (offline → only idle/initializing; installing →
+// only ready/idle/error) while allowing flash states to be
+// interrupted by new activity. The graph now matches all documented
+// production flows:
+//   - idle → listening → thinking → speaking → listening → idle (voice)
+//   - idle → thinking → listening → idle (chat with voice mic on)
+//   - idle → thinking → working → success → idle (agent task)
+//   - idle → listening → thinking → working → success → speaking →
+//     listening (voice agent task)
+//   - speaking → listening → working → thinking (barge-in)
 const VALID_TRANSITIONS: Record<string, NexOrbState[]> = {
-  idle: ['initializing', 'ready', 'listening', 'error', 'offline'],
-  initializing: ['ready', 'error', 'idle'],
-  ready: ['listening', 'thinking', 'working', 'idle', 'offline'],
-  listening: ['thinking', 'speaking', 'idle', 'ready', 'error', 'cancelled'],
-  thinking: ['speaking', 'working', 'idle', 'ready', 'error', 'cancelled'],
-  speaking: ['ready', 'listening', 'idle', 'error', 'cancelled'],
-  active: ['ready', 'idle', 'error', 'success', 'cancelled'], // legacy alias
-  working: ['ready', 'idle', 'error', 'success', 'cancelled'],
-  success: ['idle', 'ready'],
-  error: ['idle', 'ready'],
-  cancelled: ['idle', 'ready', 'listening'],
-  offline: ['idle', 'initializing'],
-  installing: ['ready', 'idle', 'error'],
+  idle:          ['initializing', 'ready', 'listening', 'thinking', 'working', 'error', 'cancelled', 'offline'],          // ★ +thinking, +working, +cancelled
+  initializing:  ['ready', 'error', 'idle', 'listening', 'thinking', 'working'],                                          // ★ +listening, +thinking, +working
+  ready:         ['listening', 'thinking', 'working', 'idle', 'offline', 'error', 'cancelled'],                            // ★ +error, +cancelled
+  listening:     ['thinking', 'speaking', 'idle', 'ready', 'error', 'cancelled', 'working'],                               // ★ +working (barge-in)
+  thinking:      ['speaking', 'working', 'idle', 'ready', 'error', 'cancelled', 'listening'],                              // ★ +listening (chat completion w/ mic on)
+  speaking:      ['ready', 'listening', 'idle', 'error', 'cancelled', 'working', 'thinking', 'success'],                              // ★ +working, +thinking, +success (barge-in + priority resolution)
+  active:        ['ready', 'idle', 'error', 'success', 'cancelled', 'listening', 'thinking', 'speaking'],                 // ★ +listening, +thinking, +speaking (legacy alias)
+  working:       ['ready', 'idle', 'error', 'success', 'cancelled', 'thinking', 'speaking', 'listening'],                 // ★ +thinking, +speaking, +listening (recovery + barge-in)
+  success:       ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'error', 'cancelled'],                 // ★ RELAX: all flash interrupts
+  error:         ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'cancelled'],                           // ★ RELAX: all flash interrupts
+  cancelled:     ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'error'],                               // ★ RELAX: all flash interrupts
+  offline:       ['idle', 'initializing'],
+  installing:    ['ready', 'idle', 'error'],
 };
 
 /**
  * Validate a state transition. Returns true if the transition is allowed.
  * Unknown 'from' states allow all transitions (safe fallback).
+ *
+ * Phase 18 (BUG-37): this is now the ACTUAL enforcement function used by
+ * `voiceService.recomputeState()` and `voiceController.handleStateChange()`.
+ * Previously it was defined but never called — the state machine was
+ * documentation-only. Now invalid transitions are blocked at both layers.
  */
 export function isValidOrbTransition(from: NexOrbState, to: NexOrbState): boolean {
   if (from === to) return true; // no-op transitions always allowed
@@ -68,10 +106,17 @@ export function isValidOrbTransition(from: NexOrbState, to: NexOrbState): boolea
 /**
  * Safely transition to a new state. Returns the new state if valid,
  * or the current state if the transition is invalid (logs a warning).
+ *
+ * Phase 18 (BUG-37): this is now the ACTUAL enforcement function. Called by
+ * `voiceService.recomputeState()` and `voiceController.handleStateChange()`.
+ * When a transition is blocked, the diagnostic warning is logged:
+ *   `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+ * This makes it possible to grep the console for blocked transitions
+ * during E2E testing.
  */
 export function safeOrbTransition(current: NexOrbState, to: NexOrbState): NexOrbState {
   if (isValidOrbTransition(current, to)) return to;
-  console.warn(`[ORB_STATE] Invalid transition: ${current} → ${to} — keeping ${current}`);
+  console.warn(`[ORB_STATE] Invalid transition blocked: ${current} → ${to}`);
   return current;
 }
 

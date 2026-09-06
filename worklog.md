@@ -9059,3 +9059,36 @@ Stage Summary:
 - 9 files changed, 882 insertions(+), 215 deletions(-)
 - Pushed to https://github.com/ali12345666/nex-ai.git main branch
 - Phase 18 Stage 1 complete and committed
+
+
+---
+Task ID: PHASE18-STAGE2-IMPL
+Agent: main (Z.ai Code orchestrator)
+Task: Phase 18 Stage 2 — Orb State Machine Enforcement (BUG-37) + Stale Orb Condition Timers (P2-1).
+
+Work Log:
+- BUG-37: Relaxed VALID_TRANSITIONS in orb-state.ts to reflect actual production flows. Flash states (success/error/cancelled) can now transition to ALL active states (listening/thinking/speaking/working) — supports flash-recovery UX (new task starting during 1500ms flash window). Added barge-in transitions (listening→working, speaking→working, speaking→thinking, working→thinking, working→speaking, working→listening). Added speaking→success (priority resolution). Preserved true terminal states (offline→only idle/initializing; installing→only ready/idle/error). Updated safeOrbTransition diagnostic message to "[ORB_STATE] Invalid transition blocked: <from> → <to>".
+- BUG-37: Enforced safeOrbTransition in voiceService.recomputeState() — validates every state transition via safeOrbTransition before applying. If blocked, keeps current state + logs warning. Cast VoiceState↔NexOrbState (VoiceState is a subset of NexOrbState's 13 states).
+- BUG-37: Enforced safeOrbTransition in voiceController.handleStateChange() — second enforcement layer (first is recomputeState). If a future code path bypasses recomputeState, this catches invalid transitions too.
+- P2-1: NexChatPanel — added agentClearTimerRef + chatClearTimerRef refs. Created scheduleConditionClear helper that clears the previous timer before scheduling a new one for the SAME condition key. Replaced all 6 anonymous setTimeout clearCondition calls (3 agent + 3 chat) with scheduleConditionClear. Invariant: stale timer from old task NEVER clears newer task's condition.
+- P2-1: AppShell — replaced queueTimers array (accumulated all timers, never cleared previous) with single queueClearTimer + scheduleQueueClear helper. Added engineClearTimer + scheduleEngineClear for voice-conversation-error auto-clear. Both clear previous timer before scheduling new one. Unmount cleanup clears pending timers.
+
+Files changed:
+- src/renderer/components/orb/orb-state.ts (+79): relaxed VALID_TRANSITIONS (flash states, barge-in, chat completion, recovery, speaking→success); updated safeOrbTransition diagnostic message
+- src/renderer/services/voice-service.ts (+36): imported safeOrbTransition; recomputeState enforces via safeOrbTransition before applying
+- src/renderer/services/voice-controller.ts (+30): imported safeOrbTransition; handleStateChange enforces via safeOrbTransition before updating orbStateRef
+- src/renderer/components/chat/NexChatPanel.tsx (+49): added agentClearTimerRef + chatClearTimerRef + scheduleConditionClear helper; replaced 6 anonymous setTimeout calls
+- src/renderer/components/layout/AppShell.tsx (+57): replaced queueTimers with queueClearTimer + scheduleQueueClear; added engineClearTimer + scheduleEngineClear; unmount cleanup
+- tests/tools/test-phase-116-orb-state.ts (+36): updated tests 17-21 to use regex (formatting changed) + reflect relaxed graph (flash states → active); updated tests 38/40 to check scheduleConditionClear instead of direct clearCondition
+- tests/tools/test-phase-18-stage1.ts (+4): updated test 9.8 to check scheduleConditionClear instead of direct clearCondition
+- tests/tools/test-phase-18-orb-state-enforcement.ts (NEW, 120 assertions): source + runtime tests for BUG-37
+- tests/tools/test-phase-18-orb-state-flows.ts (NEW, 38 assertions): E2E flow tests (voice, chat, agent, voice-agent, barge-in, flash recovery, error/cancel flash, terminal states)
+- tests/tools/test-phase-18-stale-timers.ts (NEW, 33 assertions): source + runtime tests for P2-1
+
+Stage Summary:
+- BUG-37 root cause fixed: safeOrbTransition is now ACTUALLY called in recomputeState + handleStateChange. Invalid transitions are blocked + logged. The relaxed graph covers all documented production flows (verified by 38 flow tests + 120 enforcement tests).
+- P2-1 root cause fixed: all 10 anonymous setTimeout clearCondition timers (6 NexChatPanel + 4 AppShell) are now captured + cleared before scheduling new ones. Stale timer from old task CANNOT clear newer task's condition (verified by runtime test 4.1 + 5.1).
+- 1500ms UX behavior preserved.
+- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+- Regression: Phase 14 (43), 15 (35), 16 BUG-12 (50), 16 BUG-26 (60), 116 JARVIS (26), 116 Orb (48), 116 Lifecycle (12), 18 Stage 1 (82), 18 Orb Enforcement (120), 18 Orb Flows (38), 18 Stale Timers (33). Total: 547/547 (0 failed).
+- No commits made. No pushes made. Awaiting user approval.

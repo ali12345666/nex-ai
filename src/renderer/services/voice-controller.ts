@@ -13,7 +13,7 @@
  */
 
 import { voiceService, type VoiceState, type VoiceMode } from './voice-service';
-import type { NexOrbState } from '../components/orb/orb-state';
+import { safeOrbTransition, type NexOrbState } from '../components/orb/orb-state';
 
 /** Map VoiceState to NexOrbState. Phase 116: Extended with working/success/cancelled. */
 function toOrbState(state: VoiceState): NexOrbState {
@@ -176,9 +176,31 @@ export class VoiceController {
 
   private handleStateChange(state: VoiceState): void {
     const orbState = toOrbState(state);
-    this.orbStateRef.current = orbState;
-    this.orbStateCallbacks.forEach((cb) => cb(orbState));
-    this.callbacks.onOrbStateChange?.(orbState);
+    // Phase 18 (BUG-37): enforce the Orb state machine. Validate the
+    // transition via `safeOrbTransition()` before applying it. If the
+    // transition is invalid per the relaxed VALID_TRANSITIONS graph in
+    // orb-state.ts, the function returns the CURRENT state (blocking the
+    // invalid transition) and logs:
+    //   `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+    //
+    // This is the SECOND enforcement layer (the first is in
+    // voiceService.recomputeState). Both layers enforce because
+    // recomputeState fires first (when the condition is set), then
+    // onStateChange fires (when the state actually changes) →
+    // handleStateChange. In normal operation, recomputeState already
+    // validated, so handleStateChange's validation is a no-op. But if
+    // a caller directly mutates voiceService._state (bypassing
+    // recomputeState) OR if a future code path calls handleStateChange
+    // directly, this layer catches invalid transitions too.
+    const validated = safeOrbTransition(this.orbStateRef.current, orbState);
+    if (validated !== this.orbStateRef.current) {
+      this.orbStateRef.current = validated;
+      this.orbStateCallbacks.forEach((cb) => cb(validated));
+      this.callbacks.onOrbStateChange?.(validated);
+    }
+    // If validated === this.orbStateRef.current, the transition was blocked
+    // — the warning was already logged by safeOrbTransition. We keep the
+    // current state (do NOT update orbStateRef, do NOT fire callbacks).
   }
 
   private handleAudioLevel(level: number): void {

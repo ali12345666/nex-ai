@@ -66,6 +66,15 @@ const STATE_PRIORITY: Record<VoiceState, number> = {
   error: 8, offline: 7, speaking: 6, working: 5, thinking: 4, listening: 3, success: 2, cancelled: 2, idle: 1,
 };
 
+// Phase 18 (BUG-37): Import the Orb state-machine enforcement function.
+// `recomputeState()` now validates every state transition via
+// `safeOrbTransition()` before applying it. Previously the state machine
+// in orb-state.ts was documentation-only — `safeOrbTransition` was defined
+// but never called, so invalid transitions silently happened. Now blocked
+// transitions are rejected and a diagnostic warning is logged:
+//   `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+import { safeOrbTransition, type NexOrbState } from '../components/orb/orb-state';
+
 export class VoiceService {
   private config: VoiceConfig;
   private callbacks: VoiceCallbacks = {};
@@ -438,8 +447,31 @@ export class VoiceService {
       if (p > highest) { highest = p; newState = state; }
     }
     if (newState !== this._state) {
-      this._state = newState;
-      this.callbacks.onStateChange?.(newState);
+      // Phase 18 (BUG-37): enforce the Orb state machine. Validate the
+      // transition via `safeOrbTransition()`. If the transition is invalid
+      // per the relaxed VALID_TRANSITIONS graph in orb-state.ts, the
+      // function returns the CURRENT state (blocking the invalid transition)
+      // and logs `[ORB_STATE] Invalid transition blocked: <from> → <to>`.
+      //
+      // This prevents invalid transitions (e.g. offline → speaking without
+      // going through idle) while allowing all documented production flows
+      // (voice, chat, agent, voice-agent, barge-in, flash-state recovery).
+      // See orb-state.ts VALID_TRANSITIONS comment for the full list of
+      // relaxed transitions.
+      //
+      // Cast VoiceState ↔ NexOrbState: VoiceState has 9 states (a subset of
+      // NexOrbState's 13), so the cast is safe — every VoiceState is a
+      // valid NexOrbState. The returned NexOrbState is similarly castable
+      // back to VoiceState (the blocked case returns the current state,
+      // which was already a VoiceState).
+      const validated = safeOrbTransition(this._state as NexOrbState, newState as NexOrbState) as VoiceState;
+      if (validated !== this._state) {
+        this._state = validated;
+        this.callbacks.onStateChange?.(validated);
+      }
+      // If validated === this._state, the transition was blocked — the
+      // warning was already logged by safeOrbTransition. We keep the
+      // current state (do NOT update this._state, do NOT fire callback).
     }
   }
 

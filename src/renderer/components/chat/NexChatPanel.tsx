@@ -349,6 +349,37 @@ export default function NexChatPanel() {
   // Phase 110: Track active agent task for session stickiness
   const activeAgentTaskRef = useRef<string | null>(null);
 
+  // Phase 18 (P2-1): Stale-timer protection for 'agent' + 'chat' condition
+  // auto-clears. Previously the 1500ms setTimeout timers were anonymous —
+  // their IDs were not captured. A stale timer from an OLD task could fire
+  // during a NEW task and clear the NEW task's condition (brief Orb blip).
+  // Now we capture the timer ID and clear the PREVIOUS timer before
+  // scheduling a new one for the SAME condition key. The invariant is:
+  //   A stale timer from an old task must NEVER clear the condition
+  //   belonging to a newer task.
+  const agentClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Phase 18 (P2-1): Helper to schedule a 1500ms auto-clear for a condition,
+  // clearing any previously-scheduled timer for the SAME key first.
+  const scheduleConditionClear = useCallback(
+    (key: 'agent' | 'chat', timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
+      // Clear any previously-scheduled timer for this condition key.
+      // This prevents a stale timer from an old task/event from clearing
+      // the NEW task's condition.
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      // Schedule the new 1500ms auto-clear, capturing the timer ID.
+      timerRef.current = setTimeout(() => {
+        voiceController.clearCondition(key);
+        timerRef.current = null; // clear the ref so we know no timer is pending
+      }, 1500);
+    },
+    []
+  );
+
   // Phase 14: Speak a response via TTS if the request came from voice.
   // Guards:
   //   - Only speaks if wasVoiceInputRef is true AND not cancelled
@@ -572,7 +603,8 @@ export default function NexChatPanel() {
               };
               // Phase 116 JARVIS: Orb → SUCCESS then clear → idle/ready
               voiceController.setCondition('agent', 'success');
-              setTimeout(() => voiceController.clearCondition('agent'), 1500);
+              // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+              scheduleConditionClear('agent', agentClearTimerRef);
               // Phase 110: Clear active agent task + reset UI state
               activeAgentTaskRef.current = null;
               setIsGenerating(false);
@@ -602,7 +634,8 @@ export default function NexChatPanel() {
             // had to start a new agent task to clear it. Now it auto-
             // clears like 'cancelled', letting the Orb return to idle.
             voiceController.setCondition('agent', 'error');
-            setTimeout(() => voiceController.clearCondition('agent'), 1500);
+            // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+            scheduleConditionClear('agent', agentClearTimerRef);
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
@@ -621,7 +654,8 @@ export default function NexChatPanel() {
             };
             // Phase 116 JARVIS: Orb → CANCELLED then clear → idle/ready
             voiceController.setCondition('agent', 'cancelled');
-            setTimeout(() => voiceController.clearCondition('agent'), 1500);
+            // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+            scheduleConditionClear('agent', agentClearTimerRef);
             activeAgentTaskRef.current = null;
             setIsGenerating(false);
             setChatStreaming(false);
@@ -976,7 +1010,8 @@ export default function NexChatPanel() {
         setError(stream.error);
         // Phase 17 (CHAT-ERROR-NO-ORB fix): flash Orb red on chat error
         voiceController.setCondition('chat', 'error');
-        setTimeout(() => voiceController.clearCondition('chat'), 1500);
+        // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+        scheduleConditionClear('chat', chatClearTimerRef);
       } else if (stream.error && /abort|cancelled|canceled/i.test(stream.error)) {
         // ABORT FIX: do NOT fall back to non-streaming aiChat when the stream
         // was aborted. Falling back starts a NEW inference (chatComplete)
@@ -1019,7 +1054,8 @@ export default function NexChatPanel() {
           const isAbort = /abort|cancelled|canceled/i.test(result.error || '');
           if (!isAbort) {
             voiceController.setCondition('chat', 'error');
-            setTimeout(() => voiceController.clearCondition('chat'), 1500);
+            // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+            scheduleConditionClear('chat', chatClearTimerRef);
           }
         }
       }
@@ -1041,7 +1077,8 @@ export default function NexChatPanel() {
       const isAbort = /abort|cancelled|canceled/i.test(err.message || '');
       if (!isAbort) {
         voiceController.setCondition('chat', 'error');
-        setTimeout(() => voiceController.clearCondition('chat'), 1500);
+        // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+        scheduleConditionClear('chat', chatClearTimerRef);
       }
     } finally {
       setIsGenerating(false);

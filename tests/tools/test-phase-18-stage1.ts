@@ -560,12 +560,14 @@ async function runTests() {
 
     console.log('\nTest 9.8: Phase 17 — Orb error auto-clear intact');
     // Phase 17 ORB-ERROR-NO-CLEAR fix: task_failed error condition auto-clears after 1.5s
+    // Phase 18 (P2-1): the clear is now via scheduleConditionClear helper.
     const taskFailedIdx = chatSource.indexOf("case 'task_failed':");
     assert(taskFailedIdx > 0, 'task_failed case exists');
     // Window increased to 1200 to cover the full case body (comments + setCondition + setTimeout)
     const taskFailedSection = chatSource.substring(taskFailedIdx, taskFailedIdx + 1200);
     assert(taskFailedSection.includes("setCondition('agent', 'error')"), 'Phase 17 sets error condition');
-    assert(taskFailedSection.includes("clearCondition('agent')"), 'Phase 17 auto-clears error condition');
+    // Phase 18 (P2-1): auto-clear is now via scheduleConditionClear helper
+    assert(taskFailedSection.includes("scheduleConditionClear('agent'"), 'Phase 17 auto-clears error condition via scheduleConditionClear');
   });
 
   // ════════════════════════════════════════════════════════════════════════
