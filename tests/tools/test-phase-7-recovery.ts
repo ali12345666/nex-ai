@@ -718,7 +718,22 @@ async function runTests() {
       path.join(__dirname, '..', '..', 'src', 'renderer', 'components', 'orb', 'orb-state.ts'),
       'utf-8',
     );
-    assert(!orbStateSource.includes('recovery'), 'orb-state.ts does NOT mention recovery (no new states)');
+    // Phase 18 (P3): The original assertion checked the ENTIRE source file
+    // for the word 'recovery'. After Phase 18 Stage 2, the VALID_TRANSITIONS
+    // comment block mentions 'recovery' in a descriptive comment about the
+    // working state's valid transitions (e.g. "recovery engine replan").
+    // This is NOT a new state — it's a comment explaining the transition
+    // rationale. The actual NexOrbState type enum has NO 'recovery' state.
+    // Fix: check only CODE lines (not comments) for 'recovery' as a state
+    // name — i.e., check that 'recovery' doesn't appear as a state value
+    // in the NexOrbState type or VALID_TRANSITIONS keys.
+    const orbStateCodeLines = orbStateSource.split('\n').filter(l =>
+      !l.trim().startsWith('//') && !l.trim().startsWith('*')
+    );
+    const recoveryCodeLines = orbStateCodeLines.filter(l =>
+      l.includes("'recovery'") || l.includes('"recovery"')
+    );
+    assert(recoveryCodeLines.length === 0, 'orb-state.ts does NOT have a recovery STATE (no new states in NexOrbState enum)');
   });
 
   // ════════════════════════════════════════════════════════════════════════

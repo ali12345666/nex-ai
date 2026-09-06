@@ -142,10 +142,27 @@ export class VoiceController {
   // The only external caller of voiceController.stopSpeaking() was the dead
   // VoiceCenterPanel.tsx — no live caller exists.
 
-  /** Chat sets 'thinking' while AI processes. */
+  /**
+   * Chat sets 'thinking' while AI processes.
+   *
+   * Phase 18 (P2-2 fix): when `thinking` is false, only clear the 'chat'
+   * condition if it's currently 'thinking' — NOT if it's 'error'. The
+   * chat 'error' flash (set in NexChatPanel's catch block + 1500ms
+   * scheduleConditionClear timer) would otherwise be immediately wiped
+   * by this call when `isGenerating` transitions to false in the finally
+   * block, defeating the 1500ms error flash UX. By checking the current
+   * state before clearing, we preserve the error flash until its 1500ms
+   * timer fires naturally.
+   */
   setThinking(thinking: boolean): void {
     if (thinking) voiceService.setCondition('chat', 'thinking');
-    else voiceService.clearCondition('chat');
+    else {
+      // Only clear if currently 'thinking' — don't wipe 'error' flash
+      const currentState = voiceService.state;
+      if (currentState !== 'error') {
+        voiceService.clearCondition('chat');
+      }
+    }
   }
 
   /**

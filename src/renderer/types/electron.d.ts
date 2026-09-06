@@ -187,7 +187,7 @@ export interface NexAPI {
   onVoiceConversationWake: (callback: (ev: any) => void) => () => void;
   onVoiceConversationUser: (callback: (ev: any) => void) => () => void;
   onVoiceConversationNex: (callback: (ev: any) => void) => () => void;
-  onVoiceConversationInterrupted: (callback: (ev: any) => void) => () => void;
+  // Phase 18 (P3): Removed dead onVoiceConversationInterrupted — sender removed, never listened to.
   onVoiceConversationCommand: (callback: (ev: any) => void) => () => void;
   onVoiceConversationError: (callback: (ev: any) => void) => () => void;
 

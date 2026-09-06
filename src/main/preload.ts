@@ -239,11 +239,10 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('voice-conversation-nex', listener);
     return () => ipcRenderer.removeListener('voice-conversation-nex', listener);
   },
-  onVoiceConversationInterrupted: (callback: (ev: any) => void) => {
-    const listener = (_e: any, ev: any) => callback(ev);
-    ipcRenderer.on('voice-conversation-interrupted', listener);
-    return () => ipcRenderer.removeListener('voice-conversation-interrupted', listener);
-  },
+  // Phase 18 (P3): Removed dead `onVoiceConversationInterrupted` listener.
+  // The main process no longer sends `voice-conversation-interrupted` (the
+  // Orb state is driven by `voice-conversation-state` with setState('interrupted')).
+  // This listener was never subscribed to by any renderer component.
   onVoiceConversationCommand: (callback: (ev: any) => void) => {
     const listener = (_e: any, ev: any) => callback(ev);
     ipcRenderer.on('voice-conversation-command', listener);

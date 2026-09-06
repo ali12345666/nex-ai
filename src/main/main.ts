@@ -1899,8 +1899,13 @@ async function setupIPC(): Promise<void> {
       mainWindow?.webContents.send('voice-conversation-partial', { text });
     },
     onInterruption: () => {
-      mainWindow?.webContents.send('voice-conversation-interrupted', {});
-      // Phase 18 Stage 3: also broadcast voice-tts-stop-playback so the
+      // Phase 18 (P3): Removed orphan `voice-conversation-interrupted` send.
+      // The Orb state is driven by `setState('interrupted')` → the
+      // `voice-conversation-state` IPC (which AppShell listens to). The
+      // `voice-conversation-interrupted` IPC was never listened to by any
+      // renderer component — it was dead. The voice-tts-stop-playback
+      // broadcast below is the active path for barge-in audio pause.
+      // Phase 18 Stage 3: broadcast voice-tts-stop-playback so the
       // renderer pauses the currently-playing <audio> element. This is
       // critical for barge-in — without it, the TTS audio would keep
       // playing through the speakers even though the engine stopped

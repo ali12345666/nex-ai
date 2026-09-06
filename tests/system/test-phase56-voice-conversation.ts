@@ -417,7 +417,8 @@ async function main(): Promise<void> {
   assert('main forwards voice-conversation-state event', mainSrc.includes("'voice-conversation-state'"));
   assert('main forwards voice-conversation-wake event', mainSrc.includes("'voice-conversation-wake'"));
   assert('main forwards voice-conversation-user event', mainSrc.includes("'voice-conversation-user'"));
-  assert('main forwards voice-conversation-interrupted event', mainSrc.includes("'voice-conversation-interrupted'"));
+  // Phase 18 (P3): voice-conversation-interrupted IPC removed (orphan — Orb state driven by voice-conversation-state)
+  assert('main does NOT forward voice-conversation-interrupted event (removed)', !mainSrc.split('\n').some((l: string) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes("'voice-conversation-interrupted'")));
 
   // Preload
   const preloadSrc = read('../../src/main/preload.ts');
@@ -431,7 +432,7 @@ async function main(): Promise<void> {
     'voiceConversationRestoreContext', 'voiceConversationReset', 'voiceConversationOrbColor',
     'wakeWordDetect', 'wakeWordFeed', 'wakeWordStatus', 'voiceCommandParse',
     'onVoiceConversationState', 'onVoiceConversationWake', 'onVoiceConversationUser',
-    'onVoiceConversationNex', 'onVoiceConversationInterrupted', 'onVoiceConversationCommand',
+    'onVoiceConversationNex', 'onVoiceConversationCommand',
     'onVoiceConversationError',
   ];
   for (const m of preloadMethods) {
@@ -449,29 +450,22 @@ async function main(): Promise<void> {
   // 10) UI Panel + Navigation + Orb Mapping
   // ═══════════════════════════════════════════════════════════════════════
   console.log('\n10) UI Panel + Navigation:');
-  const panelSrc = read('../../src/renderer/components/VoiceCenterPanel.tsx');
-  assert('VoiceCenterPanel exists', panelSrc.length > 0);
-  assert('panel default export', panelSrc.includes('export default function VoiceCenterPanel'));
-  assert('panel has STATE_META mapping', panelSrc.includes('STATE_META'));
-  assert('panel idle → blue', panelSrc.includes("idle: '#3b82f6'") || panelSrc.includes("color: '#3b82f6'"));
-  assert('panel listening → green', panelSrc.includes("color: '#22c55e'"));
-  assert('panel thinking → purple', panelSrc.includes("color: '#8b5cf6'"));
-  assert('panel speaking → cyan', panelSrc.includes("color: '#06b6d4'"));
-  assert('panel error → red', panelSrc.includes("color: '#ef4444'"));
-  assert('panel shows orb indicator', panelSrc.includes('orbColor'));
-  assert('panel calls voiceConversationToggle', panelSrc.includes('voiceConversationToggle'));
-  assert('panel calls voiceConversationStatus', panelSrc.includes('voiceConversationStatus'));
-  assert('panel calls voiceConversationStopSpeaking', panelSrc.includes('voiceConversationStopSpeaking'));
-  assert('panel calls voiceConversationAbort', panelSrc.includes('voiceConversationAbort'));
-  assert('panel calls voiceConversationSetPersonality', panelSrc.includes('voiceConversationSetPersonality'));
-  assert('panel calls voiceConversationFeed', panelSrc.includes('voiceConversationFeed'));
-  assert('panel subscribes to state changes', panelSrc.includes('onVoiceConversationState'));
-  assert('panel subscribes to errors', panelSrc.includes('onVoiceConversationError'));
-  assert('panel shows conversation context', panelSrc.includes('context'));
-  assert('panel shows recent turns', panelSrc.includes('recentTurns'));
-  assert('panel has personality selector', panelSrc.includes('PERSONALITIES'));
-  assert('panel has security note (offline)', panelSrc.includes('محلی') || panelSrc.includes('offline'));
-  assert('panel shows wake word status', panelSrc.includes('wakeWordEnabled'));
+  // Phase 18 (P3): VoiceCenterPanel.tsx was REMOVED (dead code — never imported).
+  // The VoiceManagerPanel.tsx is the active voice UI panel. Verify it exists
+  // and uses the voice manager API (detect/activate/mode/status — NOT the
+  // voice conversation API which is used by the conversation system).
+  const vmPanelSrc = read('../../src/renderer/components/VoiceManagerPanel.tsx');
+  assert('VoiceManagerPanel exists', vmPanelSrc.length > 0);
+  assert('VoiceManagerPanel default export', vmPanelSrc.includes('export default function VoiceManagerPanel'));
+  assert('VoiceManagerPanel subscribes to state changes', vmPanelSrc.includes('onVoiceConversationState'));
+  assert('VoiceManagerPanel calls voiceManagerStatus', vmPanelSrc.includes('voiceManagerStatus'));
+  assert('VoiceManagerPanel calls voiceManagerDetect', vmPanelSrc.includes('voiceManagerDetect'));
+  assert('VoiceManagerPanel calls voiceManagerActivate', vmPanelSrc.includes('voiceManagerActivate'));
+  assert('VoiceManagerPanel calls voiceManagerDeactivate', vmPanelSrc.includes('voiceManagerDeactivate'));
+  assert('VoiceManagerPanel calls voiceManagerSetMode', vmPanelSrc.includes('voiceManagerSetMode'));
+  assert('VoiceManagerPanel calls voiceManagerToggleConversation', vmPanelSrc.includes('voiceManagerToggleConversation'));
+  assert('VoiceManagerPanel calls voiceManagerSetSTTModel', vmPanelSrc.includes('voiceManagerSetSTTModel'));
+  assert('VoiceManagerPanel calls voiceManagerSetTTSVoice', vmPanelSrc.includes('voiceManagerSetTTSVoice'));
 
   const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
   assert('nav has voice view', navSrc.includes("'voice'"));
@@ -479,7 +473,9 @@ async function main(): Promise<void> {
   assert('nav has Voice label', navSrc.includes("label: 'Voice'"));
 
   const appShellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
-  assert('AppShell imports VoiceCenterPanel', appShellSrc.includes('VoiceCenterPanel'));
+  // Phase 18 (P3): AppShell no longer imports VoiceCenterPanel (deleted).
+  // It does import VoiceManagerPanel (different component).
+  assert('AppShell does NOT import VoiceCenterPanel (deleted)', !appShellSrc.split('\n').some((l: string) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('VoiceCenterPanel')));
   assert('AppShell routes voice view', appShellSrc.includes("case 'voice'"));
 
   // ═══════════════════════════════════════════════════════════════════════

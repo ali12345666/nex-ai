@@ -74,7 +74,7 @@ export default function VoiceManagerPanel() {
     // Subscribe to conversation state changes
     const offState = window.nexAPI.onVoiceConversationState?.((ev: any) => {
       setConversationState(ev.state || 'idle');
-      if (ev.orbColor) setOrbColor(ev.orbColor);
+      if (ev.color) setOrbColor(ev.color);
     });
     const interval = setInterval(refresh, 5000); // auto-refresh every 5s
     return () => {

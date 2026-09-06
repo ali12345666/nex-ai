@@ -115,8 +115,9 @@ export interface ConversationCallbacks {
   onInterruption?: () => void;
   onVoiceCommand?: (command: VoiceControlCommand, phrase: string | null) => void;
   onError?: (message: string) => void;
-  /** Hook to capture a voice confirmation (returns transcript). */
-  onCaptureVoiceConfirmation?: () => Promise<string>;
+  // Phase 18 (P3): Removed dead `onCaptureVoiceConfirmation` callback —
+  // was left in the interface after P1-6 removed the voice confirmation
+  // path. Never invoked, never implemented.
 }
 
 export interface ConversationStatus {
@@ -866,6 +867,10 @@ export class NexVoiceConversation {
 
   /** Reset the conversation (clear context + turns). */
   reset(): void {
+    // Phase 18 (P3): release any pending TTS playback wait so speakResponse
+    // doesn't hang for up to 30s if reset is called during TTS playback.
+    this.currentTtsRequestId++;
+    this.releaseTtsPlaybackWait();
     this.context = {
       currentUtterance: '',
       previousUtterance: '',
