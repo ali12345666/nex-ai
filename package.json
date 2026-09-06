@@ -86,7 +86,9 @@
     ],
     "asarUnpack": [
       "**/*.node",
-      "**/node_modules/@nut-tree-fork/**"
+      "**/node_modules/@nut-tree-fork/**",
+      "**/node_modules/node-llama-cpp/**",
+      "**/node_modules/@node-llama-cpp/**"
     ],
     "extraResources": [
       {
