@@ -1,0 +1,502 @@
+  5592→Task ID: P17-AUDIT-ERROR-VOICE
+  5593→Agent: Explore (error/voice/orb)
+  5594→Phase: 17 — Runtime & Core Integration Audit (items 7, 8, 9)
+  5595→Codebase: /home/z/my-project @ 8e5ff6d (main)
+  5596→Mode: READ-ONLY — no files modified, no commits
+  5597→
+  5598→═══════════════════════════════════════════════════════════════════════════════
+  5599→WORK LOG
+  5600→═══════════════════════════════════════════════════════════════════════════════
+  5601→
+  5602→Files audited (read in full):
+  5603→- /home/z/my-project/src/main/ai/inference.ts (1216 lines)
+  5604→- /home/z/my-project/src/main/ai/runtimes/llamacpp-runtime.ts (117 lines)
+  5605→- /home/z/my-project/src/main/ai/ai-mode.ts (109 lines)
+  5606→- /home/z/my-project/src/main/ai/interaction-loop.ts (392 lines)
+  5607→- /home/z/my-project/src/main/ai/local-engine.ts (316 lines)
+  5608→- /home/z/my-project/src/main/agent/core.ts (2187 lines — runTask, executeStep, handleStepFailure, cancelTask)
+  5609→- /home/z/my-project/src/main/agent/recovery-engine.ts (799 lines)
+  5610→- /home/z/my-project/src/main/agent/error-classifier.ts (430 lines)
+  5611→- /home/z/my-project/src/main/agent/planner.ts (532 lines — generatePlan + fallbackPlan)
+  5612→- /home/z/my-project/src/main/agent/react-loop.ts (397 lines — rePlanAfterObservation)
+  5613→- /home/z/my-project/src/main/voice/local-voice-engine.ts (508 lines)
+  5614→- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (892 lines)
+  5615→- /home/z/my-project/src/main/ai/voice-manager.ts (627 lines — startConversation path)
+  5616→- /home/z/my-project/src/main/tasks/orb-bridge.ts (69 lines)
+  5617→- /home/z/my-project/src/main/main.ts (6463 lines — IPC handlers: brain-route, ai-chat-stream, ai-chat-stream-cancel, voice-conversation-*, voice-tts-ended, voice-conversation-error, interaction-*, agent-cancel-task, before-quit)
+  5618→- /home/z/my-project/src/main/preload.ts (824 lines — voice + interaction + voiceTtsEnded APIs)
+  5619→- /home/z/my-project/src/renderer/services/voice-service.ts (590 lines — VAD, setCondition, recomputeState, STATE_PRIORITY)
+  5620→- /home/z/my-project/src/renderer/services/voice-controller.ts (192 lines — toOrbState, handleStateChange, subscribeOrbState)
+  5621→- /home/z/my-project/src/renderer/components/orb/orb-state.ts (454 lines — 13 states, VALID_TRANSITIONS, safeOrbTransition, computeOrbVisual)
+  5622→- /home/z/my-project/src/renderer/components/orb/NexOrb.tsx (700 lines — visual renderer)
+  5623→- /home/z/my-project/src/renderer/components/layout/AppShell.tsx (592 lines — 3 state-driver wiring: queue, engine, voice-transcript)
+  5624→- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx (1436 lines — handleSend, brainRoute, aiChatStream fallback, speakResponseIfVoice, handleStop, onAgentEvent)
+  5625→- /home/z/my-project/src/renderer/App.tsx (412 lines — onVoiceTTSAudio, onVoiceTtsStopPlayback, voice-start/stop-mic-capture)
+  5626→- /home/z/my-project/src/renderer/components/BasicInteractionPanel.tsx (264 lines — verified legacy panel still wired to AppShell view='interact')
+  5627→- /home/z/my-project/src/renderer/components/VoiceCenterPanel.tsx (463 lines — confirmed DEAD CODE, never imported)
+  5628→
+  5629→Cross-referenced symbols:
+  5630→- _activeAbortController / _activeRequestId / _activeRequestCreatedAt (inference.ts:161-169)
+  5631→- _inFlightPromise (inference.ts:158) — singular
+  5632→- _loadingPromise / _isShuttingDown (inference.ts:151-152)
+  5633→- _activeTasks / _cancellationTokens / _eventListeners (core.ts:96-97, 105)
+  5634→- token.throwIfCancelled checkpoints (core.ts:320, 490, 828, 841, 937, 986, 1232, 1262)
+  5635→- TASK_TIMEOUT_MS = 300_000 (core.ts:307)
+  5636→- decideRecovery / decideRecoveryHeuristic / analyzeWithLLM (recovery-engine.ts:769, 149, 538)
+  5637→- classifyError 13 classes (error-classifier.ts:30-43, 214)
+  5638→- VALID_TRANSITIONS / safeOrbTransition / isValidOrbTransition (orb-state.ts:42, 72, 62)
+  5639→- STATE_PRIORITY (voice-service.ts:65-67): error=8 > offline=7 > speaking=6 > working=5 > thinking=4 > listening=3 > success/cancelled=2 > idle=1
+  5640→- 6 condition keys on voiceController: 'mic', 'tts', 'chat', 'agent', 'queue', 'engine'
+  5641→- currentTtsRequestId / ttsPlaybackResolve / ttsPlaybackRequestId / ttsPlaybackTimeout (nex-voice-conversation.ts:160-163)
+  5642→- _currentTtsRequestId / ttsActive (local-voice-engine.ts:183, 175)
+  5643→- wasVoiceInputRef / ttsCancelledRef (NexChatPanel.tsx:317, 316)
+  5644→
+  5645→Cross-references to P17-AUDIT-STREAMING (lines 3288-4424):
+  5646→- BUG-GAP-2 (re-confirmed): cancelTask does NOT call abortInference (see ITEM 7.7 below)
+  5647→- BUG-GAP-5 (re-confirmed): planner.ts:240-244 swallows AbortError → fallbackPlan (see ITEM 7.1)
+  5648→- CLEANUP-LEAK-1 (re-confirmed): handleInterruption setTimeout(50ms) NOT cleared on abort
+  5649→- CLEANUP-LEAK-2 (re-confirmed): captureVoiceConfirmation 10s timeout NOT cleared on abort
+  5650→- CLEANUP-LEAK-3 (re-confirmed): shutdown hang if agent mid-inference
+  5651→
+  5652→═══════════════════════════════════════════════════════════════════════════════
+  5653→ITEM 7 — ERROR HANDLING AND RECOVERY
+  5654→═══════════════════════════════════════════════════════════════════════════════
+  5655→
+  5656→7.1 — Inference error propagation: chat path
+  5657→─────────────────────────────────────────────────
+  5658→inference.ts:587-597 (loadModel catch):
+  5659→  console.error('[NEX AI Local] llama.loadModel() FAILED:', { modelPath, error, code, stack })
+  5660→  throw loadErr;  // re-throws — propagates up
+  5661→inference.ts:935-1030 (chatComplete): NO try/catch around session.prompt — throws propagate to caller.
+  5662→inference.ts:1039-1154 (chatStream): inner async try at 1090, catch at 1134-1137 → onChunk({done:true, error:err.message}) + rethrow.
+  5663→main.ts:785-921 (ai-chat-stream handler):
+  5664→  - line 794-802: enforceAiMode block (returns {success:false, error:blocked.error})
+  5665→  - line 822-829: model null / fileExists=false → returns {success:false, error:'No local model...'}
+  5666→  - line 879-887: runtime.chatStream() — throws caught by outer try at 903
+  5667→  - line 903-920: catch block:
+  5668→      console.error('[INFERENCE_ERROR]') + message + code + name + stack
+  5669→      isAbort detection (line 913): /abort/i || err.name === 'AbortError' || err.code === 20
+  5670→      return { success: false, replyId, error: err?.message || 'Inference failed' }
+  5671→NexChatPanel.tsx:936-1007 (chat-mode error handling):
+  5672→  - line 961-968: /No local model|Model file not found/i → message status='error' + setError
+  5673→  - line 969-981: /abort|cancelled|canceled/i → message status='error' + setError
+  5674→  - line 982-1007: ELSE → falls through to non-streaming aiChat (line 984) which calls runtime.chat
+  5675→    - If aiChat ALSO returns success=false (line 999-1007): message status='error' + setError
+  5676→  - line 1009-1017: catch (err) → message status='error' + setError(err.message)
+  5677→
+  5678→VERDICT: Chat-mode inference errors DO propagate to the user via the chat message bubble (with err.message). The Orb does NOT go to 'error' state (see ITEM 7.3 below).
+  5679→
+  5680→7.2 — Inference error propagation: agent path
+  5681→─────────────────────────────────────────────────
+  5682→Two inference call sites in agent path:
+  5683→(a) PLANNER (planner.ts:113-245):
+  5684→    - line 176/181: runtime.chatStream / runtime.chat
+  5685→    - line 240-244: catch (err) → console.error('[PLANNER_ERROR] Planner threw:', err.message, err.stack)
+  5686→        AgentLogger.error(`Planner failed: ${err.message}`)
+  5687→        return fallbackPlan(request.userRequest, err.message)
+  5688→    ⚠ SILENT SWALLOW: planner returns fallbackPlan instead of throwing. The err.message is passed as `reason` to fallbackPlan but is ONLY logged via [PLANNER_DIAG] (line 367) — NOT surfaced in plan.warnings or any user-visible channel.
+  5689→
+  5690→(b) REACT LOOP (react-loop.ts:140-208):
+  5691→    - line 189/194: runtime.chatStream / runtime.chat
+  5692→    - line 198-207: catch (err) → AgentLogger.warn(`ReAct decision failed: ${err.message}`)
+  5693→        return { action: 'continue', reason: `ReAct decision failed (${err.message})...`, confidence: 0.0 }
+  5694→    ⚠ SILENT SWALLOW: react-loop returns 'continue' on inference error. The decision is to proceed with the original plan. err.message is in the `reason` field but NOT propagated to user.
+  5695→
+  5696→(c) LOAD MODEL (core.ts:370-376):
+  5697→    - runtime.loadModel throws → propagates to outer catch at core.ts:730
+  5698→    - core.ts:730-766: catch (err) → emit task_failed with err.message → return task
+  5699→
+  5700→(d) STEP EXECUTION THROWS (core.ts:1447-1468):
+  5701→    - executeStep outer try/catch wraps tool exec + ReAct + verification
+  5702→    - line 1447: catch (err) →
+  5703→        if (err.code === 'AGENT_CANCELLED') throw err  // re-throw to outer
+  5704→        step.status = 'failed'
+  5705→        step.error = err.message
+  5706→        task.errors.push({ type: 'tool_error', message: err.message })
+  5707→        emit step_failed (NOT task_failed)
+  5708→    ⚠ NO handleStepFailure call — Phase 7 recovery engine is BYPASSED for thrown exceptions.
+  5709→
+  5710→7.3 — Task status transition to 'failed' on inference error
+  5711→─────────────────────────────────────────────────
+  5712→Three paths to task_failed on inference error:
+  5713→
+  5714→PATH A — Load model fails (core.ts:370 throws → outer catch line 730):
+  5715→  - line 747-758: error type='unknown', message=err.message
+  5716→  - line 755-757: task.status = 'failed' (if not already completed/cancelled)
+  5717→  - line 759-764: emit task_failed
+  5718→  - User sees: '❌ Agent task failed: <err.message>' in chat (NexChatPanel.tsx:588-602)
+  5719→  - Orb: voiceController.setCondition('agent', 'error') at NexChatPanel.tsx:597
+  5720→
+  5721→PATH B — Inference error during a step's ReAct loop (react-loop catches → 'continue' → step completes):
+  5722→  - step.status = 'completed' (no failure)
+  5723→  - Loop continues to next step
+  5724→  - Next step's ReAct loop also fails → step completes again
+  5725→  - Eventually loop exits → Phase 9 completion gate (core.ts:606) checks verifyTaskCompletion
+  5726→  - If any step has unresolved errors or status='failed' (which only happens via executeStep catch at 1447), gate fails → task_failed
+  5727→  - If all steps "completed" but toolCalls.length === 0 → line 562-587 emits task_failed with "Agent executed 0 tool calls"
+  5728→  - User sees the gate failure message, NOT the original inference error
+  5729→
+  5730→PATH C — Inference error thrown inside executeStep (e.g. tool.execute throws — but tool-registry.ts:239-245 wraps throws → {success:false}):
+  5731→  - line 1447 catch → step.status='failed', emit step_failed (NOT task_failed)
+  5732→  - runTask loop continues to next step (line 547 task.currentStepIndex++)
+  5733→  - Phase 9 completion gate at end → task_failed
+  5734→
+  5735→VERDICT:
+  5736→- Load model failure (PATH A): task_failed fires with raw err.message — user sees the cause.
+  5737→- ReAct/Planner inference errors (PATH B): task may NOT fail at all (react-loop returns 'continue' → step completes). User sees "Task completed" with possibly empty/wrong content. OR if no tool calls execute, user sees "Agent executed 0 tool calls" — misleading.
+  5738→- Step-level throws (PATH C): user sees N x step_failed events before task_failed — slow cascade.
+  5739→
+  5740→7.4 — Orb state on inference failure
+  5741→─────────────────────────────────────────────────
+  5742→Agent path (task_failed event):
+  5743→  NexChatPanel.tsx:597: voiceController.setCondition('agent', 'error')
+  5744→  ⚠ NO setTimeout to clear 'agent' condition — unlike 'success' (line 575) and 'cancelled' (line 616) which clear after 1500ms.
+  5745→  STATE_PRIORITY['error'] = 8 (highest).
+  5746→  Orb STUCK on 'error' (red) FOREVER after a task_failed event — until next setCondition('agent', ...) call (e.g. next agent task's planning_started at line 421).
+  5747→
+  5748→Chat path (chat-mode inference error):
+  5749→  NexChatPanel.tsx:961-1007: message status='error', setError(err.message) — local React state.
+  5750→  ⚠ NO voiceController.setCondition('agent', 'error') or similar call.
+  5751→  The 'chat' condition (set by voiceController.setThinking(true) at NexChatPanel.tsx:377) is cleared by voiceController.setThinking(false) when isGenerating goes false (line 1019 + useEffect cleanup at 378).
+  5752→  Orb transitions: thinking → idle. NO 'error' state on chat-mode inference failure.
+  5753→
+  5754→DEAD BRANCH: AppShell.tsx:293-294:
+  5755→  } else if (orbState === 'error') {
+  5756→    voiceController.setCondition('engine', 'error');
+  5757→  }
+  5758→  LocalVoiceEngine.setState is NEVER called with 'error' (only idle/listening/thinking/speaking — see local-voice-engine.ts:293, 327, 333, 393, 453, 461). ConversationState type (nex-voice-conversation.ts:62) does NOT include 'error' — only idle/listening/thinking/speaking/interrupted. So the 'engine' error branch is unreachable dead code. Main process NEVER sends voice-conversation-state with state='error'.
+  5759→
+  5760→7.5 — Recovery engine coverage of inference errors
+  5761→─────────────────────────────────────────────────
+  5762→error-classifier.ts:122-133 — MODEL_INFERENCE_PATTERNS:
+  5763→  /parse failed|json parse error|invalid json/i
+  5764→  /model .* (error|failed|crashed)/i
+  5765→  /inference (failed|error)/i
+  5766→  /context (too large|window exceeded|length exceeded)/i
+  5767→  /context_too_large/i
+  5768→  /token limit (exceeded|reached)/i
+  5769→  /max tokens/i
+  5770→  /llm_error/i
+  5771→  /invalid response format/i
+  5772→  /empty (response|completion)/i
+  5773→
+  5774→classifyError returns class='model_inference' if any pattern matches.
+  5775→
+  5776→recovery-engine.ts:249-272 — model_inference recovery policy:
+  5777→  if (ctx.attempt < 1) → RETRY once (with exponential backoff)
+  5778→  else → SKIP (if more steps) or ABORT (if last step)
+  5779→
+  5780→BUT — handleStepFailure (core.ts:1471-1729) is ONLY invoked from:
+  5781→  - core.ts:1400: `await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model)` — when result.success === false (tool returned failure)
+  5782→  - core.ts:1432: `await handleStepFailure(task, step, verErrorMessage, token, runtime, model)` — when verification failed
+  5783→
+  5784→NOT invoked from:
+  5785→  - executeStep outer catch (line 1447) — for THROWN exceptions (including inference errors that propagate up from runtime.chat → LlamaCppRuntime.chat → inference.chatComplete)
+  5786→
+  5787→So:
+  5788→- Inference error returned as ToolResult.success=false (e.g. tool calls runtime.chat and catches internally) → handleStepFailure called → recovery engine classifies 'model_inference' → RETRY once → SKIP/ABORT
+  5789→- Inference error THROWN (e.g. react-loop's runtime.chat throws) → react-loop catches internally → returns 'continue' → NO recovery engine involvement
+  5790→- Inference error THROWN from executeToolWithPermission (impossible — tool-registry.ts:239-245 wraps throws → success=false)
+  5791→- Inference error THROWN from loadModel during runTask (core.ts:370) → outer catch at 730 → task_failed, no recovery
+  5792→
+  5793→VERDICT: Recovery engine's model_inference policy ONLY fires for tools that internally call inference and return success=false. For inference errors thrown during ReAct LLM call, react-loop swallows them. For loadModel failures, no recovery is attempted — task fails immediately.
+  5794→
+  5795→7.6 — Retry loops and infinite loops
+  5796→─────────────────────────────────────────────────
+  5797→Recovery engine retry caps:
+  5798→- model_inference: maxRetries = 1 (recovery-engine.ts:251 hard-coded `attempt < 1`)
+  5799→- tool_failure: maxRetries = task.maxRetries (line 276 — configurable per task)
+  5800→- transient_network: maxRetries = task.maxRetries (line 225)
+  5801→- timeout: maxRetries = task.maxRetries (line 225)
+  5802→- verification_failed: maxRetries = 1 (line 304 hard-coded)
+  5803→- browser_error: maxRetries = 1 (line 345)
+  5804→- computer_error: maxRetries = 1 (line 385)
+  5805→- unknown: maxRetries = 1 (line 410)
+  5806→- invalid_arguments: NO RETRY — MODIFY_AND_RETRY (one-shot) or ABORT (line 183-207)
+  5807→- permission_denied / security_policy / user_cancellation: NEVER RETRY (line 154, 168)
+  5808→
+  5809→RETRY loop in core.ts:1579-1608 (RETRY case):
+  5810→  step.retryCount = retryCount + 1
+  5811→  step.status = 'pending'
+  5812→  await sleep(decision.backoffMs)
+  5813→  await executeStep(task, step, token, runtime, model)
+  5814→  ⚠ NO check on step.retryCount before recursive executeStep call. If executeStep throws (not handleStepFailure), the throw propagates to executeStep's catch at 1447 → step.status='failed', step_failed emitted. Recovery NOT re-invoked. Loop terminates.
+  5815→
+  5816→  If executeStep succeeds → step.status='completed' → emit recovery_succeeded.
+  5817→  If executeStep fails again (result.success=false) → handleStepFailure called AGAIN with attempt=retryCount+1. Recovery decides again based on attempt count. Eventually exhausts retries → SKIP or ABORT.
+  5818→
+  5819→NO INFINITE LOOP RISK for the recovery engine — all retry paths have a hard cap (1 or task.maxRetries).
+  5820→
+  5821→⚠ POTENTIAL THRASH (already noted as THRASH-1 in P17-AUDIT-STREAMING):
+  5822→  inference.ts:521-531 idempotency check + line 564 unloadModel:
+  5823→  Two concurrent agent tasks with different models cause constant model reloads. Each chatStream/chat call invokes loadModel — if the loaded model differs from requested, unloadModel + fresh load. Multi-second thrash per step. Not an infinite loop but a performance death spiral.
+  5824→
+  5825→⚠ REPEATED FALLBACK (silent infinite-feeling loop):
+  5826→  planner.ts:240-244 swallows inference error → fallbackPlan. If heuristic matches, plan proceeds. If user sends similar request again, planner fails again → fallbackPlan again. User sees "successful" tasks that are actually heuristic-driven, never knowing inference is broken. Repeated silently until user investigates logs.
+  5827→
+  5828→7.7 — Voice engine errors and cross-subsystem contamination
+  5829→─────────────────────────────────────────────────
+  5830→LocalVoiceEngine error emission points (local-voice-engine.ts):
+  5831→  - line 263: startListening — no STT provider → onError('No STT provider registered')
+  5832→  - line 266: startListening — STT init failed → onError(`STT init failed: ...`)
+  5833→  - line 320: handleSpeechEnd — transcription failed → onError(`Transcription failed: ...`)
+  5834→  - line 378: speak — no TTS provider → onError('No TTS provider registered')
+  5835→  - line 381: speak — TTS init failed → onError(`TTS init failed: ...`)
+  5836→  - line 420: speak — TTS synthesis failed → onError(`TTS synthesis failed: ...`)
+  5837→  - line 424: speak — TTS threw → onError(`TTS failed: ...`)
+  5838→  - line 256: feedAudioChunk — error logged via console.warn ONLY (NOT routed to onError)
+  5839→
+  5840→main.ts wiring:
+  5841→  - line 1841-1843: conversation.setCallbacks.onError → mainWindow.webContents.send('voice-conversation-error', { message })
+  5842→  - line 1887-1890: engine.setCallbacks.onError → console.warn + mainWindow.webContents.send('voice-conversation-error', { message })
+  5843→
+  5844→Renderer subscriptions to 'voice-conversation-error':
+  5845→  - VoiceCenterPanel.tsx:108 — subscribes via window.nexAPI.onVoiceConversationError
+  5846→  - ⚠ VoiceCenterPanel.tsx is DEAD CODE (never imported anywhere — verified via grep)
+  5847→
+  5848→AppShell.tsx, NexChatPanel.tsx, voice-controller.ts, voice-service.ts: NO subscription to onVoiceConversationError.
+  5849→
+  5850→VERDICT: Voice engine errors (TTS init fail, transcription fail, piper fail, no STT/TTS provider) are SENT via 'voice-conversation-error' IPC but NEVER RECEIVED in the renderer. The only subscriber is in dead code (VoiceCenterPanel.tsx). SILENT VOICE ERROR GAP.
+  5851→
+  5852→Cross-subsystem contamination:
+  5853→- Voice engine errors do NOT affect the chat/agent path. The chat path runs independently of the voice engine state. A TTS failure does not block brainRoute, aiChatStream, or agent tasks.
+  5854→- A STT failure (line 320) means the transcript is not emitted via onFinalTranscript → conversation.feedTranscript is not called → no voice-conversation-user IPC → no nex:voice-transcript event → NexChatPanel doesn't get the transcript. So the user's voice input is SILENTLY DROPPED. The Orb transitions thinking → listening (via handleSpeechEnd finally block at line 321-335) with no transcript arriving.
+  5855→
+  5856→7.8 — Timeout errors vs inference errors distinguishability
+  5857→─────────────────────────────────────────────────
+  5858→Agent task-level timeout: TASK_TIMEOUT_MS = 300_000 (5 min) at core.ts:307
+  5859→  - line 309-315: setTimeout fires → cancelTask(taskId, `Global timeout (${TASK_TIMEOUT_MS}ms)`)
+  5860→  - cancelTask → token.cancel('Global timeout') → task.cancelled = true
+  5861→  - Next token.throwIfCancelled() throws err with code='AGENT_CANCELLED'
+  5862→  - Caught by outer catch at 730 → emit task_cancelled (if not timeoutFired) OR task_failed (if timeoutFired)
+  5863→  - error-classifier.ts:219: AGENT_CANCELLED code → class='user_cancellation' → neverRetry=true
+  5864→  - So task-level timeout is classified as user_cancellation, NOT timeout.
+  5865→
+  5866→Step-level timeout (from tool execution):
+  5867→  - If tool returns error message matching /timeout|timed out/ (error-classifier.ts:77-82 TIMEOUT_PATTERNS) → class='timeout' → RETRY with backoff (longer base)
+  5868→  - If tool returns 'Operation took too long' or 'deadline exceeded' → matches TIMEOUT_PATTERNS → 'timeout' class
+  5869→  - If tool returns 'inference failed' or 'context too large' → matches MODEL_INFERENCE_PATTERNS → 'model_inference' class
+  5870→  - The classifier checks patterns in priority order (lines 218-408): user_cancellation > security > permission > browser_error > computer_error > invalid_arguments > verification_failed > file_path > model_inference > timeout > transient_network > tool_failure > unknown
+  5871→
+  5872→Distinguishability at classifier:
+  5873→  - 'timeout' class: error message matches /\btimeout\b|\btimed out\b|exceeded.*time|deadline exceeded|operation took too long/i
+  5874→  - 'model_inference' class: error message matches /inference (failed|error)|context (too large|window exceeded)|max tokens|llm_error|empty (response|completion)/i
+  5875→  - These are MUTUALLY EXCLUSIVE patterns (no overlap). An error matching both would hit model_inference first (line 348 vs line 362 in classifyError — model_inference is checked BEFORE timeout).
+  5876→
+  5877→Distinguishability at recovery engine:
+  5878→  - 'timeout' → RETRY with exponentialBackoff (base = 800ms for timeout, vs 400ms for others) up to maxRetries
+  5879→  - 'model_inference' → RETRY ONCE (attempt < 1) then SKIP/ABORT
+  5880→  - Different recovery policies ✓
+  5881→
+  5882→Distinguishability at abort detection:
+  5883→  - main.ts:913: isAbort = /abort/i.test(err.message) || err.name === 'AbortError' || err.code === 20
+  5884→  - Renderer NexChatPanel.tsx:969: /abort|cancelled|canceled/i → abort branch
+  5885→  - abort is distinguished from inference error at IPC layer ✓
+  5886→
+  5887→7.9 — Recovery engine: inference errors vs tool errors (summary)
+  5888→─────────────────────────────────────────────────
+  5889→| Error class       | Retry cap            | Final action                |
+  5890→|-------------------|----------------------|-----------------------------|
+  5891→| model_inference   | 1 retry (hard-coded) | SKIP if more steps, ABORT otherwise |
+  5892→| tool_failure      | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+  5893→| transient_network | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+  5894→| timeout           | task.maxRetries      | REPLAN if more steps, ABORT otherwise |
+  5895→| verification_failed| 1 retry              | REPLAN if more steps, ABORT otherwise |
+  5896→| browser_error     | 1 retry              | REPLAN if more steps, ABORT otherwise |
+  5897→| computer_error    | 1 retry              | REPLAN if more steps, ABORT otherwise |
+  5898→| unknown           | 1 retry              | ABORT                       |
+  5899→| invalid_arguments | 0 (MODIFY_AND_RETRY) | ABORT                       |
+  5900→| permission_denied | 0 (never)            | SKIP if more steps, ABORT otherwise |
+  5901→| security_policy   | 0 (never)            | SKIP if more steps, ABORT otherwise |
+  5902→| user_cancellation | 0 (never)            | ABORT                       |
+  5903→
+  5904→Inference errors get FEWER retries (1 hard-coded) than tool failures (task.maxRetries which defaults to higher). This makes sense — inference errors are less likely to be transient.
+  5905→
+  5906→⚠ The recovery engine is ONLY invoked via handleStepFailure (core.ts:1471). handleStepFailure is called from:
+  5907→  - core.ts:1400 (result.success === false)
+  5908→  - core.ts:1432 (verification failed)
+  5909→NOT called from executeStep catch (line 1447). So THROWN exceptions (including inference errors that escape react-loop's catch) BYPASS recovery entirely. The Phase 7 recovery engine is half-wired: it handles returned errors but not thrown ones.
+  5910→
+  5911→═══════════════════════════════════════════════════════════════════════════════
+  5912→ITEM 8 — VOICE → RUNTIME → RESPONSE
+  5913→═══════════════════════════════════════════════════════════════════════════════
+  5914→
+  5915→8.1 — InteractionLoopManager status: legacy or dead?
+  5916→─────────────────────────────────────────────────
+  5917→interaction-loop.ts:124-369 — class InteractionLoopManager
+  5918→  Singleton: getInteractionLoopManager() (line 383)
+  5919→  Methods: processText, processVoice, speakText, stop, setPersonality, getLastLanguage, getStatus, reset
+  5920→
+  5921→Wiring in main.ts (lines 2707-2769):
+  5922→  - line 2708: `const { getInteractionLoopManager, verifyInteractionSecurity } = await import('./ai/interaction-loop');`
+  5923→  - line 2710: `const interactionLoop = getInteractionLoopManager();` (loaded but `interactionLoop` variable never used after — only getInteractionLoopManager() called per-handler)
+  5924→  - line 2713: ipcMain.handle('interaction-process-text', ...)
+  5925→  - line 2723: ipcMain.handle('interaction-process-voice', ...)
+  5926→  - line 2733: ipcMain.handle('interaction-speak', ...)
+  5927→  - line 2743: ipcMain.handle('interaction-stop', ...)
+  5928→  - line 2753: ipcMain.handle('interaction-set-personality', ...)
+  5929→  - line 2763: ipcMain.handle('interaction-status', ...)
+  5930→
+  5931→preload.ts:378-383 — all 6 IPC methods exposed on window.nexAPI.
+  5932→
+  5933→Renderer callers (verified via grep):
+  5934→  - BasicInteractionPanel.tsx:32, 56, 76, 86 — uses interactionStatus, interactionProcessText, interactionSpeak, interactionStop
+  5935→  - BasicInteractionPanel.tsx is imported at AppShell.tsx:43 (`const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));`)
+  5936→  - AppShell.tsx:352: `case 'interact': return <Suspense><BasicInteractionPanel /></Suspense>;`
+  5937→
+  5938→VERDICT: InteractionLoopManager is LEGACY — actively wired via 6 IPC handlers + the BasicInteractionPanel debug panel (AppShell view='interact'). NOT DEAD CODE. Used for debug MVP testing of text/voice interaction without going through the full brain router.
+  5939→
+  5940→⚠ interaction-process-voice (main.ts:2723) is registered and exposed in preload (line 379) but has NO renderer caller. Dead IPC surface within the legacy panel.
+  5941→
+  5942→8.2 — Duplicate voice paths: NexVoiceConversation vs InteractionLoopManager
+  5943→─────────────────────────────────────────────────
+  5944→PATH A — NexVoiceConversation (the production voice path):
+  5945→  VoiceManager.startConversation → conv.start + engine.startListening (voice-manager.ts:417-458)
+  5946→  → mic capture → onaudioprocess (voice-service.ts:174) → voiceFeedAudioChunk → main → engine.feedAudioChunk → whisper-provider.feedAudioChunk
+  5947→  → VAD detects speech end → handleSpeechEnd (local-voice-engine.ts:302) → sttProvider.stopStream → transcribeFile → onFinalTranscript
+  5948→  → main.ts:1855-1860: conversation.feedTranscript(text) (nex-voice-conversation.ts:276)
+  5949→  → parseVoiceCommand / wake word / handleUserUtterance (line 369-404)
+  5950→  → onUserUtterance callback → main.ts:1820-1826: voice-conversation-user IPC
+  5951→  → AppShell.tsx:313-318: nex:voice-transcript DOM event with source='voice'
+  5952→  → NexChatPanel.tsx:322-347: handleSend → brainRoute → agent/chat
+  5953→  → task_completed event → NexChatPanel.tsx:558-586 → speakResponseIfVoice(spokenText)
+  5954→  → voiceConversationSpeak IPC (line 370) → main.ts:1613-1620 → NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556)
+  5955→  → engine.speak (with requestId) → onTTSAudioReady → main.ts:1873-1885 voice-tts-audio IPC
+  5956→  → App.tsx:92-177 Audio element → audio.onended → voiceTtsEnded IPC (line 138)
+  5957→  → main.ts:1690-1697 → notifyTtsPlaybackEnded → waitForTtsPlayback resolves
+  5958→  → enterListening (nex-voice-conversation.ts:550) → engine.startListening → setState('listening')
+  5959→  → main.ts:1809 voice-conversation-state IPC → AppShell.tsx:286 setCondition('engine','listening')
+  5960→  → Orb transitions to 'listening' AFTER audio playback ends (BUG-12 fixed)
+  5961→
+  5962→PATH B — InteractionLoopManager (the legacy debug path):
+  5963→  BasicInteractionPanel → interactionProcessText({ text, speakResponse: false }) (BasicInteractionPanel.tsx:56)
+  5964→  → main.ts:2713-2720 → InteractionLoopManager.processText (interaction-loop.ts:136-248)
+  5965→  → detectLanguage → buildSystemPrompt → localChatComplete (local-engine.ts)
+  5966→  → result.response returned to BasicInteractionPanel
+  5967→  → user clicks "Speak" → interactionSpeak(lastResponse.response) (BasicInteractionPanel.tsx:76)
+  5968→  → main.ts:2733-2740 → InteractionLoopManager.speakText (interaction-loop.ts:275-285)
+  5969→  → engine.speak(text) — NO requestId passed → engine auto-increments _currentTtsRequestId
+  5970→  → onTTSAudioReady fires → main.ts:1873-1885 voice-tts-audio IPC → App.tsx Audio element
+  5971→  → audio.onended → voiceTtsEnded IPC → main.ts:1690-1697 → NexVoiceConversation.notifyTtsPlaybackEnded
+  5972→  → BUT no speakResponse is awaiting waitForTtsPlayback (because speakText doesn't call speakResponse)
+  5973→  → notifyTtsPlaybackEnded: ttsPlaybackRequestId !== requestId → ignored (stale signal — logged at nex-voice-conversation.ts:614)
+  5974→  → engine stays in 'speaking' state forever (speak() doesn't transition out per BUG-12 fix)
+  5975→  → no enterListening call → STT not restarted → Orb stuck on 'speaking' (green) until user manually triggers something else
+  5976→
+  5977→VERDICT: Path A and Path B are PARALLEL but do not interfere with each other in normal usage (different UIs). Path A is the production path. Path B is for the debug 'interact' panel.
+  5978→
+  5979→⚠ PATH B STATE DESYNC: InteractionLoopManager.speakText does NOT go through NexVoiceConversation.speakResponse, so the BUG-12 fix (waitForTtsPlayback) doesn't apply. After Phase 16's engine.speak rewrite (no auto-transition out of 'speaking'), Path B leaves the engine STUCK in 'speaking' state. The Orb stays green ('speaking') forever after using BasicInteractionPanel's Speak button.
+  5980→
+  5981→8.3 — Voice → Brain → Tool → TTS full chain (with Phase 16 fixes)
+  5982→─────────────────────────────────────────────────
+  5983→Trace verified end-to-end (see PATH A above):
+  5984→  1. mic → voice-service.ts:174 onaudioprocess → voiceFeedAudioChunk → main → engine.feedAudioChunk → whisper-provider.feedAudioChunk
+  5985→  2. voice-service.ts:227 → voiceFeedAudioLevel → main → engine.feedAudioLevel → vad.feed(level)
+  5986→  3. VAD silence event → local-voice-engine.ts:197-204 → handleSpeechEnd
+  5987→  4. handleSpeechEnd (line 302): setState('thinking') → sttProvider.stopStream → transcribe → onFinalTranscript
+  5988→  5. main.ts:1855-1860 → conversation.feedTranscript
+  5989→  6. handleUserUtterance → setState('thinking') → onUserUtterance callback → main.ts:1820-1826 → voice-conversation-user IPC
+  5990→  7. AppShell.tsx:313-318 → nex:voice-transcript event (source='voice')
+  5991→  8. NexChatPanel.tsx:322-347 → setInput + dispatch Enter → handleSend (line 697)
+  5992→  9. brainRoute → route='agent' → createTask + runTask
+  5993→  10. runTask → planning_started event → step_started → tool_call_started → tool_call_completed → step_completed
+  5994→  11. task_completed event → NexChatPanel.tsx:558-586 → speakResponseIfVoice(spokenText)
+  5995→  12. voiceConversationSpeak IPC → NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556)
+  5996→  13. setState('speaking') → engine.speak (with requestId) → onTTSAudioReady → voice-tts-audio IPC
+  5997→  14. App.tsx:92-177 → new Audio(fileUrl).play() → audio.onended → voiceTtsEnded IPC
+  5998→  15. notifyTtsPlaybackEnded → waitForTtsPlayback resolves → GUARD 3 check
+  5999→  16. enterListening → setState('listening') → engine.startListening
+  6000→  17. voice-conversation-state IPC → AppShell → setCondition('engine','listening') → Orb 'listening'
+  6001→
+  6002→ALL 17 STEPS VERIFIED WORKING with Phase 16 fixes (BUG-12 + BUG-26). No silent swallows.
+  6003→
+  6004→⚠ BUG-21 STILL PRESENT (re-confirmed): voice-service.ts:269-278 barge-in path:
+  6005→  if (this._ttsActive && this._bargeInEnabled) {
+  6006→    console.log('[VOICE] Barge-in: user speaking during TTS — stopping TTS');
+  6007→    this.stopSpeaking();  // renderer-only state cleanup, NO IPC to main
+  6008→    if (this._mode === 'continuous' && !this._sttActive) {
+  6009→      this.startSTT();  // renderer-only browser STT no-op in Electron
+  6010→      this.setCondition('mic', 'listening');
+  6011→      this._shouldRestartSTT = true;
+  6012→    }
+  6013→  }
+  6014→  Does NOT call voiceConversationStopSpeaking IPC, voiceConversationAbort IPC, or notify main process.
+  6015→  Main process unaware of barge-in. Engine keeps synthesizing. App.tsx <audio> keeps playing.
+  6016→  User's mic keeps picking up TTS audio. STATE DESYNC.
+  6017→
+  6018→8.4 — Double-processing risk
+  6019→─────────────────────────────────────────────────
+  6020→For double-processing to occur, both paths must fire on the same transcript. Verified:
+  6021→  - engine.onFinalTranscript is wired ONLY to conversation.feedTranscript (main.ts:1855-1860)
+  6022→  - There is NO wiring from engine.onFinalTranscript to InteractionLoopManager.processVoice
+  6023→  - InteractionLoopManager.processVoice is invoked ONLY via the interaction-process-voice IPC (main.ts:2723), which has NO renderer caller
+  6024→
+  6025→VERDICT: NO double-processing risk in current wiring.
+  6026→
+  6027→═══════════════════════════════════════════════════════════════════════════════
+  6028→ITEM 9 — VOICE STATE → ORB STATE / AUDIO LEVEL
+  6029→═══════════════════════════════════════════════════════════════════════════════
+  6030→
+  6031→9.1 — Three+ independent state drivers writing to voiceController
+  6032→─────────────────────────────────────────────────
+  6033→The VoiceService._stateConditions map (voice-service.ts:73) is the central state registry. Six condition keys write to it:
+  6034→
+  6035→1. 'mic' (renderer VoiceService):
+  6036→   - voice-service.ts:323: setCondition('mic', 'error') on enableMicrophone failure
+  6037→   - voice-service.ts:328: setCondition('mic', 'listening') on startListening
+  6038→   - voice-service.ts:389: setCondition('mic', 'listening') after TTS fake completion in continuous mode
+  6039→   - voice-service.ts:493: setCondition('mic', 'listening') in startSTT browser fallback
+  6040→   - voice-service.ts:275: setCondition('mic', 'listening') in barge-in code (BUG-21)
+  6041→   - Cleared by: clearCondition('mic') in stopListening (line 335)
+  6042→
+  6043→2. 'tts' (renderer VoiceService.speak fake completion):
+  6044→   - voice-service.ts:371: setCondition('tts', 'speaking') in speak()
+  6045→   - voice-service.ts:384: clearCondition('tts') after setTimeout (speakDuration ms)
+  6046→   ⚠ This setTimeout is a FAKE completion — main-side actual TTS lifecycle is independent. Desync source.
+  6047→
+  6048→3. 'chat' (renderer VoiceController.setThinking):
+  6049→   - voice-controller.ts:141: setCondition('chat', 'thinking') when isGenerating
+  6050→   - voice-controller.ts:142: clearCondition('chat') when not generating
+  6051→   - Invoked by NexChatPanel.tsx:377-378 useEffect on isGenerating
+  6052→
+  6053→4. 'agent' (renderer NexChatPanel agent event listener):
+  6054→   - NexChatPanel.tsx:421: setCondition('agent', 'thinking') on planning_started
+  6055→   - NexChatPanel.tsx:427, 436, 512: setCondition('agent', 'working') on plan_created/step_started/tool_call
+  6056→   - NexChatPanel.tsx:493: setCondition('agent', 'thinking') on recovery_started
+  6057→   - NexChatPanel.tsx:574: setCondition('agent', 'success') + setTimeout(1500) clearCondition('agent') on task_completed
+  6058→   - NexChatPanel.tsx:597: setCondition('agent', 'error') on task_failed — ⚠ NO clearCondition!
+  6059→   - NexChatPanel.tsx:615: setCondition('agent', 'cancelled') + setTimeout(1500) clearCondition('agent') on task_cancelled
+  6060→
+  6061→5. 'queue' (renderer AppShell task-queue-event listener):
+  6062→   - AppShell.tsx:224: setCondition('queue', 'working') on task_started/task_progress
+  6063→   - AppShell.tsx:226: setCondition('queue', 'success') + setTimeout(1500) clearCondition('queue') on task_completed
+  6064→   - AppShell.tsx:230: setCondition('queue', 'error') + setTimeout(1500) clearCondition('queue') on task_failed/task_recovered
+  6065→   - AppShell.tsx:234: setCondition('queue', 'cancelled') + setTimeout(1500) clearCondition('queue') on task_cancelled
+  6066→
+  6067→6. 'engine' (renderer AppShell voice-conversation-state listener):
+  6068→   - AppShell.tsx:286: setCondition('engine', 'listening') on state='listening'
+  6069→   - AppShell.tsx:288: setCondition('engine', 'thinking') on state='thinking'
+  6070→   - AppShell.tsx:290: setCondition('engine', 'speaking') on state='speaking'
+  6071→   - AppShell.tsx:292: setCondition('engine', 'working') on state='working'/'active'
+  6072→   - AppShell.tsx:294: setCondition('engine', 'error') on state='error' — ⚠ DEAD BRANCH (main never sends state='error')
+  6073→   - AppShell.tsx:297: clearCondition('engine') on state='idle'/'ready'/'success'/'cancelled'/'initializing'
+  6074→
+  6075→All 6 condition keys are merged via recomputeState (voice-service.ts:439-450) — picks highest STATE_PRIORITY.
+  6076→
+  6077→CONFLICTS:
+  6078→- 'agent' priority 5 (working) vs 'engine' priority 6 (speaking) — if both active, 'speaking' wins
+  6079→- 'mic' priority 3 (listening) vs 'engine' priority 6 (speaking) — 'speaking' wins (correct: don't show listening during TTS)
+  6080→- 'agent' priority 8 (error) — highest, sticks forever after task_failed (CLEANUP GAP)
+  6081→- 'queue' brief 1.5s flashes may be overridden by 'agent' or 'engine' higher priorities
+  6082→
+  6083→9.2 — BUG-12 fix status: Orb 'listening' during TTS playback
+  6084→─────────────────────────────────────────────────
+  6085→Phase 16 fix (commit 8e789f4) rewrote engine.speak (local-voice-engine.ts:375-444):
+  6086→  - NO setState('listening')/'idle' after synthesis completes (line 429-443 comment)
+  6087→  - NO startListening() call after synthesis
+  6088→  - speak() returns audioReady boolean (true if onTTSAudioReady fired)
+  6089→
+  6090→NexVoiceConversation.speakResponse (nex-voice-conversation.ts:483-556) now:
+  6091→  - line 537: await waitForTtsPlayback(requestId) — blocks until renderer's voice-tts-ended IPC arrives
+
+[showing lines 5592-6091 of 6470; use offset=6092 with limit to continue reading]

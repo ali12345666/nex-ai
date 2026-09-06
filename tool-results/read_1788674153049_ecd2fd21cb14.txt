@@ -1,0 +1,371 @@
+  6100→  VoiceService.speak() (called via voiceController.speak() — which is NOT called by NexChatPanel but IS the API) sets 'tts' → 'speaking' and uses setTimeout(speakDuration) to clear 'tts' and call startSTT() + setCondition('mic','listening'). This runs IN PARALLEL with main's actual TTS lifecycle. If voiceController.speak() is called from anywhere (currently no renderer caller — verified), the fake completion's startSTT() would attempt browser STT (no-op in Electron) and set 'mic' to 'listening' — while main is still in 'speaking'. STATE_PRIORITY: 'speaking' (6 from 'engine') > 'listening' (3 from 'mic'), so Orb still shows 'speaking'. Masked by priority. SEVERITY: LOW.
+  6101→
+  6102→9.3 — Orb 'idle' during agent execution
+  6103→─────────────────────────────────────────────────
+  6104→During an agent task:
+  6105→- 'agent' condition is set to 'thinking' (priority 4) or 'working' (priority 5)
+  6106→- 'engine' condition may be 'idle' (cleared) or 'listening' (if mic is active) — priority 3
+  6107→- 'mic' condition is 'listening' (priority 3) if mic is active in continuous mode
+  6108→- 'chat' condition is cleared (setThinking(false) because isGenerating=false during agent — wait, isGenerating is TRUE during agent task)
+  6109→
+  6110→Actually NexChatPanel.tsx:377-378 useEffect: voiceController.setThinking(isGenerating) — isGenerating is true while agent task is in progress (set true at handleSend line 869, set false at task_completed/failed/cancelled handlers). So 'chat' condition is 'thinking' (priority 4) during agent execution.
+  6111→
+  6112→State resolution during agent execution:
+  6113→- 'agent' = 'working' (5)
+  6114→- 'chat' = 'thinking' (4)
+  6115→- 'mic' = 'listening' (3)
+  6116→- 'engine' = ? (depends on main state — likely 'thinking' or cleared)
+  6117→- Resolved: 'working' (5)
+  6118→
+  6119→VERDICT: Orb shows 'working' during agent execution. NOT 'idle'. ✓ WORKING.
+  6120→
+  6121→9.4 — safeOrbTransition: BUG-37 re-confirmation at 8e5ff6d
+  6122→─────────────────────────────────────────────────
+  6123→orb-state.ts:42-56 — VALID_TRANSITIONS map defines 13 states and allowed transitions.
+  6124→orb-state.ts:62-66 — isValidOrbTransition(from, to) returns boolean.
+  6125→orb-state.ts:72-76 — safeOrbTransition(current, to) returns `to` if valid, else `current` + console.warn.
+  6126→
+  6127→Grep results (verified at 8e5ff6d):
+  6128→  /safeOrbTransition|isValidOrbTransition/ → ONLY 2 matches, both in orb-state.ts (the definitions).
+  6129→
+  6130→NO call site anywhere in:
+  6131→  - voice-controller.ts:171-176 (handleStateChange) — `this.orbStateRef.current = orbState;` directly, no validation
+  6132→  - voice-service.ts:439-450 (recomputeState) — `this._state = newState;` directly, no validation
+  6133→  - AppShell.tsx:147-149 (subscribeOrbState) — `setOrbState(state);` directly, no validation
+  6134→  - NexOrb.tsx — consumes orbState prop, no validation
+  6135→  - NexChatPanel.tsx — setCondition calls, no validation
+  6136→
+  6137→VERDICT: BUG-37 STILL PRESENT at 8e5ff6d. The state machine in orb-state.ts is documentation-only — not enforced. Invalid transitions (e.g. error → listening, speaking → thinking, success → working) silently happen. The console.warn at orb-state.ts:74 never fires because safeOrbTransition is never called.
+  6138→
+  6139→Examples of invalid transitions that can happen today:
+  6140→- task_failed → 'agent' = 'error' (priority 8, stuck). Then user types a chat message → 'chat' = 'thinking' (priority 4). Resolved: 'error' (8 > 4) — Orb still 'error' while user is just chatting. INVALID: error → thinking should not happen.
+  6141→- After 'speaking' (priority 6 from 'engine'), if main-side conversation emits 'working' (priority 5 from 'engine'), the resolved state goes speaking → working. INVALID per VALID_TRANSITIONS: speaking → working is NOT allowed (only speaking → ready/listening/idle/error/cancelled).
+  6142→
+  6143→9.5 — Audio level (rms) mute during TTS playback
+  6144→─────────────────────────────────────────────────
+  6145→Renderer VoiceService.onaudioprocess (voice-service.ts:174-232):
+  6146→  - Runs whenever AudioContext is active (mic enabled)
+  6147→  - Computes rms (line 219)
+  6148→  - Calls callbacks.onAudioLevel(level) (line 225) — drives Orb animation
+  6149→  - Calls window.nexAPI.voiceFeedAudioLevel(level) (line 227) — sends to main UNCONDITIONALLY (no mute during TTS)
+  6150→  - Calls processVAD(level) (line 231) — runs VAD logic
+  6151→
+  6152→Main LocalVoiceEngine.feedAudioLevel (local-voice-engine.ts:240-243):
+  6153→  - Calls callbacks.onAudioLevel(level) (for any subscribers)
+  6154→  - Calls vad.feed(level) — UNCONDITIONALLY (no sttActive check)
+  6155→
+  6156→Main VAD event handler (local-voice-engine.ts:197-204):
+  6157→  - On 'silence' event + sttActive + !isTranscribing → handleSpeechEnd
+  6158→  - During TTS: sttActive = false (because speak() calls stopListening at line 384)
+  6159→  - So handleSpeechEnd's guard at line 303 returns early — no transcription during TTS
+  6160→
+  6161→Renderer VoiceService.processVAD (voice-service.ts:256-293):
+  6162→  - During TTS: _ttsActive = true
+  6163→  - If level > vadSilenceThreshold (line 258) AND state was 'silence' (line 262) → barge-in code at line 269-278
+  6164→  - Barge-in: stopSpeaking() (renderer-only) + startSTT() (no-op) + setCondition('mic','listening') + _shouldRestartSTT = true
+  6165→
+  6166→VERDICT: NO explicit audio level muting during TTS. The main-side VAD is safely gated by sttActive=false (no transcription during TTS). The RENDERER-side VAD is NOT safely gated — it triggers barge-in (BUG-21) on any audio above threshold during TTS, which is exactly what happens when TTS audio bleeds into the mic.
+  6167→
+  6168→9.6 — Voice-driven agent task state transition chain
+  6169→─────────────────────────────────────────────────
+  6170→Expected sequence (verified by tracing each step):
+  6171→
+  6172→1. Idle (no voice activity)
+  6173→   - All conditions cleared
+  6174→   - Orb: 'idle'
+  6175→
+  6176→2. User starts speaking
+  6177→   - Mic captures → voiceFeedAudioLevel → main VAD detects speech
+  6178→   - LocalVoiceEngine state still 'listening' (VAD detects speech inside 'listening' state)
+  6179→   - Orb: 'listening' (from 'mic' condition, priority 3)
+  6180→
+  6181→3. User stops speaking (VAD silence event)
+  6182→   - handleSpeechEnd → setState('thinking') (local-voice-engine.ts:305)
+  6183→   - onStateChange → main.ts:1870 voice-conversation-state source='engine' state='thinking'
+  6184→   - AppShell.tsx:288 setCondition('engine','thinking')
+  6185→   - Orb: 'thinking' (priority 4 from 'engine')
+  6186→
+  6187→4. Transcript produced → onFinalTranscript → conversation.feedTranscript → handleUserUtterance
+  6188→   - setState('thinking') (nex-voice-conversation.ts:390)
+  6189→   - onStateChange → main.ts:1809 voice-conversation-state (color='purple')
+  6190→   - Orb: 'thinking' (priority 4 — still)
+  6191→
+  6192→5. onUserUtterance → voice-conversation-user IPC → AppShell → nex:voice-transcript → NexChatPanel
+  6193→   - handleSend → brainRoute → route='agent' → createTask + runTask
+  6194→   - planning_started event → NexChatPanel.tsx:421 setCondition('agent','thinking')
+  6195→   - Orb: 'thinking' (priority 4 — same, but now from 'agent' condition)
+  6196→
+  6197→6. Plan created → planning_completed → step_started → tool_call_started
+  6198→   - NexChatPanel.tsx:427/436 setCondition('agent','working')
+  6199→   - Orb: 'working' (priority 5)
+  6200→
+  6201→7. Tool execution → tool_call_completed → step_completed → ... (more steps) → task_completed
+  6202→   - NexChatPanel.tsx:574 setCondition('agent','success') + setTimeout(1500) clearCondition('agent')
+  6203→   - Orb: 'success' (priority 2) for 1.5s, then 'agent' clears
+  6204→   - ⚠ But during this 1.5s, speakResponseIfVoice is called (line 585) which triggers voiceConversationSpeak → speakResponse → setState('speaking') → main.ts:1809 voice-conversation-state state='speaking'
+  6205→   - AppShell.tsx:290 setCondition('engine','speaking') — fires immediately (within milliseconds)
+  6206→   - Orb: 'speaking' (priority 6 from 'engine' overrides 'success' priority 2)
+  6207→   - ⚠ The 'success' flash is BARELY VISIBLE — 'speaking' takes over almost immediately.
+  6208→
+  6209→8. TTS playing → audio.onended → voice-tts-ended IPC → notifyTtsPlaybackEnded → waitForTtsPlayback resolves → enterListening
+  6210→   - setState('listening') (nex-voice-conversation.ts enterListening → line 344)
+  6211→   - onStateChange → main.ts:1809 voice-conversation-state state='listening'
+  6212→   - AppShell.tsx:286 setCondition('engine','listening')
+  6213→   - Orb: 'listening' (priority 3)
+  6214→   - 'agent' condition was cleared by the 1.5s setTimeout (step 7)
+  6215→   - 'mic' condition may also be 'listening' (priority 3) — same state
+  6216→
+  6217→9. Back to step 1 (waiting for next utterance)
+  6218→
+  6219→VERDICT: The chain transitions correctly: idle → listening → thinking → working → (brief success) → speaking → listening. The 'success' flash at step 7 is masked by 'speaking' — likely invisible to the user.
+  6220→
+  6221→⚠ The 'error' state is missing from this chain — if task_failed fires instead of task_completed, the chain becomes: idle → listening → thinking → working → error (stuck). See ITEM 7.4.
+  6222→
+  6223→9.7 — Renderer ↔ main state desync
+  6224→─────────────────────────────────────────────────
+  6225→GAP-7 re-confirmed: voice-conversation-state channel overloaded (main.ts:1809 + 1870)
+  6226→  Both conversation.onStateChange and engine.onStateChange send to the SAME 'voice-conversation-state' IPC channel.
+  6227→  Payloads differ:
+  6228→    conversation: { state, prev, color }
+  6229→    engine: { state, source: 'engine' }
+  6230→  AppShell.tsx:258 listener receives both, processes the same way (ignores source/prev/color).
+  6231→  RACE: if conversation emits 'speaking' (state='speaking', color='green') and then engine emits 'idle' (state='idle', source='engine') shortly after, the renderer's setCondition('engine','speaking') is immediately overridden by clearCondition('engine') → Orb briefly flashes 'speaking' then drops to other-condition priorities.
+  6232→  In practice: NexVoiceConversation.setState is called AFTER engine.setState in the speakResponse flow (line 497 setState('speaking') comes after engine.speak at line 504 — wait, actually setState is called BEFORE engine.speak). Let me re-trace:
+  6233→    nex-voice-conversation.ts:497 setState('speaking') → conversation.onStateChange → main.ts:1809 IPC
+  6234→    nex-voice-conversation.ts:504 engine.speak(text) → engine.setState('speaking') → engine.onStateChange → main.ts:1870 IPC
+  6235→  Both fire 'speaking' → setCondition('engine','speaking') called twice (idempotent).
+  6236→  After speakResponse finishes: enterListening → setState('listening') → conversation.onStateChange → main.ts:1809 IPC state='listening'. Engine already transitioned to 'listening' via startListening (line 277 of local-voice-engine.ts). So both fire 'listening' — consistent.
+  6237→  DESYNC SCENARIO: engine emits 'idle' (e.g. from stopSpeaking at local-voice-engine.ts:453 `if (this.state === 'speaking') this.setState('idle')`) while conversation is still in 'speaking' (because speakResponse hasn't reached enterListening yet — still awaiting waitForTtsPlayback). Race window exists.
+  6238→
+  6239→STATE PRIORITY overrides:
+  6240→  If main-side 'engine' is 'idle' (cleared) but renderer-side 'mic' is 'listening' (priority 3), resolved state = 'listening'. The Orb shows 'listening' while main may be idle. OK if mic is actually listening. DESYNC if mic is NOT listening (e.g. permission denied but condition not cleared).
+  6241→
+  6242→DESYNC SCENARIOS:
+  6243→- VoiceService.speak fake-completion setTimeout (line 382-392) fires AFTER main has already transitioned to 'listening' — renderer's clearCondition('tts') is no-op (already cleared by main transitioning). Minor.
+  6244→- Barge-in (BUG-21): renderer sets 'mic' to 'listening' while main is still 'speaking'. STATE_PRIORITY: 'speaking' (6) > 'listening' (3) → Orb still shows 'speaking'. User is trying to interrupt but Orb shows speaking. DESYNC.
+  6245→- task_failed leaves 'agent' = 'error' forever. User starts a new chat (text input). 'chat' = 'thinking' (priority 4). 'agent' = 'error' (priority 8). Resolved: 'error'. Orb shows 'error' (red) while user is just typing. DESYNC.
+  6246→- task_completed clears 'agent' after 1.5s. If TTS starts within 1.5s, 'engine' = 'speaking' (6) overrides 'success' (2). After 1.5s, 'agent' clears, 'engine' still 'speaking' → 'speaking'. After TTS ends, 'engine' = 'listening' → 'listening'. OK.
+  6247→- 'queue' terminal conditions clear after 1.5s. If a new task_started arrives during the 1.5s window, 'queue' is set to 'working' (5). But the stale setTimeout from the previous terminal event still fires and clears 'queue'. STATE DESYNC: Orb briefly drops to lower priority while a new task is running. (GAP-4 re-confirmed — hasActiveQueueWork never called to gate the clear).
+  6248→
+  6249→═══════════════════════════════════════════════════════════════════════════════
+  6250→EXPECTED LOGS PER PATH (grep targets for E2E tests)
+  6251→═══════════════════════════════════════════════════════════════════════════════
+  6252→
+  6253→ITEM 7 — Error handling:
+  6254→  [INFERENCE_ERROR] (main.ts:905) — chat-stream catch
+  6255→    message=...
+  6256→    code=...
+  6257→    name=...
+  6258→    stack=...
+  6259→    abortType=AbortController(external)|llama.cpp internal(code=N)  (if abort)
+  6260→  [NEX AI Local] llama.loadModel() FAILED: (inference.ts:589) — load model catch
+  6261→  [MODEL_PATH_MISSING] chatComplete — model: ... (inference.ts:941)
+  6262→  [MODEL_PATH_MISSING] chatStream — model: ... (inference.ts:1046)
+  6263→  [PLANNER_ERROR] Planner threw: <err.message> (planner.ts:241)
+  6264→  [PLANNER_ERROR] stack: ... (planner.ts:242)
+  6265→  [PLANNER_DIAG] FALLBACK triggered — reason: <reason> (planner.ts:367)
+  6266→  [PLANNER_DIAG] no heuristic pattern matched — returning empty plan (planner.ts:516)
+  6267→  [AGENT] Task <taskId> timed out after <N>ms (core.ts:312)
+  6268→  [BRAIN_ROUTER] Agent task <taskId> failed: <err.message> (main.ts:973 — only if runTask itself rejects, which it never does)
+  6269→  [BRAIN_ROUTER] Error, falling back to chat: <err.message> (main.ts:984)
+  6270→  [CHAT_RESPONSE] source=local-stream error=<err.message> (main.ts:918)
+  6271→  [CHAT_RESPONSE] source=local error=<err.message> (local-engine.ts:220)
+  6272→  Recovery engine (handleStepFailure invoked):
+  6273→    [AGENT] recovery_started emitted → no log prefix, event-based only (subscribed via onAgentEvent)
+  6274→    AgentLogger.warn(`Recovery decision for step N: <action> (<class>) — <reason>`)
+  6275→
+  6276→ITEM 8 — Voice path:
+  6277→  [VOICE_PIPELINE] STT stream started (local-voice-engine.ts:271)
+  6278→  [VOICE_PIPELINE] Transcription: "<text>" (local-voice-engine.ts:312)
+  6279→  [VOICE_PIPELINE] Transcription empty — no speech detected (local-voice-engine.ts:316)
+  6280→  [VOICE_PIPELINE] Transcription failed: <err.message> (local-voice-engine.ts:319)
+  6281→  [VOICE_PIPELINE] Feeding transcript to conversation: "<text>" (main.ts:1857)
+  6282→  [VOICE_TEST] detected="<text>" transcription="<text>" (main.ts:1823-1825)
+  6283→  [VOICE] whisper transcript received: "<text>" (AppShell.tsx:316)
+  6284→  [BRAIN_ROUTER] message="<text>" route=agent|chat reason=...
+  6285→  [VOICE_PIPELINE] TTS speaking (req=N): "<text>" (local-voice-engine.ts:394)
+  6286→  [VOICE_PIPELINE] TTS synthesis completed for req=N but stale (...) — discarding (local-voice-engine.ts:406)
+  6287→  [VOICE_PIPELINE] TTS audio ready (req=N): <path> (local-voice-engine.ts:415)
+  6288→  [VOICE_PIPELINE] Sending TTS audio to renderer (req=N): <path> (main.ts:1882)
+  6289→  [VOICE_PIPELINE] Renderer received TTS audio (req=N): <path> (App.tsx:93)
+  6290→  [VOICE_PIPELINE] TTS audio playback completed (req=N) (App.tsx:128)
+  6291→  [VOICE_PIPELINE] TTS audio playback error (req=N): <err> (App.tsx:147)
+  6292→  [VOICE_PIPELINE] TTS playback ended signal for req=N — releasing wait (nex-voice-conversation.ts:608)
+  6293→  [VOICE_PIPELINE] TTS playback ended signal for req=N but current wait is for req=M — ignoring (stale) (nex-voice-conversation.ts:614)
+  6294→  [VOICE_PIPELINE] TTS playback wait timeout for req=N — releasing (renderer may have crashed) (nex-voice-conversation.ts:589)
+  6295→  [VOICE_PIPELINE] speakResponse: req=N superseded during synthesis — not waiting for playback (nex-voice-conversation.ts:515)
+  6296→  [VOICE_PIPELINE] speakResponse: req=N no audio ready — transitioning to idle (nex-voice-conversation.ts:522)
+  6297→  [VOICE_PIPELINE] speakResponse: req=N cancelled during playback — not entering listening (nex-voice-conversation.ts:544)
+  6298→  [VOICE_PIPELINE] Engine error: <message> (main.ts:1888)
+  6299→  [ORB_TRACE_MAIN] conversation state: <prev> -> <state> (main.ts:1807)
+  6300→  [ORB_TRACE_MAIN] engine state: <state> (main.ts:1868)
+  6301→  [ORB_TRACE_PRELOAD] received state=<state> source=<source> (preload.ts:193)
+  6302→  [ORB_TRACE_RENDERER] incoming state=<state> source=<source> (AppShell.tsx:261)
+  6303→  [ORB_TRACE_RENDERER] mapped orbState=<state> (AppShell.tsx:280)
+  6304→  [ORB_TRACE_CONTROLLER] conditions=engine:<state> resolvedState=<state> (AppShell.tsx:301)
+  6305→  [INTERACTION_STOP] (interaction-loop.ts:295) — caller stack trace
+  6306→  [INTERACTION_LOOP] — no log on interaction-process-text/voice
+  6307→  [VOICE] Barge-in: user speaking during TTS — stopping TTS (voice-service.ts:270) — BUG-21
+  6308→
+  6309→ITEM 9 — Orb state:
+  6310→  [ORB_AUDIO] VoiceService: rms=<n> smoothed=<n> (voice-service.ts:471)
+  6311→  [ORB_AUDIO] VoiceController: level=<n> orbAudioRef=<n> subscribers=<n> (voice-controller.ts:186)
+  6312→  [ORB_STATE] Invalid transition: <from> → <to> — keeping <from> (orb-state.ts:74) — NEVER FIRES (safeOrbTransition never called)
+  6313→  No specific logs for setCondition/clearCondition — silent operations
+  6314→
+  6315→═══════════════════════════════════════════════════════════════════════════════
+  6316→FINDINGS SUMMARY (sorted by severity)
+  6317→═══════════════════════════════════════════════════════════════════════════════
+  6318→
+  6319→CODE-NAME               SEVERITY  TYPE                   LOCATION                                                              DESCRIPTION
+  6320→────────────────────── ───────── ──────────────────── ──────────────────────────────────────────────────────────────────── ─────────────────────────────────────────────────────────────────────
+  6321→INFERENCE-PLAN-SWALLOW  HIGH      BUG/SILENT-SWALLOW     planner.ts:240-244 + fallbackPlan 366-522                             Planner's catch swallows ALL inference errors → fallbackPlan. err.message passed as `reason` but ONLY logged via [PLANNER_DIAG]. NOT surfaced in plan.warnings content (only generic 'Planner failed; using heuristic pattern-matched plan' or 'Planner failed; no heuristic fallback available'). User sees either a heuristic-driven "successful" task or a "0 tool calls" failure — never the root cause (e.g. OOM, model not loaded).
+  6322→INFERENCE-REACT-SWALLOW HIGH      BUG/SILENT-SWALLOW     react-loop.ts:198-207                                                  ReAct loop's catch swallows inference errors → returns 'continue' with err.message in `reason`. Step marked completed. Loop continues to next step (which also fails). User sees "Task completed" with wrong/empty content OR "0 tool calls" failure — never the inference error.
+  6323→STEP-THROW-NO-RECOVERY HIGH      BUG/GAP                core.ts:1447-1468                                                      executeStep outer catch marks step.status='failed' + emits step_failed but does NOT call handleStepFailure. Phase 7 recovery engine is BYPASSED for thrown exceptions. Only invoked for result.success=false (line 1400) or verification failures (line 1432). Inference errors that escape react-loop's catch (it doesn't escape — but if it did) or loadModel errors during a step would silently fail without retry/skip/abort decision.
+  6324→BUG-21-RECONFIRM        HIGH      BUG (re-confirmed)     voice-service.ts:269-278                                               Renderer VoiceService.processVAD barge-in: detects speech during TTS but only calls this.stopSpeaking() (renderer-only state) and this.startSTT() (renderer-only no-op in Electron). Does NOT call voiceConversationStopSpeaking IPC, voiceConversationAbort IPC, or notify main process. Main is unaware. <audio> keeps playing. Mic keeps picking up TTS audio. STATE DESYNC.
+  6325→AUDIO-NO-MUTE-TTS       HIGH      BUG (related to BUG-21) voice-service.ts:174-232 + 240-243                                          No explicit muting of audio level (rms) during TTS playback. Renderer mic capture keeps computing rms and sending to main. Main-side VAD safely gated by sttActive=false (no transcription). BUT renderer-side VoiceService.processVAD triggers barge-in (BUG-21) on any rms > threshold during TTS — exactly when TTS audio bleeds into mic.
+  6326→VOICE-ERROR-IPC-NOLISTENER MED    INSTRUMENTATION GAP    main.ts:1842, 1889 + VoiceCenterPanel.tsx:108                          'voice-conversation-error' IPC sent by main (conversation.onError + engine.onError). Only subscriber is VoiceCenterPanel.tsx which is DEAD CODE (never imported). AppShell, NexChatPanel, voiceController, voiceService: NO subscription. Voice engine errors (TTS init fail, transcription fail, piper fail, no provider) are SILENTLY DROPPED at the renderer.
+  6327→ORB-ERROR-NO-CLEAR      MED       CLEANUP GAP / DESYNC   NexChatPanel.tsx:597                                                   task_failed handler calls voiceController.setCondition('agent', 'error') but NEVER calls clearCondition('agent'). Unlike 'success' (line 575) and 'cancelled' (line 616) which clear after 1500ms. STATE_PRIORITY['error']=8 (highest). Orb STUCK on 'error' forever after a failed agent task — until next agent task starts (planning_started at line 421 sets 'thinking'). DESYNC.
+  6328→BUG-37-RECONFIRM        MED       BUG (re-confirmed)     orb-state.ts:72-76 (defined) vs voice-controller.ts:171-176, voice-service.ts:439-450, AppShell.tsx:147-149 (call sites)  safeOrbTransition is DEFINED but NEVER CALLED at 8e5ff6d. State machine in orb-state.ts is documentation-only. Invalid transitions (e.g. error → listening, speaking → working) silently happen. console.warn at orb-state.ts:74 never fires.
+  6329→GAP-7-RECONFIRM         MED       RACE / STATE DESYNC    main.ts:1809 + 1870 + AppShell.tsx:258                                 voice-conversation-state channel overloaded — both conversation.onStateChange and engine.onStateChange send to the SAME IPC channel. AppShell doesn't differentiate. Engine 'idle' can override conversation 'speaking' (or vice versa) if they emit out of order. Race window.
+  6330→INTERACTION-SPEAK-STATE-DESYNC MED STATE DESYNC        interaction-loop.ts:275-285 + local-voice-engine.ts:375-444           InteractionLoopManager.speakText calls engine.speak(text). After Phase 16 BUG-12 fix, engine.speak no longer transitions state out of 'speaking' or restarts STT. speakText doesn't go through NexVoiceConversation.speakResponse (no waitForTtsPlayback await). Engine STUCK in 'speaking' state forever after BasicInteractionPanel's Speak button. Orb stuck on 'speaking' (green). Legacy debug panel broken by Phase 16 fix.
+  6331→CHAT-ERROR-NO-ORB       LOW       STATE DESYNC           NexChatPanel.tsx:961-1007                                              Chat-mode inference errors mark message status='error' + setError(err.message) but do NOT call voiceController.setCondition('agent','error'). Orb transitions thinking → idle (via setThinking(false)). User sees error in chat bubble but NOT on the Orb. Inconsistent with agent path (which DOES set Orb to 'error' on task_failed).
+  6332→ORB-ERROR-DEAD-BRANCH   LOW       DEAD CODE              AppShell.tsx:293-294 + local-voice-engine.ts (setState calls) + nex-voice-conversation.ts:62 (ConversationState type)  AppShell maps voice-conversation-state state='error' → setCondition('engine','error'). BUT LocalVoiceEngine.setState is NEVER called with 'error' (only idle/listening/thinking/speaking). ConversationState type does NOT include 'error' (only idle/listening/thinking/speaking/interrupted). The 'engine' error branch is unreachable. Main NEVER sends voice-conversation-state with state='error'.
+  6333→INTERACTION-PROCESS-VOICE-DEAD LOW DEAD CODE            main.ts:2723 + preload.ts:379                                          interaction-process-voice IPC handler registered + exposed in preload. NO renderer caller. Dead IPC surface within the legacy interaction panel.
+  6334→VOICE-FAKE-COMPLETION  LOW       STATE DESYNC           voice-service.ts:357-393 (speak + setTimeout)                          VoiceService.speak() has a setTimeout-based fake completion (line 382-392) that runs in parallel with main's actual TTS lifecycle. If voiceController.speak() is called (currently no renderer caller — verified), the fake clearCondition('tts') + startSTT() would fire independently of main's voice-tts-ended. Masked by STATE_PRIORITY ('speaking' from 'engine' wins). Residual desync.
+  6335→GAP-4-RECONFIRM         LOW       GAP (re-confirmed)     orb-bridge.ts:62 + AppShell.tsx:219-239                                hasActiveQueueWork is exported but NEVER imported/called. AppShell.tsx maps task-queue events inline with hardcoded 1500ms clearAfterMs for ALL terminal events. Stale setTimeout from previous terminal event can fire during a new task's 'working' window — briefly clears 'queue' condition → Orb drops to lower priority. Multi-task UI flicker.
+  6336→GAP-9-RECONFIRM         LOW       GAP (re-confirmed)     orb-bridge.ts:48 (clearAfterMs: 2000 for task_recovered) vs AppShell.tsx:231 (1500ms hardcoded)  Inconsistency: main-side orb-bridge says task_recovered should clear after 2000ms, but renderer hardcodes 1500ms. Recovered tasks flash for 1500ms instead of 2000ms.
+  6337→GAP-8-PARTIAL-FIX       LOW       CLEANUP GAP (partial)  NexChatPanel.tsx:615-616 (cancelled — FIXED) vs 597 (error — NOT FIXED)  Phase 16 audit GAP-8 said "agent never cleared after cancel". Line 616 DOES clear after 1500ms for 'cancelled'. BUT line 597 does NOT clear for 'error'. Partial fix — 'cancelled' cleared, 'error' stuck forever.
+  6338→
+  6339→Cross-references to P17-AUDIT-STREAMING findings (re-confirmed here):
+  6340→- BUG-GAP-2 (cancelTask does NOT call abortInference) — re-confirmed at core.ts:1841-1850. Mid-LLM cancel = wasted tokens until natural completion.
+  6341→- BUG-GAP-5 (planner swallows AbortError → fallbackPlan) — re-confirmed at planner.ts:240-244. If only aiChatStreamCancel is called (not agentCancelTask), agent runs heuristic fallback plan instead of cancelling.
+  6342→- CLEANUP-LEAK-1 (handleInterruption setTimeout(50ms) not cleared on abort) — re-confirmed at nex-voice-conversation.ts:663.
+  6343→- CLEANUP-LEAK-2 (captureVoiceConfirmation 10s timeout not cleared on abort) — re-confirmed at nex-voice-conversation.ts:747.
+  6344→- CLEANUP-LEAK-3 (shutdown hang if agent mid-inference) — re-confirmed via BUG-GAP-2 cascade.
+  6345→
+  6346→═══════════════════════════════════════════════════════════════════════════════
+  6347→STAGE SUMMARY
+  6348→═══════════════════════════════════════════════════════════════════════════════
+  6349→
+  6350→PHASE 17 ITEMS 7-8-9 AUDIT — STATUS: 5 HIGH-severity issues, 4 MED, 7 LOW.
+  6351→
+  6352→CRITICAL (HIGH) — 3 NEW silent inference swallow paths + 2 reconfirmed bugs:
+  6353→  1. INFERENCE-PLAN-SWALLOW: planner.ts swallows inference errors → fallbackPlan. User never sees root cause (OOM, model not loaded, VRAM error). Either a heuristic-driven "successful" task or a misleading "0 tool calls" failure.
+  6354→  2. INFERENCE-REACT-SWALLOW: react-loop.ts swallows inference errors → 'continue' decision. Steps silently complete with wrong content. Same user-facing impact as #1.
+  6355→  3. STEP-THROW-NO-RECOVERY: executeStep catch (line 1447) marks step failed but does NOT call handleStepFailure. Phase 7 recovery engine bypassed for thrown exceptions. Only invoked for returned errors (result.success=false) and verification failures.
+  6356→  4. BUG-21-RECONFIRM: Renderer barge-in half-wired. VoiceService.processVAD detects speech during TTS but does NOT call voiceConversationStopSpeaking IPC. Main is unaware. Mic keeps hearing TTS. STATE DESYNC. (Same status as Phase 16 — not fixed by BUG-12/BUG-26 work.)
+  6357→  5. AUDIO-NO-MUTE-TTS: No explicit rms muting during TTS. Renderer VAD triggers barge-in on TTS bleed. Related to BUG-21.
+  6358→
+  6359→MEDIUM — Orb state machine gaps:
+  6360→  6. VOICE-ERROR-IPC-NOLISTENER: voice-conversation-error IPC sent by main but no renderer subscriber (only dead-code VoiceCenterPanel). Voice engine errors silently dropped.
+  6361→  7. ORB-ERROR-NO-CLEAR: 'agent' condition set to 'error' on task_failed but NEVER cleared. Orb stuck on 'error' forever.
+  6362→  8. BUG-37-RECONFIRM: safeOrbTransition defined but never called at 8e5ff6d. State machine not enforced.
+  6363→  9. GAP-7-RECONFIRM: voice-conversation-state channel overloaded. Conversation + engine both write to same channel. Race.
+  6364→  10. INTERACTION-SPEAK-STATE-DESYNC: InteractionLoopManager.speakText leaves engine stuck in 'speaking' after Phase 16 fix. Legacy debug panel broken.
+  6365→
+  6366→LOW — instrumentation / dead code / partial fixes:
+  6367→  11. CHAT-ERROR-NO-ORB: chat-mode inference errors don't trigger Orb 'error' state. Inconsistent with agent path.
+  6368→  12. ORB-ERROR-DEAD-BRANCH: AppShell's 'engine' error branch is unreachable (main never sends state='error').
+  6369→  13. INTERACTION-PROCESS-VOICE-DEAD: dead IPC surface (registered but no caller).
+  6370→  14. VOICE-FAKE-COMPLETION: VoiceService.speak's setTimeout fake completion runs parallel to main's TTS lifecycle. Masked by priority but residual desync.
+  6371→  15. GAP-4-RECONFIRM: hasActiveQueueWork never called. Multi-task Orb flicker.
+  6372→  16. GAP-9-RECONFIRM: task_recovered clearAfterMs mismatch (2000 main vs 1500 renderer).
+  6373→  17. GAP-8-PARTIAL-FIX: 'cancelled' condition cleared after 1500ms (FIXED). 'error' condition never cleared (NOT FIXED).
+  6374→
+  6375→RECOMMENDED FIXES (NOT implemented — READ-ONLY audit):
+  6376→
+  6377→For INFERENCE-PLAN-SWALLOW + INFERENCE-REACT-SWALLOW + STEP-THROW-NO-RECOVERY:
+  6378→  1. In planner.ts:240-244, distinguish AbortError (re-throw per BUG-GAP-5 from P17-AUDIT-STREAMING) AND surface non-abort inference errors in plan.warnings (e.g. `warnings: ['Inference failed during planning: ' + err.message]`). Surface plan.warnings in the renderer's planning_completed handler (NexChatPanel.tsx:424-429 currently displays only "Plan created. Executing steps...").
+  6379→  2. In react-loop.ts:198-207, on inference error (non-abort), return action='abort' with the err.message in reason — let the runTask outer catch fire task_failed with the actual root cause. OR: re-throw and let executeStep catch propagate to outer catch.
+  6380→  3. In core.ts:1447-1468, call handleStepFailure for non-AGENT_CANCELLED thrown exceptions. This invokes Phase 7 recovery engine for inference/tool throws. Recovery will classify via err.message (e.g. 'inference failed' → model_inference class → retry once).
+  6381→
+  6382→For ORB-ERROR-NO-CLEAR:
+  6383→  4. In NexChatPanel.tsx:597, add `setTimeout(() => voiceController.clearCondition('agent'), 5000)` (longer than success/cancelled since error is more important to surface) — match the pattern at lines 575 and 616.
+  6384→
+  6385→For BUG-37-RECONFIRM:
+  6386→  5. In voice-controller.ts:171-176, call safeOrbTransition(this.orbStateRef.current, orbState) before assignment. In voice-service.ts:439-450, call safeOrbTransition(this._state, newState) before assignment. The console.warn at orb-state.ts:74 will then fire on invalid transitions, exposing desync.
+  6387→
+  6388→For BUG-21-RECONFIRM + AUDIO-NO-MUTE-TTS:
+  6389→  6. In voice-service.ts:269-278 barge-in: replace `this.stopSpeaking()` with `window.nexAPI?.voiceConversationStopSpeaking?.()` (IPC to main). Also call `window.nexAPI?.voiceConversationAbort?.()` to invalidate the in-flight TTS request. This makes main aware of the barge-in and stops the actual TTS audio.
+  6390→  7. In voice-service.ts:174-232 onaudioprocess: skip the entire body (or skip voiceFeedAudioLevel + processVAD) when `this._ttsActive === true`. This prevents the renderer VAD from triggering on TTS bleed. (Main-side VAD is already safely gated by sttActive=false.)
+  6391→
+  6392→For VOICE-ERROR-IPC-NOLISTENER:
+  6393→  8. In AppShell.tsx, add a subscription to onVoiceConversationError that calls voiceController.setCondition('engine', 'error') + setTimeout(3000) clearCondition('engine'). This surfaces voice engine errors on the Orb briefly. Optionally also dispatch a DOM event that NexChatPanel can show as a toast.
+  6394→
+  6395→For GAP-7 (voice-conversation-state channel overloaded):
+  6396→  9. Use DIFFERENT IPC channels for conversation vs engine state: 'voice-conversation-state' (conversation) and 'voice-engine-state' (engine). AppShell subscribes to both, applies state from each to the 'conversation' and 'engine' condition keys respectively (already does). This eliminates the race where one overrides the other.
+  6397→
+  6398→For INTERACTION-SPEAK-STATE-DESYNC:
+  6399→  10. In interaction-loop.ts:275-285 speakText, either (a) call voiceController.speak() (renderer state) AND also call voiceConversationSpeak IPC (so main handles the full lifecycle), or (b) explicitly transition engine state out of 'speaking' after a fixed delay (matching the pre-Phase-16 behavior). Option (a) is cleaner — delegates to the production path.
+  6400→
+  6401→For GAP-4 (queue flicker):
+  6402→  11. In AppShell.tsx:225-237, before scheduling the clearAfterMs setTimeout, check if other tasks are running (subscribe to task-queue-state and check counts.running > 0). If so, skip the clear. Use orb-bridge.ts:hasActiveQueueWork (currently dead) — wire it up.
+  6403→
+  6404→For CHAT-ERROR-NO-ORB:
+  6405→  12. In NexChatPanel.tsx:999-1007 (chat-mode error fallback), call voiceController.setCondition('chat', 'error') + setTimeout(3000) clearCondition('chat'). This makes chat-mode inference errors visible on the Orb briefly. Add 'error' to the 'chat' condition key.
+  6406→
+  6407→NO CODE MODIFICATIONS MADE. NO COMMITS. NO NEW FILES. READ-ONLY AUDIT.
+  6408→Files reviewed (final list, no modifications):
+  6409→  All files in the WORK LOG list above. READ-ONLY audit — no files modified, no commits made.
+  6410→
+  6411→Audit complete. Findings appended to worklog.md.
+  6412→
+  6413→
+  6414→---
+  6415→Task ID: PHASE17-RUNTIME-INTEGRATION
+  6416→Agent: main (Z.ai Code orchestrator)
+  6417→Task: Phase 17 — Runtime & Core Integration. Audit + implement fixes for ModelRouter/Runtime/Inference lifecycle, streaming/abort/cancel cleanup, concurrency, error handling, voice→runtime, orb state, context/memory/IPC/zustand, legacy/duplicate paths, offline-first preservation. No new features, no UI redesign. Additive only.
+  6418→
+  6419→Work Log:
+  6420→- Dispatched 4 parallel Explore audits (P17-AUDIT-MODEL, P17-AUDIT-STREAMING, P17-AUDIT-ERROR-VOICE, P17-AUDIT-CONTEXT-LEGACY) — 28 findings total (3 P0, 6 P1, 8 P2 in MODEL; 11 RACE/BUG/INSTRUMENTATION in STREAMING; 17 in ERROR-VOICE; 24 in CONTEXT-LEGACY)
+  6421→- Implemented 13 fixes addressing 16 root causes. All additive, no breaking signature changes (except cancelTask sync→async, with backward-compat cancelTaskSync).
+  6422→
+  6423→Files changed:
+  6424→- src/main/ai/inference.ts: RACE-1 fix (markInFlight before loadModel in chatComplete + chatStream — reserve in-flight slot BEFORE loadModel to eliminate the window where a second concurrent call could slip through and operate on the shared _ctxSequence causing KV-cache corruption). P1-3 fix (contextLargeEnough now actually used in idempotency check — previously declared but ignored, causing a model loaded via VRAM fallback with smaller context to be silently reused for larger-context requests).
+  6425→- src/main/agent/core.ts: P1-5/BUG-GAP-2 fix (cancelTask now async, calls abortInference to interrupt mid-LLM generation; previously only set token, agent waited for LLM to complete naturally). cancelAllActiveTasks async (awaits each cancelTask so abortInference completes before shutdownLlama). executeStep catch + runTask catch now detect AbortError (not just AGENT_CANCELLED) so cancelTask → abortInference → planner/ReAct throw chain correctly transitions task to 'cancelled'.
+  6426→- src/main/agent/planner.ts: BUG-GAP-5 + INFERENCE-PLAN-SWALLOW fix (AbortError re-thrown so cancel during planning cancels the task; real errors re-thrown so user sees root cause via task_failed instead of a misleading fallbackPlan "success").
+  6427→- src/main/agent/react-loop.ts: INFERENCE-REACT-SWALLOW fix (same pattern — AbortError re-thrown, real errors re-thrown).
+  6428→- src/main/main.ts: P0-1 model-test-load save+restore (snapshot user's active model before test load, reload it after — previously unloaded it unconditionally leaving no model loaded). P0-3 wireOnlineEnvironment aiMode check (if aiMode='local', force onlineEnvironment.available=false — previously agent attempted online call when user chose local). BUG-GAP-3 ai-chat-stream-cancel + agent-cancel-task handlers now abort 'online','agent-shared' runtime too. CLEANUP-LEAK-3 before-quit now awaits cancelAllActiveTasks before shutdownLlama (previously shutdownLlama's unloadModel→waitForInFlight waited 30s+ for in-flight LLM to complete naturally). Removed 5 dead brain-* IPC handlers (brainDecide/brainStatus/brainSetMode/brainLastDecision/brainModelsByTask) — never invoked by renderer. Updated queue wiring for async cancelTask.
+  6429→- src/main/tasks/queue.ts: agentCancelTask callback type updated to accept Promise<boolean>.
+  6430→- src/main/ai/local-model-provider.ts: P1 14-3 fix (split-brain _loadedModelId/loadedModel now read from inference.ts as source of truth via getEffectiveLoadedModel() — previously shadow state could go stale when inference.ts internally called unloadModel during fresh-load, causing LocalRuntimePanel to show "No model loaded" when chat path loaded via direct runtime). getInfo/healthCheck/loadedModelId all now use inference.ts source of truth.
+  6431→- src/main/preload.ts: Removed 5 dead brain-* IPC entries. Added comment noting the removal.
+  6432→- src/renderer/types/electron.d.ts: Removed 5 dead brain-* IPC types.
+  6433→- src/renderer/store/useStore.ts: P0 13-1 fix (setAIMode now also updates nested settings.aiMode so settingsSave persists the user's choice — previously user's AI Mode choice was lost on restart). Removed dead messages/addMessage/clearMessages (only used by dead ChatPanel.tsx).
+  6434→- src/renderer/components/chat/NexChatPanel.tsx: ORB-ERROR-NO-CLEAR fix (task_failed error condition now auto-clears after 1.5s like 'cancelled' — previously Orb stuck on red forever, STATE_PRIORITY['error']=8 was highest so nothing could override). CHAT-ERROR-NO-ORB fix (chat errors now flash Orb red 1.5s — previously chat errors left Orb at 'idle', user had no visual indication).
+  6435→- src/renderer/components/layout/AppShell.tsx: VOICE-ERROR-IPC-NOLISTENER fix (AppShell now subscribes to voice-conversation-error IPC — previously only dead VoiceCenterPanel subscribed; voice errors silently dropped, Orb stayed at 'listening' forever when Whisper/Piper failed).
+  6436→- src/renderer/components/ChatPanel.tsx: DELETED (dead code — 551 lines, no live importers, only consumer of dead useStore.messages).
+  6437→
+  6438→Stage Summary:
+  6439→- 16 root causes fixed across 11 source files (1 file deleted). 13 fixes total.
+  6440→- 5 P0/critical bugs fixed: model-test-load side effect, wireOnlineEnvironment aiMode bypass, cancelTask no abortInference, setAIMode persistence lost, RACE-1 serialization window.
+  6441→- 6 P1 bugs fixed: chat↔agent reload churn (via RACE-1+P1-3 combined), contextLargeEnough not used, planner/ReAct swallow AbortError, shutdown hang (CLEANUP-LEAK-3), LocalModelProvider split-brain, BUG-GAP-3 online agent unabortable.
+  6442→- 3 UX/cleanup fixes: Orb 'error' auto-clear, chat error Orb flash, voice error IPC subscription.
+  6443→- Legacy code removed: 551-line ChatPanel.tsx, 5 dead brain-* IPC handlers + preload + electron.d.ts entries, dead useStore.messages/addMessage/clearMessages.
+  6444→- Offline-first architecture PRESERVED: verified local inference path is 100% offline (no fetch/net.request on local code path). P0-3 fix prevents agent from even attempting online calls when aiMode='local'.
+  6445→- No new features. No UI redesign. All changes additive or removal of dead code.
+  6446→- Typecheck main: PASS. Typecheck renderer: PASS. Build main: PASS. Build renderer: PASS.
+  6447→- Regression: Phase 6-16 = 1131/1131, Phase 116 = 326/326. All green.
+  6448→- No commits made. No pushes made. Awaiting user approval.
+  6449→- Remaining items NOT fixed (deferred to future phases): BUG-21 (barge-in half-wired — would need a deeper voice-service.ts refactor), AUDIO-NO-MUTE-TTS (renderer VAD triggers on TTS bleed — needs audio level gating during TTS), BUG-37 (safeOrbTransition never called — would need wiring into VoiceController.setCondition + voice-service.recomputeState), GAP-7 (voice-conversation-state IPC overloaded by conversation AND engine — would need splitting into two channels), 9 routing decision points consolidation (P2-1 — would require unifying 3 model-router modules), 3 parallel memory systems (P2 11-1 — would require consolidating semantic-memory-store + long-term-memory-system + memory/index.ts), contextSize hardcoded in 8+ places (P0 10-1 — would require a getEffectiveContextSize helper + propagation; deferred because changing the planner's contextSize from 4096 to model.contextSize risks breaking the chat↔agent reuse idempotency).
+  6450→
+  6451→
+  6452→---
+  6453→Task ID: PHASE17-COMMIT-PUSH
+  6454→Agent: main (Z.ai Code orchestrator)
+  6455→Task: Commit Phase 17 on main with user-provided commit message, push to origin.
+  6456→
+  6457→Work Log:
+  6458→- Discovered working tree was already auto-committed as db59271 with placeholder UUID message
+  6459→- Amended commit to use the user's exact requested message: "fix(runtime): Phase 17 — Runtime & Core Integration"
+  6460→- New commit SHA: 105737d
+  6461→- Pushed to origin/main successfully: 8e5ff6d..105737d main -> main
+  6462→- Verified local main HEAD and origin/main HEAD both at 105737d
+  6463→- Working tree clean after push
+  6464→
+  6465→Stage Summary:
+  6466→- Commit: 105737d on main
+  6467→- 24 files changed, 3701 insertions(+), 8389 deletions(-)
+  6468→- Pushed to https://github.com/ali12345666/nex-ai.git main branch
+  6469→- Phase 17 Runtime & Core Integration complete and committed
+  6470→

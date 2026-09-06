@@ -1,0 +1,608 @@
+     1→/**
+     2→ * NEX AI — App Shell (Phase 27)
+     3→ *
+     4→ * Futuristic command-center layout:
+     5→ *   ┌─────────────────────────────────────────────────────┐
+     6→ *   │ NAV │ Terminal/Project │   NEX AI ORB   │  AI CHAT  │
+     7→ *   │     │                  │                │           │
+     8→ *   ├─────────────────────────────────────────────────────┤
+     9→ *   │              BOTTOM STATUS DOCK                     │
+    10→ *   └─────────────────────────────────────────────────────┘
+    11→ *
+    12→ * Orb is the visual heart — always center, always alive.
+    13→ * Chat is floating glass panel on the right.
+    14→ * Left workspace shows terminal + project explorer.
+    15→ * All panels use the token system from styles/tokens.css.
+    16→ */
+    17→
+    18→import React, { useState, useCallback, useEffect, useRef, Suspense, lazy } from 'react';
+    19→import NavigationRail, { type NexView } from './NavigationRail';
+    20→import BottomStatusBar from './BottomStatusBar';
+    21→
+    22→// Lazy-load the orb (heavy Three.js bundle)
+    23→const NexOrb = lazy(() => import('../orb/NexOrb'));
+    24→
+    25→// Phase 30: Voice — connect Orb to voice system (audio reactivity)
+    26→import { voiceController } from '../../services/voice-controller';
+    27→import type { NexOrbState } from '../orb/orb-state';
+    28→// Phase 31: Theme-aware Orb colors (resolve CSS vars → hex for Three.js)
+    29→import { getOrbColors, getCurrentTheme } from '../../lib/theme-engine';
+    30→// Phase 32: Conversation Center
+    31→const ConversationHistory = lazy(() => import('../chat/ConversationHistory'));
+    32→
+    33→// Lazy-load chat panel (uses existing ChatPanel but wrapped)
+    34→// Phase 29: Real chat panel using NEX token system
+    35→const NexChatPanel = lazy(() => import('../chat/NexChatPanel'));
+    36→// UI-15: Workspace panel (consolidates Editor/Terminal/Preview/Files/Logs into tabs)
+    37→const WorkspacePanel = lazy(() => import('./WorkspacePanel'));
+    38→const MemoryPanel = lazy(() => import('../MemoryPanel'));
+    39→const SettingsPanel = lazy(() => import('../SettingsPanel'));
+    40→// Phase 57: Executive Planner (multi-agent orchestration)
+    41→const PlannerPanel = lazy(() => import('../PlannerPanel'));
+    42→// Phase 62: Basic Interaction MVP (text/voice → GGUF → response + TTS)
+    43→const BasicInteractionPanel = lazy(() => import('../BasicInteractionPanel'));
+    44→// Phase 65: Hardware Validation (diagnostics + benchmark + pipeline test)
+    45→const HardwareValidationPanel = lazy(() => import('../HardwareValidationPanel'));
+    46→// Phase 66: Unified Library Center (consolidates all resource management)
+    47→const NexLibraryPanel = lazy(() => import('../NexLibraryPanel'));
+    48→// Voice Manager: full voice system lifecycle (detect → activate → listen → speak)
+    49→const VoiceManagerPanel = lazy(() => import('../VoiceManagerPanel'));
+    50→
+    51→import { useStore } from '../../store/useStore';
+    52→
+    53→export default function AppShell() {
+    54→  const [view, setView] = useState<NexView>('chat');
+    55→  // Phase 30: Voice state for the Orb (audio level stays in ref, NOT React state)
+    56→  const [orbState, setOrbState] = useState<NexOrbState>('idle');
+    57→  // Phase 31: theme-aware orb colors (re-resolved on theme change)
+    58→  const [orbColors, setOrbColors] = useState(() => getOrbColors());
+    59→  const orbAudioRef = useRef<number>(0);
+    60→  // UI-14 §3: voiceActive state removed — voice is now Always-Ready.
+    61→  // No toggle button, auto-starts on app boot, auto-restarts after commands.
+    62→  // Phase 32: Conversation state
+    63→  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+    64→  const [historyOpen, setHistoryOpen] = useState(false);
+    65→
+    66→  // Phase 32: Conversation events
+    67→  const handleConversationSelect = useCallback((id: string) => {
+    68→    setActiveConversationId(id);
+    69→    window.dispatchEvent(new CustomEvent('nex:load-conversation', { detail: { id } }));
+    70→  }, []);
+    71→  const handleConversationNew = useCallback(() => {
+    72→    setActiveConversationId(null);
+    73→    window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+    74→  }, []);
+    75→  const handleConversationDelete = useCallback(async (id: string) => {
+    76→    await window.nexAPI.conversationDelete(id).catch(() => {});
+    77→    if (id === activeConversationId) handleConversationNew();
+    78→  }, [activeConversationId, handleConversationNew]);
+    79→  const handleConversationRename = useCallback(async (id: string, title: string) => {
+    80→    await window.nexAPI.conversationRename(id, title).catch(() => {});
+    81→  }, []);
+    82→  const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
+    83→  const orbAudioSubRef = useRef<(() => void) | null>(null);
+    84→  const orbStateSubRef = useRef<(() => void) | null>(null);
+    85→  // UI-04: EditorPanel now lives inside WorkspacePanel (UI-15 consolidation).
+    86→  // AppShell no longer needs activeFile/closeFile — Workspace handles it.
+    87→  const { projectPath } = useStore();
+    88→
+    89→  const navigate = useCallback((v: NexView) => setView(v), []);
+    90→
+    91→  // UI-06: Listen for nex:navigate CustomEvent from CommandPalette.
+    92→  // Replaces the dead setActivePanel/setSidebarView store calls that AppShell
+    93→  // never read — 9 of 12 commands were silent no-ops before this fix.
+    94→  useEffect(() => {
+    95→    const handler = (e: Event) => {
+    96→      const detail = (e as CustomEvent).detail as { view: NexView } | undefined;
+    97→      if (detail?.view) {
+    98→        setView(detail.view);
+    99→      }
+   100→    };
+   101→    window.addEventListener('nex:navigate', handler);
+   102→    return () => window.removeEventListener('nex:navigate', handler);
+   103→  }, []);
+   104→
+   105→  // UI-06: Listen for nex:focus-chat — focuses the always-visible chat input.
+   106→  // Dispatched by CommandPalette's 'AI Chat' command.
+   107→  useEffect(() => {
+   108→    const handler = () => {
+   109→      // Re-dispatch so NexChatPanel (which is lazy-loaded) can listen.
+   110→      // Use a second event so we don't couple AppShell to chat internals.
+   111→      window.dispatchEvent(new CustomEvent('nex:focus-chat-input'));
+   112→    };
+   113→    window.addEventListener('nex:focus-chat', handler);
+   114→    return () => window.removeEventListener('nex:focus-chat', handler);
+   115→  }, []);
+   116→
+   117→  // Phase 34: Ctrl+K → open history + focus search
+   118→  useEffect(() => {
+   119→    const handler = () => {
+   120→      setHistoryOpen(true);
+   121→      // ConversationHistory listens for this to focus its search input
+   122→      window.dispatchEvent(new CustomEvent('nex:focus-history-search'));
+   123→    };
+   124→    window.addEventListener('nex:open-history-search', handler);
+   125→    return () => window.removeEventListener('nex:open-history-search', handler);
+   126→  }, []);
+   127→
+   128→  // UI-15: Escape editor handler removed — EditorPanel now lives in WorkspacePanel
+   129→  // which handles its own keyboard shortcuts internally.
+   130→
+   131→  // Phase 31: Watch for theme changes → re-resolve orb colors
+   132→  useEffect(() => {
+   133→    const observer = new MutationObserver(() => {
+   134→      setOrbColors(getOrbColors());
+   135→    });
+   136→    observer.observe(document.documentElement, {
+   137→      attributes: true,
+   138→      attributeFilter: ['data-theme'],
+   139→    });
+   140→    return () => observer.disconnect();
+   141→  }, []);
+   142→
+   143→  // Phase 30: Voice → Orb wiring (state + audio level via refs, not React state for audio)
+   144→  // UI-14 §3: Voice is Always-Ready — auto-starts on app boot (no toggle button).
+   145→  useEffect(() => {
+   146→    // Subscribe to orb state changes
+   147→    const unsubState = voiceController.subscribeOrbState((state) => {
+   148→      setOrbState(state);
+   149→    });
+   150→    // Subscribe to audio level (stored in ref — Orb reads it via useFrame)
+   151→    const unsubAudio = voiceController.subscribeOrbAudio((level) => {
+   152→      orbAudioRef.current = level;
+   153→    });
+   154→    // Set callbacks for chat integration
+   155→    voiceController.setCallbacks({
+   156→      onPartialTranscript: (text) => setPartialTranscript(text),
+   157→      onFinalTranscript: (text) => {
+   158→        setPartialTranscript(null);
+   159→        // Phase 14: Final transcript goes to chat with source='voice'
+   160→        // so NexChatPanel knows to speak the response via TTS.
+   161→        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text, source: 'voice' } }));
+   162→      },
+   163→      onVoiceError: () => setPartialTranscript(null),
+   164→      // Phase 116 JARVIS: Wake word detected — dispatch as if user said "بله?"
+   165→      onWakeWord: () => {
+   166→        console.log('[VOICE] Wake word "NEX" detected — responding');
+   167→        setPartialTranscript(null);
+   168→        // Phase 14: Wake word path also carries source='voice'
+   169→        window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: 'بله?', source: 'voice' } }));
+   170→      },
+   171→    });
+   172→    orbStateSubRef.current = unsubState;
+   173→    orbAudioSubRef.current = unsubAudio;
+   174→
+   175→    // UI-14 §3: Always-Ready Voice — auto-start listening on app boot.
+   176→    // Phase 116 JARVIS: Start in continuous conversation mode by default.
+   177→    // VoiceController.start() enables microphone + STT. If permission not
+   178→    // granted yet, browser will prompt. After each command completes,
+   179→    // VoiceService auto-restarts STT (via _shouldRestartSTT flag).
+   180→    voiceController.setMode('continuous');
+   181→    voiceController.start().catch(() => {
+   182→      // Permission denied or mic unavailable — orb stays idle, chat still works via keyboard.
+   183→    });
+   184→
+   185→    return () => {
+   186→      unsubState();
+   187→      unsubAudio();
+   188→      voiceController.setCallbacks({});
+   189→      orbStateSubRef.current = null;
+   190→      orbAudioSubRef.current = null;
+   191→    };
+   192→  }, []);
+   193→
+   194→  // Cleanup on unmount
+   195→  useEffect(() => {
+   196→    return () => { voiceController.dispose(); };
+   197→  }, []);
+   198→
+   199→  // ── Phase 6: Background Task Queue → Orb wiring ─────────────────────────────
+   200→  // Listen for task-queue events from main and drive the Orb via a NEW
+   201→  // condition key 'queue'. This is intentionally SEPARATE from 'agent'
+   202→  // (chat-driven) so background tasks don't fight the chat's Orb state.
+   203→  //
+   204→  // The Orb state priority resolution in voice-service.ts picks the highest
+   205→  // priority across all condition keys, so a running queue task ('working'=5)
+   206→  // will show through even if the chat is idle, but chat 'thinking' (4) or
+   207→  // 'speaking' (6) takes precedence as appropriate.
+   208→  //
+   209→  // Mapping (mirrors main-side tasks/orb-bridge.ts):
+   210→  //   task_started/progress → 'working'
+   211→  //   task_completed        → 'success' (brief flash, then clear after 1.5s)
+   212→  //   task_failed/recovered → 'error'   (brief flash, then clear after 1.5s)
+   213→  //   task_cancelled        → 'cancelled' (brief flash, then clear)
+   214→  //   task_enqueued/paused  → no change (keep idle/ready)
+   215→  useEffect(() => {
+   216→    if (!window.nexAPI?.onTaskQueueEvent) return;
+   217→
+   218→    const queueTimers: number[] = [];
+   219→    const off = window.nexAPI.onTaskQueueEvent((event: any) => {
+   220→      const type = event?.type as string;
+   221→      if (!type) return;
+   222→
+   223→      if (type === 'task_started' || type === 'task_progress') {
+   224→        voiceController.setCondition('queue', 'working');
+   225→      } else if (type === 'task_completed') {
+   226→        voiceController.setCondition('queue', 'success');
+   227→        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+   228→        queueTimers.push(t);
+   229→      } else if (type === 'task_failed' || type === 'task_recovered') {
+   230→        voiceController.setCondition('queue', 'error');
+   231→        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+   232→        queueTimers.push(t);
+   233→      } else if (type === 'task_cancelled') {
+   234→        voiceController.setCondition('queue', 'cancelled');
+   235→        const t = window.setTimeout(() => voiceController.clearCondition('queue'), 1500);
+   236→        queueTimers.push(t);
+   237→      }
+   238→      // task_enqueued, task_paused, queue_state → no Orb change
+   239→    });
+   240→
+   241→    return () => {
+   242→      off();
+   243→      for (const t of queueTimers) clearTimeout(t);
+   244→    };
+   245→  }, []);
+   246→
+   247→  // ── Bridge: main-side voice conversation state → Orb animation ────────────
+   248→  // The LocalVoiceEngine (whisper + piper) emits 'voice-conversation-state'
+   249→  // events from the main process. Without this bridge, the Orb only reflects
+   250→  // the renderer-side browser STT state. This listener forwards main-side
+   251→  // conversation states (listening/thinking/speaking) to the Orb so it
+   252→  // animates correctly during local voice conversations.
+   253→  //
+   254→  // NOTE: The voice-start-mic-capture / voice-stop-mic-capture listeners are
+   255→  // registered in App.tsx (root level) to ensure they're ready before the
+   256→  // main process sends events during startup.
+   257→  useEffect(() => {
+   258→    const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
+   259→      const state = ev?.state as string;
+   260→      if (!state) return;
+   261→      console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${ev?.source || 'conversation'}`);
+   262→
+   263→      // Map conversation state to Orb state
+   264→      // Phase 116 JARVIS: Extended with new states (working, success, cancelled)
+   265→      const orbStateMap: Record<string, string> = {
+   266→        idle: 'idle',
+   267→        initializing: 'initializing',
+   268→        ready: 'ready',
+   269→        listening: 'listening',
+   270→        thinking: 'thinking',
+   271→        speaking: 'speaking',
+   272→        working: 'working',
+   273→        active: 'active',
+   274→        success: 'success',
+   275→        cancelled: 'cancelled',
+   276→        interrupted: 'active',
+   277→        error: 'error',
+   278→      };
+   279→      const orbState = orbStateMap[state] || 'idle';
+   280→      console.log(`[ORB_TRACE_RENDERER] mapped orbState=${orbState}`);
+   281→
+   282→      // Drive the voiceController's state machine with the main-side states.
+   283→      // Use 'engine' as the condition key for engine states.
+   284→      // Phase 116: Map new states to VoiceState equivalents.
+   285→      if (orbState === 'listening') {
+   286→        voiceController.setCondition('engine', 'listening');
+   287→      } else if (orbState === 'thinking') {
+   288→        voiceController.setCondition('engine', 'thinking');
+   289→      } else if (orbState === 'speaking') {
+   290→        voiceController.setCondition('engine', 'speaking');
+   291→      } else if (orbState === 'working' || orbState === 'active') {
+   292→        voiceController.setCondition('engine', 'working');
+   293→      } else if (orbState === 'error') {
+   294→        voiceController.setCondition('engine', 'error');
+   295→      } else {
+   296→        // idle / ready / success / cancelled / initializing — clear engine condition
+   297→        voiceController.clearCondition('engine');
+   298→      }
+   299→
+   300→      // Log the controller's resolved state for diagnostics
+   301→      console.log(`[ORB_TRACE_CONTROLLER] conditions=engine:${orbState} resolvedState=${voiceController.orbState}`);
+   302→    });
+   303→
+   304→    // ── Phase 116 FIX: Wire whisper STT transcripts to Chat ──────────────
+   305→    // The LocalVoiceEngine (whisper) produces transcripts in the MAIN process.
+   306→    // These are sent via the 'voice-conversation-user' IPC channel. Previously
+   307→    // NO renderer component listened to this channel — so even when whisper
+   308→    // successfully transcribed speech, the transcript NEVER reached Chat.
+   309→    //
+   310→    // This listener dispatches the transcript via the SAME nex:voice-transcript
+   311→    // DOM event that the browser STT path uses, so NexChatPanel picks it up
+   312→    // and sends it to the AI model — regardless of which STT path produced it.
+   313→    const offUser = window.nexAPI?.onVoiceConversationUser?.((ev: any) => {
+   314→      const text = ev?.text;
+   315→      if (!text || !text.trim()) return;
+   316→      console.log(`[VOICE] whisper transcript received: "${text.substring(0, 100)}"`);
+   317→      // Phase 14: Whisper path also carries source='voice' for TTS
+   318→      window.dispatchEvent(new CustomEvent('nex:voice-transcript', { detail: { text: text.trim(), source: 'voice' } }));
+   319→    });
+   320→
+   321→    // Also listen for NEX responses (from the main-side conversation pipeline)
+   322→    // so they appear in Chat if the conversation system produced them.
+   323→    const offNex = window.nexAPI?.onVoiceConversationNex?.((ev: any) => {
+   324→      const text = ev?.text;
+   325→      if (!text || !text.trim()) return;
+   326→      console.log(`[VOICE] NEX response from conversation: "${text.substring(0, 100)}"`);
+   327→      // The conversation system already speaks the response via TTS.
+   328→      // We don't dispatch it to Chat — the conversation pipeline handles
+   329→      // the full voice→AI→TTS loop independently of the text Chat panel.
+   330→    });
+   331→
+   332→    // Phase 17 (VOICE-ERROR-IPC-NOLISTENER fix): subscribe to
+   333→    // voice-conversation-error IPC so voice engine errors (Whisper model
+   334→    // missing, Piper model missing, mic denied, etc.) drive the Orb to
+   335→    // 'error' state instead of being silently dropped. Previously the
+   336→    // only subscriber was VoiceCenterPanel (which is dead code — never
+   337→    // imported). Now AppShell subscribes and flashes the Orb red for
+   338→    // 1.5s, matching the agent/chat error UX.
+   339→    const offError = window.nexAPI?.onVoiceConversationError?.((ev: any) => {
+   340→      const message = ev?.message || 'Voice engine error';
+   341→      console.warn(`[VOICE] voice-conversation-error: ${message}`);
+   342→      voiceController.setCondition('engine', 'error');
+   343→      setTimeout(() => voiceController.clearCondition('engine'), 1500);
+   344→    });
+   345→
+   346→    return () => {
+   347→      if (off) off();
+   348→      if (offUser) offUser();
+   349→      if (offNex) offNex();
+   350→      if (offError) offError();
+   351→    };
+   352→  }, []);
+   353→
+   354→  // Left workspace content based on active view
+   355→  // UI-15: Consolidated to 5 views — Chat, Workspace, Memory, Knowledge, Settings.
+   356→  // All other panels (Git/Diagnostics/Plugins/Hardware/Agents/Tools) accessible
+   357→  // via Settings or Workspace tabs (no separate nav items).
+   358→  const leftPanel = () => {
+   359→    switch (view) {
+   360→      case 'chat': return null; // Chat is rendered as the right panel
+   361→      case 'workspace': return <Suspense fallback={<PanelLoading />}><WorkspacePanel /></Suspense>;
+   362→      case 'library': return <Suspense fallback={<PanelLoading />}><NexLibraryPanel /></Suspense>;
+   363→      case 'voice': return <Suspense fallback={<PanelLoading />}><VoiceManagerPanel /></Suspense>;
+   364→      case 'memory': return <Suspense fallback={<PanelLoading />}><MemoryPanel /></Suspense>;
+   365→      case 'settings': return <Suspense fallback={<PanelLoading />}><SettingsPanel /></Suspense>;
+   366→      case 'planner': return <Suspense fallback={<PanelLoading />}><PlannerPanel /></Suspense>;
+   367→      case 'interact': return <Suspense fallback={<PanelLoading />}><BasicInteractionPanel /></Suspense>;
+   368→      case 'validation': return <Suspense fallback={<PanelLoading />}><HardwareValidationPanel /></Suspense>;
+   369→      default: return <NoProject />;
+   370→    }
+   371→  };
+   372→
+   373→  // UI-15 §2: When view === 'chat', the left workspace area shows the orb
+   374→  // (not a panel). When view !== 'chat', the orb is hidden and the selected
+   375→  // panel fills the center. Chat panel stays on the right always.
+   376→  const showOrb = view === 'chat';
+   377→
+   378→  return (
+   379→    <div
+   380→      className="nex-cosmic-bg nex-stars flex flex-col h-screen w-screen overflow-hidden"
+   381→      style={{ background: 'var(--nex-bg)', color: 'var(--nex-text)' }}
+   382→    >
+   383→      {/* Main row: Nav + Center + Chat
+   384→          UI-16 FIX: Orb is a CENTER ANCHOR — always centered, never moves.
+   385→          Workspace panel is an ABSOLUTE OVERLAY that floats independently.
+   386→          Chat is a fixed-width column on the right.
+   387→          Layout: [ NAV | CENTER(Orb always centered + panel overlay) | CHAT ] */}
+   388→      <div className="flex flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
+   389→
+   390→        {/* Left: Navigation Rail */}
+   391→        <NavigationRail active={view} onNavigate={navigate} />
+   392→
+   393→        {/* Center: Orb ALWAYS centered. Workspace floats as absolute overlay.
+   394→            Orb NEVER participates in flex sizing — it's position:absolute
+   395→            centered in this container. Panel is also position:absolute
+   396→            (left-aligned, doesn't push Orb). */}
+   397→        <div
+   398→          className="flex-1 relative overflow-hidden"
+   399→          style={{ minWidth: 0 }}
+   400→        >
+   401→          {/* Orb — CENTER ANCHOR. Always centered, fixed size, never shrinks.
+   402→              position:absolute + inset-0 + flex center = perfect centering
+   403→              regardless of what else is in this container. */}
+   404→          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+   405→            {/* UI-16 §13: Orb header — ONLY "NEX AI", minimal */}
+   406→            {showOrb && (
+   407→              <div className="mb-2 select-none pointer-events-none">
+   408→                <div
+   409→                  className="text-sm font-medium tracking-[0.3em]"
+   410→                  style={{ color: 'var(--nex-text)' }}
+   411→                  aria-label="NEX AI"
+   412→                >
+   413→                  NEX AI
+   414→                </div>
+   415→              </div>
+   416→            )}
+   417→
+   418→            {/* Orb container — LARGE, responsive. Fills available central workspace. */}
+   419→            <div
+   420→              className="relative pointer-events-auto"
+   421→              style={{
+   422→                width: 'min(80vh, 60vw)',
+   423→                height: 'min(80vh, 60vw)',
+   424→                minHeight: 320,
+   425→                minWidth: 320,
+   426→                maxWidth: '90%',
+   427→                maxHeight: '90%',
+   428→              }}
+   429→            >
+   430→              <Suspense fallback={<OrbLoading />}>
+   431→                <NexOrb
+   432→                  state={orbState}
+   433→                  audioLevelRef={orbAudioRef}
+   434→                  primaryColor={orbColors.primary}
+   435→                  secondaryColor={orbColors.secondary}
+   436→                  quality="high"
+   437→                  className="w-full h-full"
+   438→                />
+   439→                {partialTranscript && (
+   440→                  <div
+   441→                    className="absolute bottom-4 left-1/2 -translate-x-1/2 nex-glass px-3 py-1.5 rounded-full text-[10px] max-w-[70%] truncate nex-animate-in"
+   442→                    style={{ color: 'var(--nex-accent-text)' }}
+   443→                    aria-live="polite"
+   444→                  >
+   445→                    "{partialTranscript}"
+   446→                  </div>
+   447→                )}
+   448→              </Suspense>
+   449→            </div>
+   450→          </div>
+   451→
+   452→          {/* Workspace / Panel — ABSOLUTE OVERLAY. Floats independently.
+   453→              Does NOT push Orb. Does NOT participate in flex layout.
+   454→              Positioned left side of center area, with gap from Chat.
+   455→              pointer-events enabled so panel is interactive.
+   456→              UI-16 Settings Fix: Settings panel gets wider width (760px) for
+   457→              readability. Other panels keep 420px.
+   458→              FIX: leftPanel() called ONCE — stored in variable to prevent
+   459→              double element creation (was called in condition + body). */}
+   460→          {(() => {
+   461→            const panel = !showOrb ? leftPanel() : null;
+   462→            return panel && (
+   463→              <div
+   464→                className="absolute nex-glass-strong flex flex-col overflow-hidden nex-animate-in"
+   465→                style={{
+   466→                  top: 8,
+   467→                  bottom: 8,
+   468→                  left: 8,
+   469→                  width: view === 'settings' ? 'min(760px, 70%)' : 420,
+   470→                  maxWidth: view === 'settings' ? '70%' : '42%',
+   471→                  borderRadius: 'var(--nex-radius-lg)',
+   472→                  border: '1px solid var(--nex-panel-border)',
+   473→                  zIndex: 5,
+   474→                }}
+   475→              >
+   476→                {panel}
+   477→              </div>
+   478→            );
+   479→          })()}
+   480→        </div>
+   481→
+   482→        {/* Right: AI Chat Panel */}
+   483→        <div
+   484→          className="nex-glass-accent nex-hover-lift flex flex-col overflow-hidden"
+   485→          style={{
+   486→            width: 360,
+   487→            minWidth: 320,
+   488→            maxWidth: 420,
+   489→            borderRadius: 'var(--nex-radius-lg)',
+   490→            margin: '8px 8px 8px 4px',
+   491→            border: '1px solid var(--nex-panel-border)',
+   492→          }}
+   493→        >
+   494→          {/* Chat Header */}
+   495→          <div
+   496→            className="flex items-center justify-between px-4 py-3 shrink-0"
+   497→            style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
+   498→          >
+   499→            <span className="text-xs font-medium tracking-wider" style={{ color: 'var(--nex-accent-text)' }}>
+   500→              NEX AI CHAT
+   501→            </span>
+   502→            <div className="flex items-center gap-2 relative">
+   503→              {/* Phase 32: History button */}
+   504→              <button
+   505→                onClick={() => setHistoryOpen(!historyOpen)}
+   506→                className="p-1 rounded transition-colors hover:bg-white/[0.06]"
+   507→                style={{ color: historyOpen ? 'var(--nex-accent)' : 'var(--nex-text-muted)' }}
+   508→                title="Conversation history"
+   509→                aria-label="Conversation history"
+   510→              >
+   511→                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+   512→                  <path d="M12 8v4l3 3"/>
+   513→                  <circle cx="12" cy="12" r="10"/>
+   514→                </svg>
+   515→              </button>
+   516→              {historyOpen && (
+   517→                <Suspense fallback={null}>
+   518→                  <ConversationHistory
+   519→                    activeId={activeConversationId}
+   520→                    onSelect={handleConversationSelect}
+   521→                    onNew={handleConversationNew}
+   522→                    onDelete={handleConversationDelete}
+   523→                    onRename={handleConversationRename}
+   524→                    onClose={() => setHistoryOpen(false)}
+   525→                  />
+   526→                </Suspense>
+   527→              )}
+   528→              <span
+   529→                className="inline-block w-1.5 h-1.5 rounded-full nex-animate-pulse"
+   530→                style={{ background: 'var(--nex-success)' }}
+   531→                title="Ready"
+   532→              />
+   533→            </div>
+   534→          </div>
+   535→
+   536→          {/* Chat Body */}
+   537→          <div className="flex-1 overflow-hidden">
+   538→            <Suspense fallback={<PanelLoading />}>
+   539→              <NexChatPanel />
+   540→            </Suspense>
+   541→          </div>
+   542→        </div>
+   543→      </div>
+   544→
+   545→      {/* Bottom: Status Dock */}
+   546→      <BottomStatusBar />
+   547→    </div>
+   548→  );
+   549→}
+   550→
+   551→// ─── Helper components ──────────────────────────────────────────────────────
+   552→
+   553→function PanelLoading() {
+   554→  return (
+   555→    <div className="flex items-center justify-center h-full">
+   556→      <div
+   557→        className="w-6 h-6 rounded-full border-2 border-transparent animate-spin"
+   558→        style={{ borderTopColor: 'var(--nex-accent)', borderRightColor: 'var(--nex-accent-dim)' }}
+   559→      />
+   560→    </div>
+   561→  );
+   562→}
+   563→
+   564→function OrbLoading() {
+   565→  return (
+   566→    <div className="flex items-center justify-center w-full h-full">
+   567→      <div
+   568→        className="w-16 h-16 rounded-full nex-animate-breathe"
+   569→        style={{
+   570→          background: 'radial-gradient(circle at 40% 40%, var(--nex-accent-dim) 0%, transparent 70%)',
+   571→          boxShadow: '0 0 30px var(--nex-accent-glow)',
+   572→        }}
+   573→      />
+   574→    </div>
+   575→  );
+   576→}
+   577→
+   578→function NoProject() {
+   579→  const { setProjectPath } = useStore();
+   580→  return (
+   581→    <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center">
+   582→      <div
+   583→        className="flex items-center justify-center w-12 h-12 rounded-full"
+   584→        style={{ background: 'var(--nex-accent-dim)', border: '1px solid var(--nex-panel-border)' }}
+   585→      >
+   586→        <span className="text-lg" style={{ color: 'var(--nex-accent)' }}>NX</span>
+   587→      </div>
+   588→      <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
+   589→        Open a project to get started
+   590→      </p>
+   591→      <button
+   592→        className="nex-click nex-focus px-3 py-1.5 rounded-lg text-xs font-medium nex-glass-accent"
+   593→        style={{ color: 'var(--nex-accent-text)' }}
+   594→        onClick={async () => {
+   595→          const r = await window.nexAPI.openFolder();
+   596→          if (!r.canceled && r.path) setProjectPath(r.path);
+   597→        }}
+   598→      >
+   599→        Open Project
+   600→      </button>
+   601→    </div>
+   602→  );
+   603→}
+   604→
+   605→// UI-05: WorkspacePanel placeholder function removed — all 12 nav items
+   606→// now route to real panels (OverviewPanel, AgentsPanel, ToolsPanel, GitPanel).
+   607→// The fake "Panel integrates with existing backend" placeholder is gone.
+   608→
