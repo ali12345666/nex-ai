@@ -1,0 +1,402 @@
+  7440→  [ORB_AUDIO] VoiceService: rms=<n> smoothed=<n> (voice-service.ts:471) — every 60 frames.
+  7441→  [ORB_AUDIO] VoiceController: level=<n> orbAudioRef=<n> subscribers=<n> (voice-controller.ts:186) — every 60 calls.
+  7442→  [VOICE] calling getUserMedia... (voice-service.ts:140)
+  7443→  [VOICE] getUserMedia resolved — stream tracks: <n> (voice-service.ts:146)
+  7444→  [VOICE] AudioContext created — state: <state> (voice-service.ts:149)
+  7445→  [VOICE] ScriptProcessorNode created — bufferSize: <n> (voice-service.ts:171)
+  7446→  [VOICE] onaudioprocess (#<n>) but IPC feeding disabled (voice-service.ts:178) — only first 3 frames after start.
+  7447→
+  7448→Renderer-side (App.tsx) — TTS playback + stop:
+  7449→  [VOICE_IPC] App root: registering voice-start-mic-capture listener (App.tsx:39)
+  7450→  [VOICE_IPC] App root received voice-start-mic-capture (App.tsx:41)
+  7451→  [VOICE_IPC] voiceController.start() completed — mic capture active (App.tsx:43)
+  7452→  [VOICE_IPC] voiceController.start() failed: <err> (App.tsx:45)
+  7453→  [VOICE_IPC] App root received voice-stop-mic-capture (App.tsx:49)
+  7454→  [VOICE_PIPELINE] Renderer received TTS audio (req=N): <path> (App.tsx:93)
+  7455→  [VOICE_PIPELINE] TTS audio (req=N) is stale (current=N) — not playing (App.tsx:102)
+  7456→  [VOICE_PIPELINE] TTS audio playback completed (req=N) (App.tsx:128)
+  7457→  [VOICE_PIPELINE] TTS audio playback error (req=N): <err> (App.tsx:147)
+  7458→  [VOICE_PIPELINE] TTS audio play() failed (req=N): <err> (App.tsx:159)
+  7459→  [VOICE_PIPELINE] Renderer pausing current TTS audio (stop signal received) (App.tsx:191) — fires when App.tsx receives `voice-tts-stop-playback` broadcast from main. This is the BUG-26 B path. Barge-in (if fixed) should also trigger this.
+  7460→
+  7461→Main-side (main.ts) — IPC handlers:
+  7462→  [ORB_TRACE_MAIN] conversation state: <prev> -> <state> (main.ts:1807) — fires on `conversation.setState`. Includes `speaking -> interrupted` when `handleInterruption` fires.
+  7463→  [ORB_TRACE_MAIN] engine state: <state> (main.ts:1868) — fires on `engine.setState`.
+  7464→  [VOICE_PIPELINE] Feeding transcript to conversation: "<text>" (main.ts:1857) — fires when whisper produces a transcript.
+  7465→  [VOICE_PIPELINE] Sending TTS audio to renderer (req=N): <path> (main.ts:1882) — fires when engine emits onTTSAudioReady.
+  7466→  [VOICE_PIPELINE] Engine error: <message> (main.ts:1888) — fires on engine.onError.
+  7467→  [VOICE_AUDIO] received chunk size=<n> (#<n>) (main.ts:1290) — every 50th chunk.
+  7468→  [VOICE_AUDIO] feedAudioChunk error: <err> (main.ts:1294)
+  7469→  [VOICE_IPC] sending voice-start-mic-capture to renderer (main.ts:1466)
+  7470→  [VOICE_IPC] sending voice-stop-mic-capture to renderer (main.ts:1483)
+  7471→
+  7472→Main-side (nex-voice-conversation.ts) — speakResponse + handleInterruption:
+  7473→  [VOICE_PIPELINE] TTS speaking (req=N): "<text>" (local-voice-engine.ts:394) — fires at engine.speak start.
+  7474→  [VOICE_PIPELINE] TTS synthesis completed for req=N but stale (ttsActive=..., current=...) — discarding (local-voice-engine.ts:406) — BUG-26 A stale-guard.
+  7475→  [VOICE_PIPELINE] TTS audio ready (req=N): <path> (local-voice-engine.ts:415)
+  7476→  [VOICE_PIPELINE] speakResponse: req=N superseded during synthesis — not waiting for playback (nex-voice-conversation.ts:515)
+  7477→  [VOICE_PIPELINE] speakResponse: req=N no audio ready — transitioning to idle (nex-voice-conversation.ts:522)
+  7478→  [VOICE_PIPELINE] speakResponse: req=N cancelled during playback — not entering listening (nex-voice-conversation.ts:544)
+  7479→  [VOICE_PIPELINE] waitForTtsPlayback: req=N already superseded — resolving immediately (nex-voice-conversation.ts:577)
+  7480→  [VOICE_PIPELINE] TTS playback wait timeout for req=N — releasing (renderer may have crashed) (nex-voice-conversation.ts:589)
+  7481→  [VOICE_PIPELINE] TTS playback ended signal for req=N — releasing wait (nex-voice-conversation.ts:608)
+  7482→  [VOICE_PIPELINE] TTS playback ended signal for req=N but current wait is for req=M — ignoring (stale) (nex-voice-conversation.ts:614)
+  7483→  (NO log inside handleInterruption itself — only the setState log via [ORB_TRACE_MAIN] conversation state: speaking -> interrupted fires.)
+  7484→
+  7485→Preload (preload.ts):
+  7486→  [ORB_TRACE_PRELOAD] received state=<state> source=<source> (preload.ts:193)
+  7487→  [VOICE_PIPELINE] preload received TTS audio (req=N): <path> (preload.ts:201)
+  7488→  [VOICE_PIPELINE] preload received voice-tts-stop-playback (preload.ts:221) — fires when main broadcasts stop-playback.
+  7489→  [VOICE_AUDIO] sending chunk size=<n> (#<n>) (preload.ts:129) — every 50th chunk.
+  7490→  [VOICE_IPC] preload received voice-start-mic-capture (preload.ts:138)
+  7491→  [VOICE_IPC] preload registered voice-start-mic-capture listener (preload.ts:142)
+  7492→  [VOICE_IPC] preload removed voice-start-mic-capture listener (preload.ts:144)
+  7493→
+  7494→AppShell.tsx — state bridge:
+  7495→  [ORB_TRACE_RENDERER] incoming state=<state> source=<source> (AppShell.tsx:261)
+  7496→  [ORB_TRACE_RENDERER] mapped orbState=<state> (AppShell.tsx:280)
+  7497→  [ORB_TRACE_CONTROLLER] conditions=engine:<state> resolvedState=<state> (AppShell.tsx:301)
+  7498→  [VOICE] whisper transcript received: "<text>" (AppShell.tsx:316)
+  7499→  [VOICE] NEX response from conversation: "<text>" (AppShell.tsx:326)
+  7500→  [VOICE] voice-conversation-error: <message> (AppShell.tsx:341) — Phase 17 fix.
+  7501→
+  7502→Voice-controller.ts:
+  7503→  [VOICE] Mode changed: <prev> → <mode> (forwarded from voice-service.ts:122)
+  7504→  [VOICE] Wake word detected: "<word>" (forwarded from voice-service.ts:572)
+  7505→
+  7506→═══════════════════════════════════════════════════════════════════════════════
+  7507→CROSS-REFERENCES TO PRIOR AUDIT FINDINGS
+  7508→═══════════════════════════════════════════════════════════════════════════════
+  7509→
+  7510→- BUG-21-RECONFIRM (worklog.md:6324, Phase 17): Confirmed and DEEPENED. Phase 17 flagged the missing IPC. This audit additionally confirms the trigger is DEAD (`_ttsActive` never set). The fix recommendation is updated: use `voiceConversationAbort` (not `voiceConversationStopSpeaking`) because the latter does NOT call `releaseTtsPlaybackWait` and would hang speakResponse for 30s.
+  7511→- AUDIO-NO-MUTE-TTS (worklog.md:6325, Phase 17): Confirmed. Currently LATENT (masked by BUG-21's dead trigger). Would activate the moment `_ttsActive` is wired.
+  7512→- VOICE-FAKE-COMPLETION (worklog.md:6334, Phase 17 LOW): Related. The `voiceService.speak()` setTimeout fake completion (voice-service.ts:382-392) is also dead (no caller). Both `_ttsActive` and the fake completion become live only if `voiceController.speak()` is ever called.
+  7513→- ORB-ERROR-DEAD-BRANCH (worklog.md:6332, Phase 17 LOW): Related. AppShell.tsx:293-294 maps `state='error'` to `setCondition('engine','error')`, but main never sends `voice-conversation-state` with `state='error'` (ConversationState type at nex-voice-conversation.ts:62 doesn't include 'error'). The 'engine' error branch only fires via the Phase 17 `onVoiceConversationError` subscription (AppShell.tsx:339-344).
+  7514→- INTERACTION-SPEAK-STATE-DESYNC (worklog.md:6330, Phase 17 MED): Related. `interaction-loop.ts:280` calls `engine.speak(text)` directly (bypasses speakResponse). After Phase 16 fix, engine stuck in 'speaking'. Not barge-in, but related (legacy debug path).
+  7515→- GAP-7-RECONFIRM (worklog.md:6329, Phase 17 MED): Related. `voice-conversation-state` IPC channel is overloaded — both `conversation.onStateChange` (main.ts:1809) and `engine.onStateChange` (main.ts:1870) broadcast to the same channel. AppShell can't differentiate. If engine sends `state='idle'` while conversation is still `state='speaking'` (or vice versa), they race. Affects the proposed fix's reliance on `_stateConditions.get('engine')==='speaking'` — could be wrong if engine state arrives out of order. Pre-existing race.
+  7516→- VOICE-ERROR-IPC-NOLISTENER (worklog.md:6326, Phase 17 MED): FIXED in Phase 17 (AppShell.tsx:339-344 now subscribes to `voice-conversation-error`). Verified at AppShell.tsx:339-344 in this audit.
+  7517→
+  7518→═══════════════════════════════════════════════════════════════════════════════
+  7519→STAGE SUMMARY
+  7520→═══════════════════════════════════════════════════════════════════════════════
+  7521→
+  7522→PHASE 18 BARGE-IN + AUDIO-MUTE AUDIT — STATUS: 2 HIGH-severity bugs re-confirmed and DEEPENED, 3 orphan IPC surfaces found.
+  7523→
+  7524→BUG-21 (barge-in only partially wired) — 3 compounding defects:
+  7525→  1. Trigger is DEAD: `_ttsActive` is never set to `true` in the production app because `voiceController.speak()` has zero callers (Phase 15 regression test explicitly verifies this). The barge-in check at voice-service.ts:269 NEVER fires.
+  7526→  2. Trigger/state disconnect: main's `voice-conversation-state {state:'speaking'}` sets `_stateConditions['engine']='speaking'` via AppShell, but does NOT touch `_ttsActive`. Two disconnected state representations.
+  7527→  3. Action is renderer-only: even if the trigger were live, voice-service.ts:271-276 only mutates renderer state (stopSpeaking + startSTT + setCondition + _shouldRestartSTT). NO IPC to main. Engine keeps synthesizing. `<audio>` keeps playing.
+  7528→
+  7529→AUDIO-NO-MUTE-TTS (VAD triggers on TTS bleed) — LATENT:
+  7530→  - Currently masked by BUG-21's dead trigger. Would activate the moment `_ttsActive` is wired.
+  7531→  - Root cause: voice-service.ts:174-232 `onaudioprocess` computes RMS + sends audio level to main + calls `processVAD` UNCONDITIONALLY (no gating by `!_ttsActive` or by `_stateConditions.get('engine') !== 'speaking'`).
+  7532→  - Renderer VAD cannot distinguish user speech from TTS bleed.
+  7533→  - Main-side VAD is safely gated by `sttActive=false` (engine.ts:199) — no transcription during TTS. Main-side `feedAudioChunk` is also gated (engine.ts:252). ✓ Main side is safe.
+  7534→
+  7535→ORPHAN IPC SURFACES found:
+  7536→  1. `voiceConversationAbort` (renderer → main) — only caller is dead VoiceCenterPanel.tsx:153. Would be the CORRECT IPC for barge-in (it bumps requestId + releases wait + stops engine + broadcasts stop-playback). Phase 17 audit's recommendation to use `voiceConversationStopSpeaking` is INCORRECT — that handler does NOT call `releaseTtsPlaybackWait`, so speakResponse would hang for 30s. Use `voiceConversationAbort` instead.
+  7537→  2. `onVoiceConversationInterrupted` (main → renderer) — no renderer subscriber. Should be subscribed in AppShell to drive the Orb's 'interrupted' state when `handleInterruption` fires.
+  7538→  3. `voiceConversationFeed` (renderer → main) — only caller is dead VoiceCenterPanel.tsx:183. Dead surface.
+  7539→
+  7540→GAP in `handleInterruption` (nex-voice-conversation.ts:651-664):
+  7541→  - Does NOT broadcast `voice-tts-stop-playback` to the renderer. Only `voice-conversation-stop-speaking` (main.ts:1672) and `voice-conversation-abort` (main.ts:1646) handlers broadcast it. If `handleInterruption` fires (currently impossible — STT is stopped during TTS), the renderer's `<audio>` would NOT be paused.
+  7542→  - FIX: add `mainWindow.webContents.send('voice-tts-stop-playback', {})` inside `handleInterruption`.
+  7543→
+  7544→RECOMMENDED FIX APPROACH (high-level):
+  7545→  BUG-21:
+  7546→    1. Move barge-in detection to MAIN side (renderer VAD cannot distinguish speech from bleed).
+  7547→    2. In local-voice-engine.ts:197-205, extend `vad.onEvent` so when `event.state==='speech' && this.ttsActive===true`, emit a new `onBargeIn` callback. Use a higher threshold (e.g. 2× `vadSilenceThreshold`) to filter TTS bleed.
+  7548→    3. In nex-voice-conversation.ts, subscribe to `onBargeIn`. When it fires, call `handleInterruption(<empty>)` + add `voice-tts-stop-playback` broadcast inside `handleInterruption` + call `enterListening()` to restart STT.
+  7549→    4. Remove the renderer-side barge-in path (voice-service.ts:269-278) — it's dead and would fire false positives.
+  7550→    5. Wire AppShell to subscribe to `onVoiceConversationInterrupted` (currently orphan) to drive the Orb's interrupted state.
+  7551→  AUDIO-NO-MUTE-TTS:
+  7552→    6. Gate `processVAD` (voice-service.ts:231) with `if (this._stateConditions.get('engine') !== 'speaking')`. Uses the existing `_stateConditions` (already wired via AppShell's `voice-conversation-state` listener) instead of the dead `_ttsActive` flag. Defense in depth — even if Step 1-3 is later broken, the renderer VAD won't fire false barge-ins.
+  7553→    7. Do NOT gate `voiceFeedAudioLevel` (option a) — main-side barge-in (Step 2) needs the audio level to flow.
+  7554→
+  7555→RISK ASSESSMENT:
+  7556→  - Moving barge-in to main is additive — no existing path breaks.
+  7557→  - Removing the renderer barge-in path removes dead code.
+  7558→  - Main VAD's `speech` event currently doesn't trigger anything; adding a barge-in trigger is additive.
+  7559→  - False positives on TTS bleed persist (browser echo cancellation is imperfect, especially with speakers). Document that barge-in is unreliable with speakers.
+  7560→  - Headphones eliminate the issue entirely.
+  7561→
+  7562→NO CODE MODIFICATIONS MADE. NO COMMITS. NO NEW FILES. READ-ONLY AUDIT.
+  7563→Files reviewed (final list, no modifications):
+  7564→  All files in the WORK LOG list above. READ-ONLY audit — no files modified, no commits made.
+  7565→
+  7566→Audit complete. Findings appended to worklog.md.
+  7567→
+  7568→
+  7569→---
+  7570→Task ID: P18-AUDIT-IPC-INTERACTIONS
+  7571→Agent: Explore (IPC + interactions)
+  7572→Phase: 18 — Voice Runtime & Orb State Integration Audit
+  7573→Codebase: /home/z/my-project @ 07b23f1 (main)
+  7574→Mode: READ-ONLY — no files modified, no commits
+  7575→
+  7576→═══════════════════════════════════════════════════════════════════════════════
+  7577→WORK LOG
+  7578→═══════════════════════════════════════════════════════════════════════════════
+  7579→
+  7580→Files audited (read in full or partially):
+  7581→- /home/z/my-project/src/main/main.ts (6500 lines — IPC handlers 1612-1697, 1780-1900, 5240-5260, 6240-6500)
+  7582→- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (893 lines, full)
+  7583→- /home/z/my-project/src/main/voice/local-voice-engine.ts (509 lines, full)
+  7584→- /home/z/my-project/src/main/preload.ts (566 lines — voice-conversation-state listener 191-198, onVoiceConversationError 252-256)
+  7585→- /home/z/my-project/src/renderer/App.tsx (413 lines, full)
+  7586→- /home/z/my-project/src/renderer/components/layout/AppShell.tsx (608 lines — voice-conversation-state listener 257-302, queue timer 215-245, voice-conversation-error 339-344)
+  7587→- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx (1465 lines — handleStop 1055-1067, agent event listener 405-647)
+  7588→- /home/z/my-project/src/renderer/components/VoiceManagerPanel.tsx (460 lines — state listener 75-78)
+  7589→- /home/z/my-project/src/renderer/components/VoiceCenterPanel.tsx (463 lines — dead code, state listener 101-103)
+  7590→- /home/z/my-project/src/main/agent/core.ts (2246 lines — cancelTask 1871-1886, cancelAllActiveTasks 1917-1932, runTask outer catch 730-751, executeStep catch 1453-1463)
+  7591→- /home/z/my-project/src/main/agent/planner.ts (556 lines — AbortError re-throw 240-268)
+  7592→- /home/z/my-project/src/main/agent/react-loop.ts (397 lines — AbortError re-throw 198-216)
+  7593→- /home/z/my-project/src/main/ai/inference.ts (1252 lines — abortInference 1207-1228, chatStream finally 1174-1188)
+  7594→- /home/z/my-project/src/main/ai/local-engine.ts (316 lines — localAbort 313-315)
+  7595→- /home/z/my-project/src/main/tasks/queue.ts (860 lines — cancelTask 302-337, cancelAllTasks 342-350, shutdownTaskQueue 166-184)
+  7596→- /home/z/my-project/src/renderer/services/voice-controller.ts (setThinking 140-143)
+  7597→
+  7598→Cross-channel IPC audit (comm between main sends / preload listeners / preload invokes / main handlers):
+  7599→- 33 main→renderer send channels
+  7600→- 31 preload `ipcRenderer.on` listeners (covers all sends EXCEPT `plugin-event` + `voice-conversation-partial` — orphans)
+  7601→- 393 preload `ipcRenderer.invoke` calls — all have matching main `ipcMain.handle` (zero dead invokes)
+  7602→- 398 main `ipcMain.handle` + `ipcMain.on` registrations
+  7603→
+  7604→═══════════════════════════════════════════════════════════════════════════════
+  7605→PART 1 — GAP-7: voice-conversation-state IPC OVERLOADED
+  7606→═══════════════════════════════════════════════════════════════════════════════
+  7607→
+  7608→───────── 1.1 SENDERS (every webContents.send('voice-conversation-state', …)) ─────────
+  7609→
+  7610→SENDER #1 — NexVoiceConversation.onStateChange
+  7611→  File: /home/z/my-project/src/main/main.ts:1809
+  7612→  Code:
+  7613→    conversation.setCallbacks({
+  7614→      onStateChange: (state, prev) => {
+  7615→        console.log(`[ORB_TRACE_MAIN] conversation state: ${prev} -> ${state}`);
+  7616→        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+  7617→          mainWindow.webContents.send('voice-conversation-state', { state, prev, color: CONVERSATION_ORB_COLOR[state] });
+  7618→        }
+  7619→      },
+  7620→      ...
+  7621→    });
+  7622→  Payload shape: { state: ConversationState, prev: ConversationState, color: string }
+  7623→  State space (5 + 'error'): 'idle' | 'listening' | 'thinking' | 'speaking' | 'interrupted' (+'error' in CONVERSATION_ORB_COLOR only — NOT in ConversationState type)
+  7624→  NO `source` field — the renderer's preload defaults to `'conversation'` in its log string but the renderer's AppShell handler does NOT differentiate on `source`.
+  7625→
+  7626→SENDER #2 — LocalVoiceEngine.onStateChange
+  7627→  File: /home/z/my-project/src/main/main.ts:1870
+  7628→  Code:
+  7629→    engine.setCallbacks({
+  7630→      onStateChange: (state: string) => {
+  7631→        console.log(`[ORB_TRACE_MAIN] engine state: ${state}`);
+  7632→        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+  7633→          mainWindow.webContents.send('voice-conversation-state', { state, source: 'engine' });
+  7634→        }
+  7635→      },
+  7636→      ...
+  7637→    });
+  7638→  Payload shape: { state: VoiceEngineState, source: 'engine' }
+  7639→  State space (6): 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'offline'
+  7640→  NO `prev`, NO `color` — only `state` + `source: 'engine'`.
+  7641→
+  7642→NOTE: Only TWO senders on this channel. Both are registered in the same callback setup block (main.ts:1805-1844 for conversation; 1854-1891 for engine). Both fire on every setState() inside their respective class.
+  7643→
+  7644→───────── 1.2 LISTENERS (every ipcRenderer.on('voice-conversation-state') + renderer subscribers) ─────────
+  7645→
+  7646→PRELOAD BRIDGE
+  7647→  File: /home/z/my-project/src/main/preload.ts:191-198
+  7648→  Code:
+  7649→    onVoiceConversationState: (callback: (ev: any) => void) => {
+  7650→      const listener = (_e: any, ev: any) => {
+  7651→        console.log(`[ORB_TRACE_PRELOAD] received state=${ev?.state} source=${ev?.source || 'conversation'}`);
+  7652→        callback(ev);
+  7653→      };
+  7654→      ipcRenderer.on('voice-conversation-state', listener);
+  7655→      return () => ipcRenderer.removeListener('voice-conversation-state', listener);
+  7656→    },
+  7657→  Notes: Single listener in preload — forwards to all renderer subscribers. Logs `source` from payload, defaults to 'conversation' if absent.
+  7658→
+  7659→RENDERER SUBSCRIBER #1 — AppShell (LIVE — drives the Orb)
+  7660→  File: /home/z/my-project/src/renderer/components/layout/AppShell.tsx:258-302
+  7661→  Code:
+  7662→    useEffect(() => {
+  7663→      const off = window.nexAPI?.onVoiceConversationState?.((ev: any) => {
+  7664→        const state = ev?.state as string;
+  7665→        if (!state) return;
+  7666→        console.log(`[ORB_TRACE_RENDERER] incoming state=${state} source=${ev?.source || 'conversation'}`);
+  7667→        const orbStateMap: Record<string, string> = {
+  7668→          idle: 'idle', initializing: 'initializing', ready: 'ready',
+  7669→          listening: 'listening', thinking: 'thinking', speaking: 'speaking',
+  7670→          working: 'working', active: 'active', success: 'success',
+  7671→          cancelled: 'cancelled', interrupted: 'active', error: 'error',
+  7672→        };
+  7673→        const orbState = orbStateMap[state] || 'idle';
+  7674→        if (orbState === 'listening') voiceController.setCondition('engine', 'listening');
+  7675→        else if (orbState === 'thinking') voiceController.setCondition('engine', 'thinking');
+  7676→        else if (orbState === 'speaking') voiceController.setCondition('engine', 'speaking');
+  7677→        else if (orbState === 'working' || orbState === 'active') voiceController.setCondition('engine', 'working');
+  7678→        else if (orbState === 'error') voiceController.setCondition('engine', 'error');
+  7679→        else voiceController.clearCondition('engine');
+  7680→      });
+  7681→      ...
+  7682→    }, []);
+  7683→  CRITICAL: This handler READS `ev?.source` for the log line ONLY — it does NOT branch on `source`. Both conversation emissions (`{state, prev, color}`) AND engine emissions (`{state, source:'engine'}`) go through the SAME `orbStateMap` → SAME `setCondition('engine', ...)` / `clearCondition('engine')` call. They OVERWRITE the same `'engine'` condition key.
+  7684→
+  7685→RENDERER SUBSCRIBER #2 — VoiceManagerPanel (LIVE — updates local UI display)
+  7686→  File: /home/z/my-project/src/renderer/components/VoiceManagerPanel.tsx:75-78
+  7687→  Code:
+  7688→    const offState = window.nexAPI.onVoiceConversationState?.((ev: any) => {
+  7689→      setConversationState(ev.state || 'idle');
+  7690→      if (ev.orbColor) setOrbColor(ev.orbColor);
+  7691→    });
+  7692→  Notes: Only updates a local React state for the panel's display. Reads `ev.orbColor` — which is undefined for engine emissions (engine doesn't send `color`). Benign — just shows last conversation color until next conversation emission.
+  7693→
+  7694→RENDERER SUBSCRIBER #3 — VoiceCenterPanel (DEAD CODE — never imported)
+  7695→  File: /home/z/my-project/src/renderer/components/VoiceCenterPanel.tsx:101-103
+  7696→  Code:
+  7697→    const unsub = window.nexAPI.onVoiceConversationState(() => {
+  7698→      refresh();
+  7699→    });
+  7700→  Status: VoiceCenterPanel is dead code — never imported anywhere (verified via grep: 0 imports outside its own file). Subscription has no effect on app behavior.
+  7701→
+  7702→───────── 1.3 THE RACE — concrete chronological scenario ─────────
+  7703→
+  7704→SCENARIO: User clicks Stop on chat panel during TTS audio playback (after Phase 16 BUG-12 + BUG-26 fixes; with Phase 17 cancelTask→abortInference active)
+  7705→
+  7706→t=0   User says "سلام NEX" → mic capture → VAD silence → engine.handleSpeechEnd (engine:302)
+  7707→        engine.setState('thinking') (engine:305) → main.ts:1870 IPC #1 sent
+  7708→          payload: { state: 'thinking', source: 'engine' }
+  7709→          → AppShell setCondition('engine','thinking') [Orb=thinking]
+  7710→
+  7711→t=10  STT result → engine.onFinalTranscript → conversation.feedTranscript →
+  7712→        handleUserUtterance (conv:369) → conversation.setState('thinking') (conv:390)
+  7713→          → main.ts:1809 IPC #2 sent
+  7714→          payload: { state: 'thinking', prev: 'idle', color: '#8b5cf6' }
+  7715→          → AppShell setCondition('engine','thinking') [Orb=thinking — same, idempotent]
+  7716→
+  7717→t=20  External: brainRoute → task_completed → speakResponseIfVoice(spokenText)
+  7718→        voiceConversationSpeak IPC → main.ts:1613 → conversation.speakResponse(text) (conv:483)
+  7719→        speakResponse:
+  7720→          currentTtsRequestId++ → N (conv:489)
+  7721→          conversation.setState('speaking') (conv:497) → main.ts:1809 IPC #3 sent
+  7722→            payload: { state: 'speaking', prev: 'thinking', color: '#22c55e' }
+  7723→            → AppShell setCondition('engine','speaking') [Orb=speaking]
+  7724→          await engine.speak(text, { requestId: N }) (conv:504)
+  7725→            engine: ttsProvider.init/synthesize runs (Piper subprocess)
+  7726→            engine.setState('speaking') (engine:393) → main.ts:1870 IPC #4 sent
+  7727→              payload: { state: 'speaking', source: 'engine' }
+  7728→              → AppShell setCondition('engine','speaking') [Orb=speaking — same, idempotent]
+  7729→            BUG-26 A guard: ttsActive=true, _currentTtsRequestId===N → audioReady=true
+  7730→            engine.speak returns (audioReady=true) — NO auto-transition out of 'speaking'
+  7731→              (Phase 16 BUG-12 fix: engine STAYS in 'speaking')
+  7732→          GUARD 1: currentTtsRequestId === N ✓ (not superseded)
+  7733→          GUARD 2: audioReady=true ✓ (audio is available)
+  7734→          await waitForTtsPlayback(N) (conv:537) — BLOCKS here
+  7735→
+  7736→t=30  main.ts:1873-1885: onTTSAudioReady fires → voice-tts-audio IPC
+  7737→        → App.tsx:92 onVoiceTTSAudio → audio.play() begins
+  7738→        → Orb stays in 'speaking' (no new IPC during playback)
+  7739→
+  7740→t=35  USER CLICKS STOP (NexChatPanel.handleStop, line 1055-1067):
+  7741→        aiChatStreamCancel() → main.ts:923 → localAbort('ipc:ai-chat-stream-cancel') →
+  7742→          abortInference() → _activeAbortController.abort() + _activeAbortController=null
+  7743→          (no chat-stream is in-flight — voice path doesn't use chat-stream — so this is a no-op)
+  7744→        agentCancelTask(activeAgentTaskRef, 'User cancelled') → main.ts:5250 →
+  7745→          await cancelTask → await import → abortInference() (no-op, _activeAbortController=null)
+  7746→          → token.cancel() — no agent task was active for this voice turn
+  7747→        voiceConversationStopSpeaking() → main.ts:1663 →
+  7748→          engine.stopSpeaking() (engine:446-454):
+  7749→            ttsProvider.stop() (kills Piper subprocess)
+  7750→            ttsActive = false
+  7751→            _currentTtsRequestId++ → N+1 (engine's counter, NOT conversation's)
+  7752→            if (state === 'speaking') setState('idle') (engine:453) →
+  7753→              engine.onStateChange('idle') → main.ts:1870 IPC #5 sent
+  7754→                payload: { state: 'idle', source: 'engine' }
+  7755→                → AppShell: orbState='idle' → else branch → clearCondition('engine')
+  7756→                  [Orb: 'engine' cleared → falls back to highest remaining priority — likely 'idle']
+  7757→          broadcast voice-tts-stop-playback → App.tsx:189-201 →
+  7758→            currentAudioRef.current.pause() (renderer pauses the <audio> element)
+  7759→            currentAudioRef = null; currentAudioRequestIdRef = null
+  7760→          NOTE: audio.pause() does NOT fire the 'ended' event (HTMLMediaElement.pause() does not trigger 'ended')
+  7761→          NOTE: voice-tts-ended IPC is NEVER sent (no one calls voiceTtsEnded after pause())
+  7762→          NOTE: conversation.releaseTtsPlaybackWait() is NEVER called by this handler
+  7763→          NOTE: conversation.abortCurrentTurn() is NEVER called by this handler
+  7764→
+  7765→t=35+ Δms  Conversation.state is STILL 'speaking' (no one called conversation.setState)
+  7766→             Conversation.speakResponse is STILL awaiting waitForTtsPlayback(N)
+  7767→               waitForTtsPlayback's ttsPlaybackResolve has NOT been called
+  7768→               30s safety timeout (conv:587) is ticking
+  7769→             Engine.state is 'idle' (engine.stopSpeaking set it)
+  7770→             AppShell: 'engine' condition CLEARED, no other active conditions → Orb visually shows 'idle'
+  7771→
+  7772→t=35+ 30s  If user does nothing else: 30s timeout fires (conv:587-592) →
+  7773→               releaseTtsPlaybackWait() → speakResponse's GUARD 3 check:
+  7774→                 currentTtsRequestId === N ✓ (no one bumped conversation's counter)
+  7775→               → enterListening() (conv:551) → conversation.setState('listening') → IPC sent
+  7776→               → Orb transitions to 'listening'
+  7777→             But the engine was never restarted via engine.startListening (only conversation.enterListening → engine.startListening)
+  7778→             STT may not be active — the user has to manually restart the conversation
+  7779→
+  7780→t=35+ <30s  If user starts speaking during the 30s window: mic captures, VAD fires,
+  7781→              engine.handleSpeechEnd → engine.setState('thinking') (engine:305) → IPC sent
+  7782→              → AppShell setCondition('engine','thinking')
+  7783→            STT result → engine.onFinalTranscript → conversation.feedTranscript
+  7784→              → conv:294 `if (this.state === 'speaking')` → TRUE (still in 'speaking'!)
+  7785→              → handleInterruption(text) (conv:651-664):
+  7786→                  interruptionDetected = true
+  7787→                  currentTtsRequestId++ → N+1
+  7788→                  releaseTtsPlaybackWait() ← finally releases the hang from the Stop click
+  7789→                  engine.stopSpeaking() (no-op, already stopped)
+  7790→                  setState('interrupted') (conv:661) → main.ts:1809 IPC sent
+  7791→                    payload: { state: 'interrupted', prev: 'speaking', color: '#f59e0b' }
+  7792→                    → AppShell orbStateMap['interrupted']='active' → setCondition('engine','working') [Orb=working]
+  7793→                  setTimeout(() => handleUserUtterance(text), 50) ← processes the new utterance
+  7794→              → The user's utterance is treated as BARGE-IN, not a normal new turn
+  7795→              → Eventually the new turn is processed correctly (state goes 'interrupted'→'thinking'→'speaking'…)
+  7796→
+  7797→DESYNC SUMMARY:
+  7798→- After Stop, conversation.state stays 'speaking' for up to 30s (until timeout or new utterance)
+  7799→- Orb visually shows 'idle' (engine cleared the 'engine' condition)
+  7800→- The first new user utterance is misrouted to handleInterruption (barge-in path)
+  7801→  which logs "user spoke during TTS — barge-in" even though no TTS is playing
+  7802→- Recovery is automatic (handleInterruption processes the utterance correctly) but the user
+  7803→  may notice the brief 'interrupted' Orb state and the barge-in log message
+  7804→- The root cause is that Phase 16's `voice-conversation-stop-speaking` handler does NOT
+  7805→  release the conversation's `ttsPlaybackResolve` (only `voice-conversation-abort` does, via
+  7806→  `abortCurrentTurn` which calls `releaseTtsPlaybackWait` at conv:712).
+  7807→
+  7808→───────── 1.4 CLEAN SEPARATION PROPOSALS (with migration risk) ─────────
+  7809→
+  7810→OPTION (a) — Split into two channels: 'voice-conversation-state' + 'voice-engine-state'
+  7811→  Changes:
+  7812→    - main.ts:1809 — keep as-is (conversation → voice-conversation-state)
+  7813→    - main.ts:1870 — change channel name to 'voice-engine-state'
+  7814→    - preload.ts:191-198 — keep onVoiceConversationState for conversation; add onVoiceEngineState for engine
+  7815→    - AppShell.tsx:258 — split useEffect: one subscribes to onVoiceConversationState → setCondition('conversation', state); one subscribes to onVoiceEngineState → setCondition('engine', state)
+  7816→    - VoiceManagerPanel.tsx:75 — could stay on onVoiceConversationState (just for display)
+  7817→    - VoiceCenterPanel.tsx:101 — dead code, no change required
+  7818→  Migration risk: MEDIUM
+  7819→    - 2 senders: 1-line change (channel name)
+  7820→    - 1 preload bridge: add a new function (10 lines)
+  7821→    - 1 live renderer subscriber (AppShell): need to split the useEffect or branch on the new callback
+  7822→    - 1 live renderer subscriber (VoiceManagerPanel): optional — could stay on conversation channel
+  7823→    - Adds a 'conversation' condition key to voiceController — needs STATE_PRIORITY entry
+  7824→    - All existing state priority resolution still works (engine vs conversation conditions)
+  7825→  Pro: clean separation — race ELIMINATED. Each FSM has its own condition key, no overwrite possible.
+  7826→  Con: 2 channels, 2 callbacks, 2 condition keys — slightly more API surface
+  7827→
+  7828→OPTION (b) — Keep one channel, require `source` field, AppShell routes to different condition keys
+  7829→  Changes:
+  7830→    - main.ts:1809 — add `source: 'conversation'` to the payload
+  7831→    - main.ts:1870 — already has `source: 'engine'` (no change)
+  7832→    - preload.ts:191-198 — no change (already forwards full payload)
+  7833→    - AppShell.tsx:258 — branch on ev.source:
+  7834→        if (ev.source === 'engine') setCondition('engine', orbState)
+  7835→        else setCondition('conversation', orbState)  // NEW condition key
+  7836→    - voiceController — add 'conversation' to condition key registry + STATE_PRIORITY
+  7837→  Migration risk: LOW
+  7838→    - 1 sender: add `source` field (1-line change in main.ts:1809)
+  7839→    - 1 live renderer subscriber (AppShell): add 1 branch (3-line change)
+
+[showing lines 7440-7839 of 10464; use offset=7840 with limit to continue reading]

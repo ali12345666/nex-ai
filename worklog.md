@@ -10461,3 +10461,336 @@ Stage Summary:
 - Multiple P3 coverage gaps identified
 - Architecture is sound and production-ready for all 10 audited areas EXCEPT the broken Phase 56 test
 - Recommendation: fix the broken Phase 56 test, then Phase 18 is GREEN
+
+
+---
+Task ID: NEXT-PHASE-AUDIT
+Agent: Explore (next phase planning)
+Task: READ-ONLY capabilities audit at commit 489c5ca (post-Phase 18, all P2/P3 resolved) to determine what's needed to make NEX AI a real Desktop AI Assistant.
+
+Work Log:
+- Read /home/z/my-project/worklog.md recent entries (lines 10000-10463, 7440-7740), README.md, docs/WINDOWS-VERIFICATION.md
+- Verified commit: 489c5cafd665b58b2fad731ce8a8f9c6129e843c on main (clean working tree except tool-results/)
+- Counted source/test files: 174 test files (169 actual test-*.ts/.js), 388 unique source files in src/
+- Counted IPC handlers in main.ts: 398 (monolithic, 6590 lines / 263KB)
+- Counted tool registrations: 21 default + 7 browser (opt-in) + 7 computer (opt-in) = 35 tools max
+- Counted assertions across test suite: ~10,615 assert() calls
+- Searched for TODO/FIXME/HACK/XXX markers: ZERO matches in src/ (discipline held)
+- Searched for "not implemented" / "stub" / "placeholder" / "Known Limitation": 6 real findings
+- Verified crash recovery: NO app.on('render-process-gone'/'gpu-process-crashed') or webContents.on('unresponsive') handlers; only NexErrorBoundary.tsx (renderer-side React)
+- Verified signature verification: update/download-verifier.ts:84 explicitly `signatureValid = undefined; // not implemented`
+- Verified wake word mode: TEXT mode implemented; AUDIO mode (energy pre-filter) is "optional future" per wake-word-detector.ts comment
+- Verified model catalog: Qwen2.5-0.5B (recommended first-run), Qwen2.5-7B, Qwen2.5-Coder-7B in advanced catalog; NO Qwen3-8B (README claim mismatch — README is generic, not a hard claim)
+- Verified test/model file: /home/z/my-project/repos/nex-ai/models/qwen2.5-0.5b-q4_k_m.gguf is MISSING in this sandbox (agent e2e tests need it to actually run)
+- Verified Windows checklist: all 23 manual items unchecked (Linux CI covers automated parts via test-p8d.ts only)
+
+Audit complete. 0 files modified, 0 commits made.
+
+═════════════════════════════════════════════════════════════════════════════
+1. CAPABILITIES INVENTORY
+═════════════════════════════════════════════════════════════════════════════
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 1 | Local LLM inference (node-llama-cpp + Vulkan) | FUNCTIONAL-BUT-INCOMPLETE | src/main/ai/runtimes/llamacpp-runtime.ts, inference.ts, local-engine.ts, multi-model-runtime-manager.ts; test-inference-electron.js (real Electron, requires model file). Vulkan binary MUST be manually installed per WINDOWS-VERIFICATION.md §2a (no auto-install). GPU offload NOT verified on Windows. |
+| 2 | STT (Whisper via whisper.cpp binary) | FUNCTIONAL-BUT-INCOMPLETE | src/main/voice/local-whisper-provider.ts (391 lines), local-voice-engine.ts STTProvider interface. test-phase41-local-voice.ts is source-inspection. No real mic/audio transcription test. |
+| 3 | TTS (Piper binary) | FUNCTIONAL-BUT-INCOMPLETE | src/main/voice/local-piper-provider.ts (383 lines). test-phase41 + test-phase56 are source-inspection. No real speaker playback test. TTS lifecycle thoroughly audited in Phase 18. |
+| 4 | Voice conversation (wake word, continuous, barge-in) | FUNCTIONAL-BUT-INCOMPLETE | nex-voice-conversation.ts (929 lines), wake-word-detector.ts (414 lines). Wake word: TEXT mode ONLY (line 4-30 comment — AUDIO mode "optional future"). Barge-in: extensively verified in Phase 18 (test-phase-18-stage1/3/4, 224 assertions). 4 latent low-severity open items remain (worklog lines 10430-10438). |
+| 5 | Agent system (planner, tools, verify, recover, ReAct) | FUNCTIONAL-BUT-INCOMPLETE | core.ts (2245 lines), planner.ts (556), react-loop.ts (411), verification.ts, recovery-engine.ts, trust-retry.ts. Planner has heuristic fallback (covers read-file/list-dir patterns only). verification.ts:374 marks expectedOutcome-based exit checks as placeholder. test-g-e2e-coding.js uses DETERMINISTIC tool calls (comment: "Qwen2.5-0.5B is not reliable enough to follow the full plan format"). |
+| 6 | Browser automation (Playwright) | FUNCTIONAL-BUT-INCOMPLETE | src/main/ai/tools/browser/ (8 files). Opt-in OFF by default (tool-registry.ts:380). 7 tools: navigate/click/type/extract/screenshot/close/session. test-phase-10-browser.ts is source-inspection. |
+| 7 | Computer control (nut-js) | FUNCTIONAL-BUT-INCOMPLETE | src/main/ai/tools/computer/ (9 files, ~1100 lines). Opt-in OFF by default (tool-registry.ts:388). 7 tools: mouse-click/move/scroll/keyboard-type/hotkey/screenshot-desktop. test-phase-11-computer.ts source; test-phase-11-runtime.js runs real Electron. |
+| 8 | Knowledge/RAG (vector store + keyword + hybrid) | PRODUCTION-READY (functionally) | vector-store.ts (208), retriever.ts (177, RRF fusion), keyword-index.ts, chunker.ts (243), ingester.ts (189), knowledge-service.ts (406), 23 knowledge tests. Wired via knowledge-port.ts (port pattern); main.ts:5214 wireKnowledgePort injects into agent. retrieval uses hash-embedder (no real embeddings) OR llama-embedder (requires embedder model). |
+| 9 | Multi-agent orchestration (ExecPlanner → NexAgentExec) | PRODUCTION-READY (functionally) | nex-executive-planner.ts (648), nex-agent-executor.ts. test-phase-12-orchestration.ts, test-phase-57-executive-planner.ts (179 assertions). |
+| 10 | Task queue (priority, persist, worker pool) | PRODUCTION-READY | src/main/tasks/ (queue.ts, persistence.ts, orb-bridge.ts, types.ts). test-phase-6-task-queue.ts. Persistence to <userData>/task-queue.json. |
+| 11 | Memory (semantic, long-term, retrieval) | PRODUCTION-READY (functionally) | semantic-memory-store.ts (391), memory-retrieval-engine.ts (226), long-term-memory-system.ts (261). Planner accepts relevantMemories (planner.ts:39-45). test-phase40-memory-knowledge.ts, test-phase52-personality-memory.ts. |
+| 12 | Terminal (node-pty) | PRODUCTION-READY | services/terminal-service.ts, renderer/services/terminal-session-manager.ts. PowerShell spawn on win32 (security/shell.ts). test-terminal-pty.ts, test-editor-terminal-isolation.ts. |
+| 13 | File editor (Monaco) | PRODUCTION-READY | EditorPanel.tsx, FileExplorer.tsx. test-ui04-editor-workflow.ts. |
+| 14 | Model management (download, deploy, activate) | FUNCTIONAL-BUT-INCOMPLETE | model-download-manager.ts (1101), model-deployment-manager.ts (750), ai-storage-manager.ts (604), model-versioning.ts, model-intelligence/{catalog,advisor,router}.ts. test-phase70-real-download.ts (real HTTP, only 2MB). SIGNATURE VERIFICATION NOT IMPLEMENTED (download-verifier.ts:84). Windows GPU install path unverified. |
+| 15 | Theme engine (16 colors, light/dark) | PRODUCTION-READY | renderer/lib/theme-engine.ts, styles/tokens.css, glass.css. test-ui13-orb-size-active-state.ts, test-ui14-cosmic-voice.ts, test-ui15-consolidation.ts. |
+| 16 | Orb visualization (Three.js, 13 states) | PRODUCTION-READY | renderer/components/orb/NexOrb.tsx (700 lines), orb-state.ts. test-ui01-orb-aliveness.ts + test-phase-18-orb-state-enforcement.ts (120) + test-phase-18-orb-state-flows.ts (38) = 158+ assertions. State machine fully validated. |
+| 17 | First-run wizard | FUNCTIONAL-BUT-INCOMPLETE | ai/first-run-wizard.ts + 13 IPC handlers (main.ts:2944-2992, 4446-4522). FirstRunWizardPanel.tsx. RECOMMENDED_FIRST_MODEL = Qwen2.5-0.5B (small, not reliable for agent). End-to-end Windows flow NOT verified. |
+| 18 | Update manager (auto-update) | STUB | update/update-manager.ts orchestrates 9 modules. HASH-only verification (download-verifier.ts:84 — signatureValid=undefined). Audit logger, rollback manager, planner exist. NO actual signature verification code. Permission-gated flow works. |
+| 19 | Crash recovery | NOT-IMPLEMENTED | NO app.on('render-process-gone'|'gpu-process-crashed'), NO webContents.on('unresponsive'|'render-process-gone'). NexErrorBoundary.tsx handles renderer React crashes only. main.ts:6479-6496 has before-quit graceful shutdown. |
+| 20 | Diagnostics panel | FUNCTIONAL-BUT-INCOMPLETE | DiagnosticsPanel.tsx (107 lines) — only runs tsc --noEmit + reads package.json. system/system-status-manager.ts (203 lines) provides richer subsystem status. No real CPU/GPU/VRAM/IPC-latency monitor in panel. |
+| 21 | Error UI (renderer) | PRODUCTION-READY | NexErrorBoundary.tsx (theme-aware, secret redaction, reload/dismiss). All 16 themes. |
+| 22 | Logging | PRODUCTION-READY | agent/logger.ts — JSONL with rolling 10MB cap, secret redactor (8 patterns), in-memory listeners for UI. |
+
+Summary: 9 PRODUCTION-READY, 11 FUNCTIONAL-BUT-INCOMPLETE, 1 STUB (update signatures), 1 NOT-IMPLEMENTED (crash recovery).
+
+═════════════════════════════════════════════════════════════════════════════
+2. ARCHITECTURE ASSESSMENT
+═════════════════════════════════════════════════════════════════════════════
+
+Strengths:
+- Layered agent architecture: User → Agent Core → Context Manager → Knowledge Port → Local Model (knowledge-port.ts comment). agent/ NEVER imports knowledge/ (architectural test enforced).
+- Strict security: CSP, context isolation, node-integration disabled, path-traversal block, .cmd shim metachar block (test-p8d.ts), System32 write-block, DPAPI secret storage, redactor in logger.
+- Dependency injection: KnowledgePort, OnlineEnvironment (P8-B pattern). agent/core.ts is opaque to backends — local/online symmetric.
+- Voice FSM: dual-FSM (engine + conversation) with priority-based Orb resolution (GAP-7 separation). 13-state orb state machine with VALID_TRANSITIONS enforced by safeOrbTransition.
+- Closed-loop ReAct: react-loop.ts closes the open-loop gap from Phase 7-37 (worklog:3497, 3585). Replanner skips on success-fast-path (saves LLM calls).
+- Task queue: priority heap + persistence + orb-bridge — interrupts marked `failed` (no fake completion).
+- Knowledge: RRF fusion + reranker injection point + project-scoped + injection-framed citations.
+- Logging: structured JSONL with rolling + secret redactor + in-memory listeners for UI.
+- Tests: 169 test files, ~10,615 assertions, ZERO TODO/FIXME/HACK/XXX markers in src/.
+- First-run wizard: 13 IPC handlers + hardware-tier-aware advisor + Persian summary.
+
+Bottlenecks:
+- MONOLITHIC main.ts: 6590 lines / 263KB / 398 IPC handlers in ONE file. This is the #1 architectural risk. Every IPC domain (fs, config, agent, voice, knowledge, model, update, vision, firstrun, conversation, browser, computer, terminal, system, advisor) is inline. Future changes touch a 6500-line file. Refactoring risk is high. Cannot be unit-tested in isolation.
+- preload.ts: 823 lines / 53KB — symmetric monolith. Every IPC channel must be declared twice.
+- No crash recovery: process-level failure (renderer or GPU) → app dies silently. NexErrorBoundary is renderer-side React only.
+- No signature verification: download-verifier.ts:84 explicitly `undefined`. Hash-only is unsafe for production auto-update.
+- Wake word AUDIO mode: TEXT-only means wake detection runs AFTER STT — so "wake" word is really "command starts with NEX". Not true always-on wake.
+- Heuristic planner: covers read-file/list-dir patterns only; on JSON parse failure, no other pattern matches (planner.ts:537 returns empty plan). Small models (Qwen2.5-0.5B) trigger this path frequently.
+- DiagnosticsPanel is a 107-line stub: tsc + package.json only. No real system telemetry in UI.
+
+Missing integration points:
+- Agent ↔ Voice: confirmed wired (worklog 10000+). Voice loop integrates with agent via setState('interrupted'/'thinking'/'working') and setCondition('conversation', '...').
+- Knowledge ↔ Agent: confirmed wired (knowledge-port.ts + main.ts:5214 wireKnowledgePort). retrieve() is project-scoped, citations carried.
+- Memory ↔ Agent: confirmed wired (planner accepts relevantMemories, semantic-memory-store.ts + memory-retrieval-engine.ts).
+- Update ↔ Permission: confirmed wired (update-manager.ts uses PermissionGate + VoicePermissionVerifier).
+- Renderer ↔ Orb: confirmed (AppShell.tsx:236-355 setCondition calls, 22 sites).
+- VoiceManager ↔ NexVoiceConversation: confirmed (voice-manager.ts:616 getVoiceManager singleton).
+- FirstRun ↔ ModelDeployment: confirmed (installRecommendedModel calls deploymentManager.downloadFromUrl).
+- MISSING: Auto-update check on app launch (no `checkForUpdates` call in app.whenReady — only IPC handlers; user must trigger manually).
+- MISSING: System-level telemetry to UI (system-status-manager exists but only invoked on demand via `system-status-check` IPC; no periodic push).
+
+Performance concerns (not measured, latent):
+- Model reload churn: multi-model-runtime-manager.ts likely loads/unloads per request — no warm-cache policy documented.
+- Memory leaks: voice-engine AudioContext, Terminal pty sessions, Browser sessions, Computer sessions, Knowledge services — dispose() methods exist but no automated leak test.
+- IPC overhead: 398 handlers in one process; IPC for every audio chunk (voice-feed-audio-chunk) may saturate under load.
+
+═════════════════════════════════════════════════════════════════════════════
+3. KNOWN ISSUES
+═════════════════════════════════════════════════════════════════════════════
+
+| # | Issue | Severity | Location | Status |
+|---|---|---|---|---|
+| 1 | Update signature verification NOT IMPLEMENTED | HIGH (distribution blocker) | src/main/update/download-verifier.ts:84 | documented as "not implemented"; hash-only is unsafe for auto-update |
+| 2 | No process-level crash recovery | HIGH (UX) | src/main/main.ts (missing app.on('render-process-gone'|'gpu-process-crashed'), webContents.on('unresponsive')) | only NexErrorBoundary handles React crashes; renderer/GPU process death = silent app death |
+| 3 | Wake word AUDIO mode not implemented | MEDIUM (UX) | src/main/voice/wake-word-detector.ts (comment: "optional future") | TEXT mode only — wake detection runs AFTER STT, not always-on |
+| 4 | Heuristic planner fallback only covers 2 patterns | MEDIUM (agent reliability) | src/main/agent/planner.ts:470-519 | read-file + list-dir; everything else returns empty plan |
+| 5 | verification.ts:374 expectedOutcome exit-code check is placeholder | LOW | src/main/agent/verification.ts:374 | comment: "placeholder for expectedOutcome-based exit code checks" |
+| 6 | agent/types.ts:39 'paused' state marked "not implemented yet" | LOW | src/main/agent/types.ts:39 | UI has no pause control |
+| 7 | voice-conversation-interrupted IPC is orphan | LOW (dead code) | main.ts:1902, preload.ts:242 | no renderer subscriber (Phase 17 audit) |
+| 8 | InteractionLoopManager.speakText bypasses requestId coordination | LOW (race, latent) | interaction-loop.ts:280 | collides with conversation TTS requestId if both active; documented P18-AUDIT-IPC-INTERACTIONS #2 |
+| 9 | Engine FSM can stick on 'speaking' if STT init fails after natural TTS end | LOW (visual desync) | local-voice-engine.ts:500-505 + 295-313 | recoverable on next setState |
+| 10 | Brief visual latency conversation 'listening' ↔ engine 'listening' after TTS | LOW (by design) | nex-voice-conversation.ts:347-358 | harmless |
+| 11 | DiagnosticsPanel is a 107-line stub (tsc + package.json only) | MEDIUM (UX) | src/renderer/components/DiagnosticsPanel.tsx | no real system telemetry; system-status-manager.ts exists but only on-demand |
+| 12 | First-run recommended model (Qwen2.5-0.5B) is too small for reliable agent use | MEDIUM (UX) | src/main/ai/first-run-wizard.ts:105 | test-g-e2e-coding.js comment: "not reliable enough to follow the full plan format" |
+| 13 | No Qwen3-8B in catalog (Qwen2.5-7B is largest) | MEDIUM (capability) | src/main/ai/model-intelligence/advanced-model-catalog.ts | README positioning vs reality |
+| 14 | main.ts monolith (6590 lines, 398 IPC handlers) | MEDIUM (maintainability) | src/main/main.ts | refactor risk; cannot unit-test IPC in isolation |
+| 15 | No "checkForUpdates on app launch" trigger | MEDIUM (auto-update) | src/main/main.ts (app.whenReady) | update-manager has IPC handlers but no auto-trigger |
+| 16 | All 23 Windows manual checklist items UNVERIFIED | HIGH (release blocker) | docs/WINDOWS-VERIFICATION.md | requires real Windows hardware |
+
+═════════════════════════════════════════════════════════════════════════════
+4. TEST COVERAGE MAP
+═════════════════════════════════════════════════════════════════════════════
+
+Total: 169 test files, ~10,615 assert() calls.
+Style: 119 use Electron mock (source-inspection / unit, read source files + grep patterns); 50 are runtime (real Electron app.whenReady OR real module imports).
+
+| Area | Test files | Approx. assertions | Test type | Gaps |
+|---|---|---|---|---|
+| tools (browser/computer/agent pipeline) | 34 | 1,760 | mixed (source-inspection + a few real) | browser/computer run only in unit-mock mode; no real Playwright/nut-js integration test |
+| system (UI/integration/first-run/update/deploy/library/diagnostics) | 89 | 7,499 | mostly source-inspection (Electron mock) | NO real Windows run; NO real GLM API call; NO real DPAPI verification on Windows |
+| knowledge (vector/BM25/chunker/retriever/ingester/embeddings) | 23 | 671 | mixed (most source-inspection) | no real embedder model test; hash-embedder only |
+| agent (e2e coding/cancel/state/offline/phase7) | 6 | 174 | real Electron + real model file | test-g-e2e uses DETERMINISTIC tool calls (LLM not in loop); model file missing in sandbox |
+| local-ai (registry/inference/provider/infra/smoke) | 5 | 132 | real Electron app.whenReady | requires /home/z/my-project/repos/nex-ai/models/*.gguf (MISSING in sandbox); inference is the only true end-to-end test |
+| glm (Windows .cmd shims, injection, path traversal) | 5 | 232 | source-inspection + behavioral (Linux CI) | P8-D automated parts run on Linux; the manual Windows checklist items are NOT covered |
+| plugins | 2 | 59 | source-inspection | no real plugin load test |
+| security | 2 | 29 | source-inspection + behavioral | sanitize is real (no mock); phase1 source-inspection |
+| persistence | 1 | 14 | real | real fs ops |
+| e2e (Phase 36 CDP) | 2 | 45 | REAL CDP via Chrome DevTools Protocol | requires Xvfb + Electron with --remote-debugging-port; smoke-level only |
+| **TOTAL** | **169** | **~10,615** | | |
+
+Areas with NO test coverage:
+- Real Windows hardware (any IPC, any tool, any voice, any model load) — 0 tests, manual checklist only
+- Real GPU offload on Vulkan — 0 automated tests; manual checklist §2b unchecked
+- Real microphone → STT transcription end-to-end — 0 tests
+- Real TTS audio playback on real speakers — 0 tests
+- AUDIO-mode wake word (energy pre-filter) — not implemented, no test
+- Auto-update signature verification — not implemented, no test
+- Process-level crash recovery (render-process-gone / gpu-process-crashed) — not implemented, no test
+- LLM-in-the-loop agent run (test-g-e2e uses deterministic tools; no test exercises the real planner → ReAct → tool cycle with a real LLM)
+- Periodic system telemetry push to UI — no test
+- main.ts decomposition / IPC handler unit tests — impossible while monolithic
+
+Areas with only source-inspection (no runtime):
+- All browser automation tests (test-phase-10-browser.ts etc.) — read source, assert patterns; no Playwright launch
+- Most voice tests (test-phase41, test-phase56) — read source; no real STT/TTS call
+- Most first-run / model-deployment / library tests — read source + module imports; no real download/install/activate end-to-end
+- All update-manager tests — read source; no real signature verification (not implemented)
+
+Areas that NEED E2E tests on real Windows hardware:
+- Vulkan binary install + GPU offload (Task Manager VRAM delta)
+- First-run wizard end-to-end (download → activate → chat)
+- Voice loop (mic → STT → planner → TTS → speaker)
+- Agent coding task on a real project (with Qwen2.5-7B or larger)
+- GLM 5.3 online routing with real API key + DPAPI persistence across restart
+- Auto-update with signature verification (BLOCKED until #1 fixed)
+
+═════════════════════════════════════════════════════════════════════════════
+5. WINDOWS READINESS
+═════════════════════════════════════════════════════════════════════════════
+
+VERIFIED (automated, runs on Linux CI per P8-D):
+- ✅ npm/npx/yarn/pnpm/bun resolve to .cmd shims on win32 — test-p8d.ts §1
+- ✅ cmd.exe metachar args (& | < > ^ % " newline) blocked — test-p8d.ts §2
+- ✅ No `/`-concatenated paths in new Phase 8 code — test-p8d.ts §3
+- ✅ PowerShell spawn for terminal on win32 — src/main/security/shell.ts
+- ✅ System32 write-block — src/main/main.ts isPathBlocked
+- ✅ Portable mode data dir next to .exe — src/main/persistence/index.ts
+- ✅ NSIS + Portable x64 build targets + icon — package.json build.win
+
+NOT VERIFIED (manual checklist — all 23 items unchecked, requires real Windows hardware):
+- ❌ Electron shell (npm install / dev / title bar / command palette / terminal toggle) — 3 items
+- ❌ llama.cpp Vulkan binary install + GPU offload proof + CPU fallback (§2a/2b/2c) — 9 sub-items, includes Task Manager VRAM check
+- ❌ GLM 5.3 integration (key persistence, DPAPI, online routing, agent coding task) — 6 items
+- ❌ Filesystem tools (read_files, project_structure, propose_changes, path traversal block) — 4 items
+- ❌ PowerShell / commands (terminal opens, npm_build/test, injection block, run_command allowlist) — 4 items
+- ❌ Diff application (multi-file propose_changes, new-file, reject) — 3 items
+- ❌ Secret storage (safeStorage DPAPI, restart persistence, portable build data) — 3 items
+- ❌ Installer (package:win produces installer, per-user install no elevation, uninstall asks about user data) — 3 items
+
+Windows-specific issues known by design (no action needed):
+- .cmd shims spawn with shell:true (binary whitelisted, args metachar-blocked)
+- Terminal spawns powershell.exe -NoLogo -NoProfile (not cmd.exe)
+- All FS tools root-jailed via assertPathInside + path.resolve
+
+Windows-specific issues NOT yet investigated:
+- Vulkan binary auto-install: docs require manual `npx node-llama-cpp download --gpu vulkan` — no auto-install in app. If user forgets, GPU silently falls back to CPU even when npx reports "Vulkan AVAILABLE".
+- asarUnpack config in package.json: `["**/*.node", "**/node_modules/@nut-tree-fork/**"]` — MISSING the `node_modules/node-llama-cpp/**` and `node_modules/@node-llama-cpp/**` entries the docs/WINDOWS-VERIFICATION.md §2a says to add. Native llama.cpp binary will NOT load from inside asar in the packaged app.
+
+═════════════════════════════════════════════════════════════════════════════
+6. GAP ANALYSIS — What's missing for a real Desktop AI Assistant
+═════════════════════════════════════════════════════════════════════════════
+
+The architecture has all the building blocks. The gaps are:
+
+A. **Platform validation gap**: NEX AI has never been confirmed to actually run on Windows. 18 phases of work (10463-line worklog, 174 source files, 169 tests, 398 IPC handlers) are conditional on Windows validation. This is the single largest unknown.
+
+B. **GPU inference gap**: Even on Windows, the Vulkan binary needs manual install + the asarUnpack config in package.json is INCOMPLETE (missing node-llama-cpp entries per the docs). Without this fix, the packaged app cannot use GPU even on a properly-installed system.
+
+C. **Distribution security gap**: Update signature verification is explicitly "not implemented" (download-verifier.ts:84). Hash-only verification is unsafe for production auto-update. Distribution cannot proceed without this.
+
+D. **Robustness gap**: No process-level crash recovery. If the renderer or GPU process dies (real risk on Windows, especially during Vulkan init), the app dies silently. NexErrorBoundary is renderer-side only.
+
+E. **Agent reliability gap**: First-run recommends Qwen2.5-0.5B, which the test comments call "not reliable enough to follow the full plan format". The agent only works with a larger model. Either recommend a larger model OR make the planner more robust (JSON repair, smarter heuristic fallback).
+
+F. **Wake word gap**: AUDIO mode is "optional future" — the current wake word runs AFTER STT, so it's not a true always-on wake. For JARVIS-like experience, an energy-based audio pre-filter is needed.
+
+G. **Diagnostics gap**: DiagnosticsPanel.tsx (107 lines) only runs tsc + reads package.json. No real system telemetry (CPU/GPU/VRAM/IPC latency), no log viewer, no agent task history. system-status-manager.ts (203 lines) exists but is on-demand only.
+
+H. **Maintainability gap**: main.ts is 6590 lines / 398 IPC handlers. Future changes are risky. Refactor is overdue.
+
+I. **First-run UX gap**: First-run recommends a 500M model that's too small for agent use. Either step up to Qwen2.5-7B (5GB VRAM) or add a "tiny/medium/large" tier choice with honest capability descriptions.
+
+J. **Auto-update trigger gap**: Update manager has IPC handlers but no auto-trigger on app launch. User must manually check for updates.
+
+═════════════════════════════════════════════════════════════════════════════
+7. THREE PHASE OPTIONS
+═════════════════════════════════════════════════════════════════════════════
+
+─── Option A: "Windows Production Validation" (Phase 19) ────────────────────
+Objective: Validate and fix NEX AI end-to-end on a real Windows 10/11 + RTX 4060 machine.
+Why now: All P0/P1/P2/P3 are resolved on Linux CI. The next riskiest unknown is whether the app actually works on Windows. All 23 manual checklist items are unverified. 18 phases of work are gated on this.
+Tasks:
+  A1. Pre-flight fix: add `node_modules/node-llama-cpp/**` + `node_modules/@node-llama-cpp/**` to package.json asarUnpack (required for native modules in packaged app).
+  A2. Run on Windows: npm install --legacy-peer-deps, npm run dev, npm run package:win, install NSIS.
+  A3. Install Vulkan binary: `npx node-llama-cpp download --gpu vulkan`.
+  A4. Verify GPU offload per docs §2b (Task Manager VRAM delta + [GPU_RUNTIME]/[GPU_MODEL_LOAD] logs).
+  A5. Run first-run wizard end-to-end (download → activate → chat → voice loop).
+  A6. Verify agent runs a coding task on a real fixture project with a 7B model.
+  A7. Verify GLM 5.3 online routing with real API key + DPAPI persistence across restart.
+  A8. Verify filesystem tools (read_files, propose_changes, path traversal block).
+  A9. Verify PowerShell terminal, npm_build/test tools, injection block.
+  A10. Verify secret storage (safeStorage DPAPI, restart persistence, portable build data).
+  A11. Check every box in docs/WINDOWS-VERIFICATION.md, file issues for failures.
+Deps: Windows 10/11 hardware with RTX 4060 (or comparable), GLM API key.
+Risks: May uncover deep platform-specific issues; could spawn multiple fix phases. Vulkan binary install on Windows has historically been fragile.
+Acceptance criteria:
+  - All 23 manual checklist items in docs/WINDOWS-VERIFICATION.md are checked.
+  - GPU offload proven (vramAfter > vramBefore by model size, gpuOffloadProven=YES).
+  - Voice loop works end-to-end (mic → STT → planner → TTS → speaker).
+  - Agent completes one coding task on a real Windows project.
+  - GLM 5.3 routing works with persisted encrypted key.
+Tests to add:
+  - tests/windows/test-phase19-windows-smoke.ts — boots the packaged app on Windows, asserts all subsystems healthy.
+  - tests/windows/test-phase19-windows-gpu-offload.ts — loads Qwen2.5-7B, asserts [GPU_MODEL_LOAD] gpuOffloadProven=YES and VRAM delta > 0.
+  - tests/windows/test-phase19-windows-voice-loop.ts — runs mic → STT → planner → TTS → speaker end-to-end.
+  - tests/windows/test-phase19-windows-agent-e2e.ts — runs agent on a fixture project with Qwen2.5-7B + real LLM-generated plan.
+  - tests/windows/test-phase19-windows-glm-persistence.ts — paste API key, restart, verify key survives + encrypted.
+
+─── Option B: "Planner Reliability + Real Model Integration" (Phase 19) ─────
+Objective: Make the agent actually work with a real LLM (Qwen2.5-7B or Qwen3-8B), not the unreliable Qwen2.5-0.5B; improve planner JSON parsing.
+Why now: test-g-e2e-coding.js explicitly says "Qwen2.5-0.5B is not reliable enough to follow the full plan format" — meaning the agent's "production-ready" claim is conditional. The first-run wizard recommends the unreliable model by default.
+Tasks:
+  B1. Add Qwen2.5-7B and Qwen2.5-Coder-7B as first-run tier-2 recommendations (currently in advanced catalog only).
+  B2. Add Qwen3-8B to downloadable catalog (if available GGUF exists).
+  B3. Add a JSON repair step (e.g. jsonrepair library) before parsing in planner.ts.
+  B4. Improve planner prompt to enforce strict JSON output (few-shot examples).
+  B5. Expand heuristic fallback to cover 8+ common coding patterns (run-tests, fix-bug, refactor, add-feature, git-commit, create-file, search-code, explain).
+  B6. Add "planner confidence threshold" — if confidence < 0.4 AND no heuristic match, re-prompt with a clarification question.
+  B7. Wire the larger model into test-g-e2e-coding.js (skip if model file missing).
+  B8. Add a planner reliability test that runs 20 fixture requests and asserts JSON parse rate > 95%.
+Deps: GPU hardware for 7B inference (Qwen2.5-7B Q4 ≈ 4.5GB VRAM); CPU-only fallback is too slow for interactive use.
+Risks: 7B model is 9× larger than 0.5B — VRAM constraints on 8GB GPUs may force partial offload (slower). Without Windows validation (Option A), even a reliable planner can't be confirmed working end-to-end.
+Acceptance criteria:
+  - test-g-e2e-coding passes with LLM-GENERATED plans (not deterministic) on Qwen2.5-7B.
+  - Planner JSON parse rate > 95% on a fixture of 20 diverse coding requests.
+  - Heuristic fallback covers > 80% of common coding request patterns.
+  - First-run wizard offers an honest "tiny (500M, slow, unreliable) / medium (7B, 5GB VRAM, reliable)" tier choice.
+Tests to add:
+  - tests/agent/test-phase19-planner-reliability.ts — 20 fixture requests, assert JSON parse rate, assert no empty plans.
+  - tests/agent/test-phase19-real-model-e2e.ts — agent runs on fixture project with Qwen2.5-7B, asserts task completes with real LLM-generated steps.
+  - tests/agent/test-phase19-heuristic-coverage.ts — assert heuristic fallback covers 8+ patterns (test each pattern in isolation).
+  - tests/agent/test-phase19-confidence-threshold.ts — assert low-confidence planner output triggers clarification, not empty plan.
+
+─── Option C: "Architectural Hardening — Decompose main.ts + Crash Recovery + Signature Verification" (Phase 19) ──
+Objective: Address the 3 architectural gaps that block distribution: monolithic main.ts, missing crash recovery, missing signature verification.
+Why now: Phase 18 finalized the voice/orb system. The next riskiest gap for a "desktop AI assistant" is process-level robustness (crash recovery) and update security (signature verification). Both are critical for distribution. Decomposing main.ts makes future phases safer.
+Tasks:
+  C1. Decompose main.ts: split 6590 lines into ~12 module files (window.ts, security.ts, ipc-fs.ts, ipc-config.ts, ipc-agent.ts, ipc-voice.ts, ipc-knowledge.ts, ipc-model.ts, ipc-update.ts, ipc-vision.ts, ipc-firstrun.ts, ipc-conversation.ts) with main.ts as the <500-line orchestrator. Preserve all 398 IPC channel names verbatim.
+  C2. Add crash recovery:
+      - app.on('render-process-gone') → show recovery dialog (reload or quit).
+      - app.on('gpu-process-crashed') → log + restart GPU process (Electron handles automatically but log for diagnostics).
+      - webContents.on('unresponsive') → offer reload.
+      - Persist running agent tasks before quit so they resume on next launch (mark as 'interrupted').
+  C3. Implement signature verification:
+      - Embed app's Ed25519 public key in src/main/update/public-key.ts.
+      - Replace download-verifier.ts:84 `signatureValid = undefined` with real Ed25519 verify using node:crypto.sign/verify.
+      - Add a signing script (build/sign-update.js) for release artifacts.
+  C4. Upgrade DiagnosticsPanel: real system info (CPU load, GPU name, VRAM used, model load time, IPC latency), log viewer (read agent logger JSONL), agent task history, recent error tail.
+  C5. Add auto-update check on app launch (debounced, 1/day, opt-out).
+Deps: None (Linux CI can validate decomposition + crash recovery + signature verification).
+Risks: Decomposing main.ts may introduce regressions in IPC handler wiring (398 channels). Need a "channel inventory" test that asserts every original channel still has a handler. Crash recovery tests need a way to actually kill the renderer process.
+Acceptance criteria:
+  - main.ts < 500 lines; each new module file < 500 lines.
+  - All 398 original IPC channels still have a handler (test asserts channel name → handler mapping).
+  - render-process-gone recovers gracefully (real Electron test: kill renderer, verify recovery dialog).
+  - Signature verification blocks tampered update files (real test: tampered signature rejected, valid signature accepted).
+  - DiagnosticsPanel shows real CPU/GPU/VRAM/load-time data.
+  - Auto-update check runs on app launch (debounced).
+Tests to add:
+  - tests/system/test-phase19-main-decomposition.ts — asserts each module file exists, < 500 lines, every original IPC channel has a handler in some module.
+  - tests/system/test-phase19-ipc-channel-inventory.ts — exhaustive: enumerate every channel name in preload.ts, assert a handler exists in main.ts modules.
+  - tests/e2e/test-phase19-crash-recovery.js — real Electron: kill renderer via CDP, verify recovery dialog appears.
+  - tests/update/test-phase19-signature-verification.ts — real Ed25519 sign + verify; tampered signature rejected, valid signature accepted.
+  - tests/system/test-phase19-diagnostics-real-data.ts — DiagnosticsPanel returns real CPU/GPU/VRAM numbers (not zero).
+
+═════════════════════════════════════════════════════════════════════════════
+8. RECOMMENDED NEXT PHASE
+═════════════════════════════════════════════════════════════════════════════
+
+RECOMMENDED: Option A — "Windows Production Validation" (Phase 19).
+
+Technical rationale:
+1. Highest-leverage unknown: 18 phases of work have been built on Linux CI. The single biggest risk is whether the app actually runs on the target platform (Windows). One real Windows run reveals whether all 18 phases compound into a working app or whether there are deep platform-specific issues.
+2. All prior work is gated on Windows working: voice, agent, RAG, model management, first-run, auto-update, GLM integration — every capability claim is conditional on Windows validation. docs/WINDOWS-VERIFICATION.md exists BECAUSE this is the contract. The 23 unchecked boxes are the release blockers.
+3. Pre-flight fix is cheap and high-impact: adding `node_modules/node-llama-cpp/**` + `node_modules/@node-llama-cpp/**` to package.json asarUnpack is a 4-line change that unblocks the packaged-app GPU path. Without it, even a perfect Windows run cannot use GPU in the installer.
+4. Option B (planner reliability) and Option C (architectural hardening) both depend on a working Windows app to validate against. Without A, B and C are improvements to an unvalidated foundation. A is the prerequisite.
+5. External blockers only: A only requires Windows hardware + GLM API key, not new code. Highest information per unit effort.
+6. Aligns with README: the README explicitly says `npm run package:win` produces a Windows installer — but this has never been verified. The user-facing promise is "Desktop AI Assistant for Windows".
+
+If Windows hardware is unavailable, fall back to Option C (Architectural Hardening): it can be validated on Linux CI, reduces risk surface for a future Windows release, and unblocks distribution security (signature verification). Option B can be merged into either A or C as a follow-on (better planner is always useful).
+
+Audit complete. No files modified. No commits made.
