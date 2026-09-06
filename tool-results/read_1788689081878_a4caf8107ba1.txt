@@ -1,0 +1,925 @@
+     1→/**
+     2→ * NEX AI — Voice Conversation System (Phase 56)
+     3→ *
+     4→ * Upgrades voice from simple STT/TTS into a natural conversational assistant.
+     5→ * A finite-state machine drives the conversation, with continuous context
+     6→ * tracking, user-interruption detection, personality-aware responses, and
+     7→ * permission-gated voice confirmation for sensitive actions.
+     8→ *
+     9→ * ════════════════════════════════════════════════════════════════════════════
+    10→ * CONVERSATION FLOW
+    11→ * ════════════════════════════════════════════════════════════════════════════
+    12→ *
+    13→ *   Wake word / voice trigger ("سلام NEX")
+    14→ *        ↓
+    15→ *   Listen (Local Whisper STT)
+    16→ *        ↓
+    17→ *   NEX Brain (model selection)
+    18→ *        ↓
+    19→ *   Personality Engine + Long-Term Memory (context)
+    20→ *        ↓
+    21→ *   Local Piper TTS (speak)
+    22→ *        ↓
+    23→ *   Listen again (continuous) OR idle
+    24→ *
+    25→ * STATES:  idle → listening → thinking → speaking → (interrupted) → listening
+    26→ *
+    27→ * ════════════════════════════════════════════════════════════════════════════
+    28→ * CRITICAL SECURITY (Phase 43)
+    29→ * ════════════════════════════════════════════════════════════════════════════
+    30→ *
+    31→ * NEX MUST NEVER autonomously:
+    32→ *   - perform sensitive actions (file modify / terminal / install / delete)
+    33→ *   - confirm a permission without an explicit spoken "بله تایید می‌کنم"
+    34→ *   - upload audio anywhere
+    35→ *   - use a cloud speech API
+    36→ *   - record audio permanently without permission
+    37→ *
+    38→ * Voice confirmation for sensitive actions goes through PermissionGate's
+    39→ * `respondViaVoice()` → this system's STT capture hook → transcript is
+    40→ * matched against the required Persian confirmation phrase.
+    41→ *
+    42→ * All voice processing is LOCAL (whisper.cpp + piper). No network.
+    43→ * ════════════════════════════════════════════════════════════════════════════
+    44→ */
+    45→
+    46→import { getLocalVoiceEngine, type VoiceEngineState, type VoiceEngineCallbacks } from './local-voice-engine';
+    47→import { getWakeWordDetector, parseVoiceCommand, type WakeWordMatch, type VoiceControlCommand } from './wake-word-detector';
+    48→import { getNexPersonalityEngine } from '../ai/nex-personality-engine';
+    49→import type { PersonalityType } from '../ai/nex-identity-manager';
+    50→import { getLongTermMemorySystem } from '../ai/long-term-memory-system';
+    51→
+    52→// ─── Types ─────────────────────────────────────────────────────────────────
+    53→
+    54→/**
+    55→ * Conversation state machine.
+    56→ *   idle         — not in a conversation, waiting for wake word
+    57→ *   listening    — capturing user speech via STT
+    58→ *   thinking     — processing (brain + memory + personality)
+    59→ *   speaking     — TTS playback of NEX's response
+    60→ *   interrupted  — user spoke during 'speaking' (barge-in)
+    61→ */
+    62→export type ConversationState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'interrupted';
+    63→
+    64→/**
+    65→ * Orb color mapping (Phase 56 spec):
+    66→ *   idle → blue
+    67→ *   listening → green
+    68→ *   thinking → purple
+    69→ *   speaking → green
+    70→ *   error → red
+    71→ */
+    72→export const CONVERSATION_ORB_COLOR: Record<ConversationState | 'error', string> = {
+    73→  idle: '#00e5ff',        // cyan — calm, ready
+    74→  listening: '#3b82f6',   // blue — receiving input
+    75→  thinking: '#8b5cf6',    // purple — internal processing
+    76→  speaking: '#22c55e',    // green — output (speaking)
+    77→  interrupted: '#f59e0b', // amber (transition)
+    78→  error: '#ef4444',       // red
+    79→};
+    80→
+    81→export interface ConversationContext {
+    82→  /** The most recent user utterance (raw transcript). */
+    83→  currentUtterance: string;
+    84→  /** The previous user utterance (for "همان قبلی" resolution). */
+    85→  previousUtterance: string;
+    86→  /** The topic of the current conversation (derived/heuristic). */
+    87→  currentTopic: string | null;
+    88→  /** The previous topic. */
+    89→  previousTopic: string | null;
+    90→  /** The current task NEX is working on (free-form). */
+    91→  currentTask: string | null;
+    92→  /** Turn counter for this conversation session. */
+    93→  turnCount: number;
+    94→  /** When the conversation started. */
+    95→  startedAt: number;
+    96→  /** Last activity timestamp. */
+    97→  lastActivityAt: number;
+    98→  // Phase 18 (P1-6 fix): REMOVED `pendingPermission: boolean` field.
+    99→  // The entire voice-confirmation path was dead (see P1-6 comment block).
+   100→}
+   101→
+   102→export interface ConversationTurn {
+   103→  role: 'user' | 'nex';
+   104→  text: string;
+   105→  timestamp: number;
+   106→  state: ConversationState;
+   107→}
+   108→
+   109→export interface ConversationCallbacks {
+   110→  onStateChange?: (state: ConversationState, prev: ConversationState) => void;
+   111→  onWakeWord?: (match: WakeWordMatch) => void;
+   112→  onUserUtterance?: (text: string) => void;
+   113→  onNexResponse?: (text: string) => void;
+   114→  onPartialTranscript?: (text: string) => void;
+   115→  onInterruption?: () => void;
+   116→  onVoiceCommand?: (command: VoiceControlCommand, phrase: string | null) => void;
+   117→  onError?: (message: string) => void;
+   118→  /** Hook to capture a voice confirmation (returns transcript). */
+   119→  onCaptureVoiceConfirmation?: () => Promise<string>;
+   120→}
+   121→
+   122→export interface ConversationStatus {
+   123→  state: ConversationState;
+   124→  active: boolean;
+   125→  wakeWordEnabled: boolean;
+   126→  context: ConversationContext;
+   127→  recentTurns: ConversationTurn[];
+   128→  personality: PersonalityType;
+   129→  orbColor: string;
+   130→}
+   131→
+   132→// ─── Conversation System ───────────────────────────────────────────────────
+   133→
+   134→export class NexVoiceConversation {
+   135→  private state: ConversationState = 'idle';
+   136→  private callbacks: ConversationCallbacks = {};
+   137→  private context: ConversationContext;
+   138→  private turns: ConversationTurn[] = [];
+   139→  private personality: PersonalityType = 'professional';
+   140→  private wakeEnabled = true;
+   141→  private active = false;
+   142→  private interruptionDetected = false;
+   143→  // Phase 18 (P1-6 fix): REMOVED `permissionVoiceCaptureFn` field.
+   144→  // The entire voice-confirmation path was dead (see comment at the
+   145→  // former `setPermissionVoiceCapture` location below).
+   146→
+   147→  // ── Phase 16 (BUG-12 + BUG-26): TTS request coordination ──────────────
+   148→  //
+   149→  // `currentTtsRequestId` is the monotonic ID of the currently-in-flight TTS
+   150→  // turn. It is incremented at the start of every speakResponse() and on
+   151→  // every cancel (abortCurrentTurn / handleInterruption). The engine uses
+   152→  // the same ID for its stale-detection guard (BUG-26 A), and the renderer
+   153→  // uses it to decide which `voice-tts-audio` IPC is the "current" one
+   154→  // (BUG-26 B + overlap protection).
+   155→  //
+   156→  // `ttsPlaybackResolve` / `ttsPlaybackRequestId` / `ttsPlaybackTimeout`
+   157→  // implement `waitForTtsPlayback(requestId)` — a promise that resolves
+   158→  // when the renderer sends `voice-tts-ended` for this requestId, OR when
+   159→  // the request is cancelled/superseded, OR after a 30s safety timeout
+   160→  // (BUG-12 fix: prevents hang if renderer crashes or audio element never
+   161→  // fires `onended`).
+   162→  private currentTtsRequestId = 0;
+   163→  private ttsPlaybackResolve: (() => void) | null = null;
+   164→  private ttsPlaybackRequestId: number | null = null;
+   165→  private ttsPlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
+   166→
+   167→  constructor() {
+   168→    this.context = {
+   169→      currentUtterance: '',
+   170→      previousUtterance: '',
+   171→      currentTopic: null,
+   172→      previousTopic: null,
+   173→      currentTask: null,
+   174→      turnCount: 0,
+   175→      startedAt: 0,
+   176→      lastActivityAt: 0,
+   177→    };
+   178→  }
+   179→
+   180→  setCallbacks(callbacks: ConversationCallbacks): void {
+   181→    this.callbacks = { ...this.callbacks, ...callbacks };
+   182→  }
+   183→
+   184→  get currentState(): ConversationState {
+   185→    return this.state;
+   186→  }
+   187→
+   188→  get isActive(): boolean {
+   189→    return this.active;
+   190→  }
+   191→
+   192→  get wakeWordEnabled(): boolean {
+   193→    return this.wakeEnabled;
+   194→  }
+   195→
+   196→  get currentContext(): ConversationContext {
+   197→    return { ...this.context };
+   198→  }
+   199→
+   200→  get currentPersonality(): PersonalityType {
+   201→    return this.personality;
+   202→  }
+   203→
+   204→  get orbColor(): string {
+   205→    return CONVERSATION_ORB_COLOR[this.state];
+   206→  }
+   207→
+   208→  // ── Lifecycle ──
+   209→
+   210→  /**
+   211→   * Start the conversation system: enable wake-word listening and mark active.
+   212→   * Does NOT immediately start STT — waits for the wake word.
+   213→   */
+   214→  async start(): Promise<void> {
+   215→    if (this.active) return;
+   216→    this.active = true;
+   217→    this.context.startedAt = Date.now();
+   218→    this.context.lastActivityAt = this.context.startedAt;
+   219→    this.setState('idle');
+   220→    // Wake-word detection is handled inside feedTranscript (the caller feeds
+   221→    // transcripts as they arrive from STT). No separate listener needed —
+   222→    // a single feedTranscript call resolves the wake word + remainder in one pass.
+   223→  }
+   224→
+   225→  /**
+   226→   * Stop the conversation system: stop STT/TTS, clear state.
+   227→   */
+   228→  async stop(): Promise<void> {
+   229→    this.active = false;
+   230→    try {
+   231→      const engine = getLocalVoiceEngine();
+   232→      if (engine.isListening) await engine.stopListening();
+   233→      if (engine.isSpeaking) engine.stopSpeaking();
+   234→    } catch { /* */ }
+   235→    this.setState('idle');
+   236→  }
+   237→
+   238→  /**
+   239→   * Toggle the conversation on/off.
+   240→   */
+   241→  async toggle(): Promise<void> {
+   242→    if (this.active) await this.stop();
+   243→    else await this.start();
+   244→  }
+   245→
+   246→  /** Enable wake-word detection. */
+   247→  enableWakeWord(): void {
+   248→    this.wakeEnabled = true;
+   249→  }
+   250→
+   251→  /** Disable wake-word detection (e.g., during a meeting). */
+   252→  disableWakeWord(): void {
+   253→    this.wakeEnabled = false;
+   254→  }
+   255→
+   256→  // ── Personality ──
+   257→
+   258→  setPersonality(type: PersonalityType): void {
+   259→    this.personality = type;
+   260→    try { getNexPersonalityEngine().setPersonality(type); } catch { /* */ }
+   261→  }
+   262→
+   263→  getPersonalityPrefixFa(): string {
+   264→    try {
+   265→      return getNexPersonalityEngine().getSystemPromptPrefixFa();
+   266→    } catch {
+   267→      return '';
+   268→    }
+   269→  }
+   270→
+   271→  // ── Wake word handling ──
+   272→
+   273→  /**
+   274→   * Feed a transcript to the wake word detector (called after STT produces
+   275→   * a result, OR continuously as partial transcripts arrive).
+   276→   */
+   277→  feedTranscript(text: string): void {
+   278→    if (!text || !this.active) return;
+   279→
+   280→    // First: check for natural speech-control commands (interruption / stop / resume)
+   281→    const cmd = parseVoiceCommand(text);
+   282→    if (cmd.command !== 'unknown') {
+   283→      this.handleVoiceCommand(cmd.command, cmd.matchedPhrase);
+   284→      this.callbacks.onVoiceCommand?.(cmd.command, cmd.matchedPhrase);
+   285→      return;
+   286→    }
+   287→
+   288→    // Phase 18 (P1-6 fix): REMOVED the `pendingPermission` branch.
+   289→    // The voice-confirmation path was dead — see the P1-6 comment block
+   290→    // at the former `setPermissionVoiceCapture` location. Removing this
+   291→    // branch also fixes P2-4 (VOICE-CONFIRMATION-COMMAND-LEAK) — previously
+   292→    // if `pendingPermission` were ever true (it never was) and the user
+   293→    // said "stop", the voice command would fire BEFORE the pending check,
+   294→    // causing `captureVoiceConfirmation` to wait 10s and return '' →
+   295→    // permission silently denied. Now the routing goes straight to the
+   296→    // barge-in / wake-word / utterance branches.
+   297→
+   298→    // If we're speaking and the user talks → interruption (barge-in)
+   299→    if (this.state === 'speaking') {
+   300→      this.handleInterruption(text);
+   301→      return;
+   302→    }
+   303→
+   304→    // If wake word detection is enabled, check for it
+   305→    if (this.wakeEnabled) {
+   306→      const detector = getWakeWordDetector();
+   307→      const match = detector.feedTranscript(text);
+   308→      if (match.matched) {
+   309→        this.handleWakeWord(match);
+   310→        return;
+   311→      }
+   312→    }
+   313→
+   314→    // Otherwise, treat as a user utterance in the current conversation.
+   315→    // (The 'speaking' state was already handled above as a barge-in, so
+   316→    // at this point we're in idle/listening/thinking/interrupted — all of
+   317→    // which accept a new user utterance as a fresh turn.)
+   318→    this.handleUserUtterance(text);
+   319→  }
+   320→
+   321→  /**
+   322→   * Manually trigger a conversation turn (e.g., from chat input or button).
+   323→   * Bypasses the wake word — starts listening immediately.
+   324→   */
+   325→  async startConversationTurn(initialText?: string): Promise<void> {
+   326→    if (!this.active) await this.start();
+   327→    if (initialText) {
+   328→      this.handleUserUtterance(initialText);
+   329→    } else {
+   330→      await this.enterListening();
+   331→    }
+   332→  }
+   333→
+   334→  // ── Internal state machine ──
+   335→
+   336→  private handleWakeWord(match: WakeWordMatch): void {
+   337→    this.callbacks.onWakeWord?.(match);
+   338→    // If the wake phrase had a trailing command (e.g., "سلام NEX یک مدار طراحی کن")
+   339→    // treat the remainder as the user utterance directly.
+   340→    if (match.remainder.trim()) {
+   341→      this.handleUserUtterance(match.remainder);
+   342→    } else {
+   343→      this.enterListening();
+   344→    }
+   345→  }
+   346→
+   347→  private async enterListening(): Promise<void> {
+   348→    if (!this.active) return;
+   349→    this.setState('listening');
+   350→    try {
+   351→      const engine = getLocalVoiceEngine();
+   352→      if (!engine.isListening) {
+   353→        await engine.startListening();
+   354→      }
+   355→    } catch (err: any) {
+   356→      this.callbacks.onError?.(`STT start failed: ${err?.message || err}`);
+   357→    }
+   358→  }
+   359→
+   360→  private async exitListening(): Promise<string> {
+   361→    try {
+   362→      const engine = getLocalVoiceEngine();
+   363→      if (engine.isListening) {
+   364→        await engine.stopListening();
+   365→      }
+   366→    } catch { /* */ }
+   367→    return this.context.currentUtterance;
+   368→  }
+   369→
+   370→  /**
+   371→   * Handle a complete user utterance: resolve context references, store the
+   372→   * turn, transition to thinking, and (in production) hand off to the brain.
+   373→   */
+   374→  private handleUserUtterance(text: string): void {
+   375→    const resolved = this.resolveContextReferences(text);
+   376→
+   377→    // Update context
+   378→    this.context.previousUtterance = this.context.currentUtterance;
+   379→    this.context.currentUtterance = resolved;
+   380→    this.context.turnCount++;
+   381→    this.context.lastActivityAt = Date.now();
+   382→
+   383→    // Heuristic topic detection
+   384→    this.context.previousTopic = this.context.currentTopic;
+   385→    this.context.currentTopic = this.detectTopic(resolved);
+   386→
+   387→    // Record the turn
+   388→    this.turns.push({ role: 'user', text: resolved, timestamp: Date.now(), state: this.state });
+   389→    this.callbacks.onUserUtterance?.(resolved);
+   390→
+   391→    // Persist context to long-term memory (session-scoped, public, no permission needed)
+   392→    this.persistContext();
+   393→
+   394→    // Transition to thinking
+   395→    this.setState('thinking');
+   396→    try { getLocalVoiceEngine().setThinking(true); } catch { /* */ }
+   397→
+   398→    // Phase 14+15: The response is generated by the chat panel, not here.
+   399→    // The flow is:
+   400→    //   1. This conversation system emits onUserUtterance → voice-conversation-user IPC
+   401→    //   2. AppShell.tsx dispatches nex:voice-transcript (source='voice') to NexChatPanel
+   402→    //   3. NexChatPanel calls brainRoute IPC → agent/chat generates response
+   403→    //   4. After response completion, NexChatPanel calls voiceConversationSpeak IPC
+   404→    //   5. That triggers this.speakResponse() → Piper TTS → audio playback
+   405→    //   6. After TTS, this.enterListening() restarts STT (continuous mode)
+   406→    //
+   407→    // We do NOT generate a response here — we wait for the external
+   408→    // voiceConversationSpeak() call from NexChatPanel.
+   409→  }
+   410→
+   411→  /**
+   412→   * Resolve pronoun references like "همان قبلی" (the same as before) using
+   413→   * the stored conversation context.
+   414→   *
+   415→   * "همان قبلی" refers to the immediately preceding utterance. At the time
+   416→   * of resolution, that utterance is still in `currentUtterance` (it moves to
+   417→   * `previousUtterance` only AFTER this resolution + the context update).
+   418→   */
+   419→  private resolveContextReferences(text: string): string {
+   420→    const normalized = text.replace(/\u200c/g, ' ').trim();
+   421→
+   422→    // "همان قبلی" / "قبلی" → refer to the last utterance (current, about to be previous)
+   423→    if (/همان\s*قبلی|همون\s*قبلی|قبلی/.test(normalized)) {
+   424→      const ref = this.context.currentUtterance || this.context.previousUtterance;
+   425→      if (ref) {
+   426→        return `${ref} (مرجع: همان قبلی)`;
+   427→      }
+   428→    }
+   429→
+   430→    // "همین" / "این" without a noun → refer to current topic
+   431→    if (/^(همین|این)$/.test(normalized) && this.context.currentTopic) {
+   432→      return this.context.currentTopic;
+   433→    }
+   434→
+   435→    // "ادامه‌اش" / "ادامه اش" → continue the current task
+   436→    if (/ادامه\s*اش|ادامه‌اش| ادامه‌اش/.test(normalized) && this.context.currentTask) {
+   437→      return `ادامه ${this.context.currentTask}`;
+   438→    }
+   439→
+   440→    return text;
+   441→  }
+   442→
+   443→  /**
+   444→   * Heuristic topic detection from the utterance.
+   445→   * In production, the expert router (Phase 53) would inform this.
+   446→   */
+   447→  private detectTopic(text: string): string | null {
+   448→    const lower = text.toLowerCase();
+   449→    if (/مدار|circuit|ولت|amp|resistor|مقاومت|خازن|capacitor|آردوینو|arduino|esp32/.test(lower)) return 'electronics';
+   450→    if (/کد|code|تابع|function|برنامه|program|debug|باگ|bug/.test(lower)) return 'software';
+   451→    if (/ریاضی|math|فیزیک|physics|شیمی|chemistry/.test(lower)) return 'science';
+   452→    if (/پروژه|project|مدیریت|manage/.test(lower)) return 'project';
+   453→    return null;
+   454→  }
+   455→
+   456→  /**
+   457→   * Speak a response (TTS). Called by the brain / chat IPC after generating
+   458→   * a personality-styled response.
+   459→   *
+   460→   * Phase 16 (BUG-12 + BUG-26 fix):
+   461→   *
+   462→   * The new lifecycle is:
+   463→   *   1. Generate a fresh requestId (invalidates any previous in-flight TTS).
+   464→   *   2. setState('speaking') and call engine.speak(text, { requestId }).
+   465→   *      engine.speak returns once Piper synthesis is done (NOT once audio
+   466→   *      playback is done — that's the bug we're fixing). It returns
+   467→   *      `audioReady` = true iff `onTTSAudioReady` was fired.
+   468→   *   3. If audioReady is false (synthesis failed OR stale per BUG-26 A
+   469→   *      guard), do NOT wait — transition to idle and return.
+   470→   *   4. If the request was superseded during synthesis (a newer
+   471→   *      speakResponse or a Stop arrived), abort without waiting.
+   472→   *   5. Otherwise, await `waitForTtsPlayback(requestId)` — a promise that
+   473→   *      resolves when the renderer sends `voice-tts-ended` for this
+   474→   *      requestId (audio element's `onended` / `onerror`), with a 30s
+   475→   *      safety timeout.
+   476→   *   6. After the wait resolves, re-check the requestId — if a Stop or
+   477→   *      newer request arrived during playback, do NOT enterListening.
+   478→   *   7. Only if still current, enterListening() (which transitions to
+   479→   *      'listening' and restarts STT).
+   480→   *
+   481→   * Race protection (TTS #1 → Stop → TTS #1 late → TTS #2):
+   482→   *   - Stop bumps currentTtsRequestId, so engine.speak's BUG-26 A guard
+   483→   *     discards the late #1 synthesis result. audioReady=false, the wait
+   484→   *     is skipped. No audio for #1.
+   485→   *   - TTS #2 gets a fresh requestId, synthesizes normally, waits for its
+   486→   *     own playback, and only #2 plays.
+   487→   */
+   488→  async speakResponse(text: string): Promise<void> {
+   489→    if (!text.trim()) return;
+   490→
+   491→    // Generate a fresh request ID. This invalidates any previous in-flight
+   492→    // TTS — its engine stale-guard will fire, its waitForTtsPlayback will
+   493→    // be released immediately (see releaseTtsPlaybackWait below).
+   494→    this.currentTtsRequestId++;
+   495→    const requestId = this.currentTtsRequestId;
+   496→
+   497→    // Record the turn
+   498→    this.turns.push({ role: 'nex', text, timestamp: Date.now(), state: 'speaking' });
+   499→    this.callbacks.onNexResponse?.(text);
+   500→
+   501→    // Transition to speaking
+   502→    this.setState('speaking');
+   503→
+   504→    let audioReady = false;
+   505→    try {
+   506→      const engine = getLocalVoiceEngine();
+   507→      // Pass requestId so engine uses it for stale detection and tags the
+   508→      // voice-tts-audio IPC. The renderer uses it to discard stale audio.
+   509→      audioReady = await engine.speak(text, { requestId });
+   510→    } catch (err: any) {
+   511→      this.callbacks.onError?.(`TTS failed: ${err?.message || err}`);
+   512→      this.setState('idle');
+   513→      this.releaseTtsPlaybackWait();
+   514→      return;
+   515→    }
+   516→
+   517→    // GUARD 1: if a newer request or Stop superseded this one during
+   518→    // synthesis, do NOT wait for playback and do NOT enterListening.
+   519→    if (this.currentTtsRequestId !== requestId) {
+   520→      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} superseded during synthesis — not waiting for playback`);
+   521→      return;
+   522→    }
+   523→
+   524→    // GUARD 2: if synthesis failed or was discarded as stale (BUG-26 A),
+   525→    // there is no audio to wait for. Transition to idle and return.
+   526→    if (!audioReady) {
+   527→      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} no audio ready — transitioning to idle`);
+   528→      this.setState(this.active ? 'idle' : 'idle');
+   529→      return;
+   530→    }
+   531→
+   532→    // Wait for the renderer to confirm playback ended (BUG-12 fix).
+   533→    // This promise resolves when:
+   534→    //   (a) the renderer sends `voice-tts-ended` for this requestId
+   535→    //       (audio element's `onended` fired), OR
+   536→    //   (b) the renderer sends `voice-tts-ended` for this requestId
+   537→    //       because `onerror` fired (defensive — release the wait), OR
+   538→    //   (c) a newer speakResponse or Stop bumps currentTtsRequestId
+   539→    //       (releaseTtsPlaybackWait auto-resolves the pending wait), OR
+   540→    //   (d) the 30s safety timeout fires (defensive — prevents hang if
+   541→    //       the renderer crashed or audio element never fires onended).
+   542→    await this.waitForTtsPlayback(requestId);
+   543→
+   544→    // GUARD 3: re-check after the wait — a Stop or newer request may have
+   545→    // arrived during playback. If so, do NOT enterListening (the new
+   546→    // request's speakResponse will handle that, or the user explicitly
+   547→    // cancelled).
+   548→    if (this.currentTtsRequestId !== requestId) {
+   549→      console.log(`[VOICE_PIPELINE] speakResponse: req=${requestId} cancelled during playback — not entering listening`);
+   550→      return;
+   551→    }
+   552→
+   553→    // After playback ended, return to listening (continuous conversation)
+   554→    // or idle.
+   555→    if (this.active && !this.interruptionDetected) {
+   556→      await this.enterListening();
+   557→    } else {
+   558→      this.interruptionDetected = false;
+   559→      this.setState('idle');
+   560→    }
+   561→  }
+   562→
+   563→  /**
+   564→   * Phase 16 (BUG-12 fix): Wait for the renderer to confirm that the audio
+   565→   * element finished playing the TTS WAV file for the given requestId.
+   566→   *
+   567→   * Resolves when:
+   568→   *   - `notifyTtsPlaybackEnded(requestId)` is called (renderer sent
+   569→   *     `voice-tts-ended` for this requestId), OR
+   570→   *   - `releaseTtsPlaybackWait()` is called (cancel/supersede — the
+   571→   *     pending wait is released so the caller doesn't hang), OR
+   572→   *   - 30s safety timeout fires (defensive — prevents permanent hang if
+   573→   *     renderer crashes or audio element never fires `onended`).
+   574→   *
+   575→   * If `requestId` does not match `this.currentTtsRequestId` at call time,
+   576→   * resolves immediately (the request was already superseded before this
+   577→   * wait even started).
+   578→   */
+   579→  private waitForTtsPlayback(requestId: number): Promise<void> {
+   580→    // If already superseded, resolve immediately.
+   581→    if (this.currentTtsRequestId !== requestId) {
+   582→      console.log(`[VOICE_PIPELINE] waitForTtsPlayback: req=${requestId} already superseded — resolving immediately`);
+   583→      return Promise.resolve();
+   584→    }
+   585→    // If a previous wait is somehow still pending, release it first
+   586→    // (defensive — should not normally happen because speakResponse is
+   587→    // serialized, but protects against reentrancy).
+   588→    this.releaseTtsPlaybackWait();
+   589→    return new Promise<void>((resolve) => {
+   590→      this.ttsPlaybackRequestId = requestId;
+   591→      this.ttsPlaybackResolve = resolve;
+   592→      this.ttsPlaybackTimeout = setTimeout(() => {
+   593→        if (this.ttsPlaybackRequestId === requestId) {
+   594→          console.warn(`[VOICE_PIPELINE] TTS playback wait timeout for req=${requestId} — releasing (renderer may have crashed)`);
+   595→          this.releaseTtsPlaybackWait();
+   596→        }
+   597→      }, 30000);
+   598→    });
+   599→  }
+   600→
+   601→  /**
+   602→   * Phase 16 (BUG-12 fix): Called by the main process `voice-tts-ended`
+   603→   * IPC handler when the renderer's audio element fires `onended` (or
+   604→   * `onerror`). Resolves the pending `waitForTtsPlayback(requestId)`
+   605→   * promise iff the signal matches the current pending wait.
+   606→   *
+   607→   * If the signal is for a stale requestId (already superseded), it is
+   608→   * ignored — the wait was already released by `releaseTtsPlaybackWait`
+   609→   * when the supersede happened.
+   610→   */
+   611→  notifyTtsPlaybackEnded(requestId: number): void {
+   612→    if (this.ttsPlaybackRequestId === requestId) {
+   613→      console.log(`[VOICE_PIPELINE] TTS playback ended signal for req=${requestId} — releasing wait`);
+   614→      this.releaseTtsPlaybackWait();
+   615→    } else {
+   616→      // Stale signal — ignore. Could be:
+   617→      //   - a late `onended` for a previously-cancelled request, OR
+   618→      //   - a duplicate `onended` after the wait was already released.
+   619→      console.log(`[VOICE_PIPELINE] TTS playback ended signal for req=${requestId} but current wait is for req=${this.ttsPlaybackRequestId} — ignoring (stale)`);
+   620→    }
+   621→  }
+   622→
+   623→  /**
+   624→   * Phase 16 (BUG-12 + BUG-26): Release the pending `waitForTtsPlayback`
+   625→   * promise (if any). Called by:
+   626→   *   - `notifyTtsPlaybackEnded` when the matching signal arrives, OR
+   627→   *   - `abortCurrentTurn` / `handleInterruption` when the user cancels, OR
+   628→   *   - `speakResponse` when a newer request supersedes the previous one
+   629→   *     (the previous wait is released so the previous speakResponse can
+   630→   *     finish and exit without hanging).
+   631→   *
+   632→   * Also bumps `currentTtsRequestId` so the engine's stale-guard discards
+   633→   * any in-flight synthesis for the cancelled request (BUG-26 A).
+   634→   */
+   635→  private releaseTtsPlaybackWait(): void {
+   636→    if (this.ttsPlaybackResolve) {
+   637→      const resolve = this.ttsPlaybackResolve;
+   638→      this.ttsPlaybackResolve = null;
+   639→      this.ttsPlaybackRequestId = null;
+   640→      if (this.ttsPlaybackTimeout) {
+   641→        clearTimeout(this.ttsPlaybackTimeout);
+   642→        this.ttsPlaybackTimeout = null;
+   643→      }
+   644→      resolve();
+   645→    }
+   646→  }
+   647→
+   648→  /**
+   649→   * Handle a barge-in: the user spoke while NEX was speaking.
+   650→   * Stops TTS immediately and transitions to listening.
+   651→   *
+   652→   * Phase 16 (BUG-26 fix): bumps currentTtsRequestId and releases any
+   653→   * pending playback wait so the cancelled speakResponse doesn't hang,
+   654→   * and the engine's stale-guard discards any in-flight synthesis.
+   655→   */
+   656→  private handleInterruption(text: string): void {
+   657→    this.interruptionDetected = true;
+   658→    this.callbacks.onInterruption?.();
+   659→    // Phase 16: invalidate any in-flight TTS (synthesis + playback).
+   660→    this.currentTtsRequestId++;
+   661→    this.releaseTtsPlaybackWait();
+   662→    try {
+   663→      const engine = getLocalVoiceEngine();
+   664→      engine.stopSpeaking();
+   665→    } catch { /* */ }
+   666→    this.setState('interrupted');
+   667→    // Immediately process the interrupting utterance as a new turn
+   668→    setTimeout(() => this.handleUserUtterance(text), 50);
+   669→  }
+   670→
+   671→  /**
+   672→   * Phase 18 Stage 3: Handle a barge-in detected by the main-side VAD.
+   673→   *
+   674→   * Called when the engine's `onBargeIn` callback fires (VAD detected user
+   675→   * speech while `ttsActive` is true — during TTS synthesis OR playback).
+   676→   *
+   677→   * Actions (in order):
+   678→   * 1. Guard: if not in 'speaking' state, return (idempotent — already
+   679→   *    handled by stopSpeaking, abortCurrentTurn, or a previous barge-in).
+   680→   * 2. Set `interruptionDetected = true` (so speakResponse's GUARD 3 skips
+   681→   *    enterListening — prevents duplicate listening restart).
+   682→   * 3. Fire `onInterruption` callback → main broadcasts
+   683→   *    `voice-tts-stop-playback` (renderer pauses `<audio>`) +
+   684→   *    `voice-conversation-interrupted` (Orb state).
+   685→   * 4. Bump `currentTtsRequestId` (invalidates in-flight synthesis + stale
+   686→   *    callbacks via engine's BUG-26 A stale guard).
+   687→   * 5. Release `waitForTtsPlayback` (so speakResponse doesn't hang).
+   688→   * 6. Stop engine TTS (engine.stopSpeaking → ttsActive=false, bumps engine
+   689→   *    requestId, sets engine state to 'idle').
+   690→   * 7. `setState('interrupted')` → Orb transitions speaking → working (via
+   691→   *    interrupted→active→working mapping in AppShell).
+   692→   * 8. `enterListening()` → restart STT for the user's barge-in utterance
+   693→   *    → setState('listening') → Orb transitions working → listening.
+   694→   *
+   695→   * Race protection:
+   696→   * - If a newer speakResponse started between barge-in detection and
+   697→   *   handleBargeIn, the requestId bump in step 4 invalidates the newer
+   698→   *   one's GUARD 1 check.
+   699→   * - If stopSpeaking was called before handleBargeIn, ttsActive is already
+   700→   *   false, engine.stopSpeaking() is a no-op.
+   701→   * - If playback already ended before handleBargeIn, waitForTtsPlayback
+   702→   *   already resolved, releaseTtsPlaybackWait is a no-op.
+   703→   * - Rapid repeated barge-in: the first barge-in sets ttsActive=false (via
+   704→   *   engine.stopSpeaking in step 6), so subsequent VAD 'speech' events
+   705→   *   don't trigger onBargeIn (because ttsActive is false). Also, the
+   706→   *   guard in step 1 returns if state is no longer 'speaking'.
+   707→   */
+   708→  handleBargeIn(): void {
+   709→    // Guard: if not in 'speaking' state, ignore (idempotent).
+   710→    // This handles: stopSpeaking already called, abortCurrentTurn already
+   711→    // called, previous barge-in already handled, or not speaking at all.
+   712→    if (this.state !== 'speaking') {
+   713→      console.log('[VOICE_PIPELINE] handleBargeIn: not in speaking state — ignoring');
+   714→      return;
+   715→    }
+   716→
+   717→    console.log('[VOICE_PIPELINE] Barge-in: stopping TTS + restarting listening');
+   718→    this.interruptionDetected = true;
+   719→    this.callbacks.onInterruption?.();
+   720→    // Invalidate any in-flight TTS (synthesis + playback).
+   721→    this.currentTtsRequestId++;
+   722→    this.releaseTtsPlaybackWait();
+   723→    try {
+   724→      const engine = getLocalVoiceEngine();
+   725→      engine.stopSpeaking();
+   726→    } catch { /* */ }
+   727→    this.setState('interrupted');
+   728→    // Restart listening for the user's barge-in utterance.
+   729→    // enterListening() calls engine.startListening() which sets sttActive=true
+   730→    // and setState('listening'). The VAD can then detect speech and transcribe.
+   731→    if (this.active) {
+   732→      this.enterListening().catch(() => {});
+   733→    } else {
+   734→      this.setState('idle');
+   735→    }
+   736→  }
+   737→
+   738→  /**
+   739→   * Handle a natural speech-control command (stop / resume / cancel).
+   740→   */
+   741→  private handleVoiceCommand(command: VoiceControlCommand, phrase: string | null): void {
+   742→    switch (command) {
+   743→      case 'stop-speaking':
+   744→        try { getLocalVoiceEngine().stopSpeaking(); } catch { /* */ }
+   745→        this.setState('idle');
+   746→        break;
+   747→      case 'resume':
+   748→        if (this.active) this.enterListening();
+   749→        break;
+   750→      case 'cancel':
+   751→        this.abortCurrentTurn();
+   752→        break;
+   753→      case 'repeat':
+   754→        // Repeat the last NEX response
+   755→        const lastNex = [...this.turns].reverse().find((t) => t.role === 'nex');
+   756→        if (lastNex) this.speakResponse(lastNex.text);
+   757→        break;
+   758→      case 'unknown':
+   759→      default:
+   760→        break;
+   761→    }
+   762→  }
+   763→
+   764→  /**
+   765→   * Abort the current turn (cancel thinking / speaking).
+   766→   *
+   767→   * Phase 16 (BUG-12 + BUG-26 fix):
+   768→   *   - Bump `currentTtsRequestId` so the engine's stale-guard (BUG-26 A)
+   769→   *     discards any in-flight Piper synthesis. The renderer also uses the
+   770→   *     bumped ID via the `voice-tts-stop-playback` IPC to pause any
+   771→   *     currently-playing audio element (BUG-26 B).
+   772→   *   - Release the pending `waitForTtsPlayback` promise (BUG-12) so the
+   773→   *     speakResponse that's awaiting playback doesn't hang waiting for a
+   774→   *     `voice-tts-ended` signal that will never come (the renderer pauses
+   775→   *     the audio, so `onended` may not fire).
+   776→   */
+   777→  abortCurrentTurn(): void {
+   778→    // Invalidate any in-flight TTS request (both engine synthesis and
+   779→    // renderer playback). The bumped ID causes:
+   780→    //   - engine.speak's stale-guard to discard late synthesis (BUG-26 A)
+   781→    //   - speakResponse's GUARD 1/3 to skip enterListening (BUG-12)
+   782→    this.currentTtsRequestId++;
+   783→    // Release any pending playback wait so speakResponse doesn't hang.
+   784→    this.releaseTtsPlaybackWait();
+   785→    try {
+   786→      const engine = getLocalVoiceEngine();
+   787→      if (engine.isSpeaking) engine.stopSpeaking();
+   788→      if (engine.isListening) { engine.stopListening().catch(() => {}); }
+   789→    } catch { /* */ }
+   790→    this.setState('idle');
+   791→  }
+   792→
+   793→  // ── Permission voice confirmation (Phase 43 integration) ──
+   794→  //
+   795→  // Phase 18 (P1-6 fix): The entire voice-confirmation path was REMOVED.
+   796→  // The previous code wired `permissionVoiceCaptureFn` to
+   797→  // `captureVoiceConfirmation` (recursive) and exposed
+   798→  // `setPermissionVoiceCapture` + `captureVoiceConfirmation` +
+   799→  // `handlePermissionConfirmation` + `pendingPermission` field.
+   800→  // Reference search confirmed:
+   801→  //   - No external caller invokes `captureVoiceConfirmation`.
+   802→  //   - All PermissionGate users either use their own voiceVerifier
+   803→  //     (update-manager.ts) or have no `onCaptureVoiceInput` set.
+   804→  //   - `update-manager.ts`'s `voiceVerifier.captureFn` is never set.
+   805→  // So the path was dead AND the wiring was recursive (infinite loop
+   806→  // if ever called). Removed to prevent confusion + reduce surface.
+   807→  // Active PermissionGate paths (requestPermission + respondViaVoice
+   808→  // for update-manager's own verifier, model-deployment, knowledge-pack,
+   809→  // nex-agent-executor) are NOT affected — they don't use the conversation's
+   810→  // capture hook.
+   811→
+   812→  // ── Context persistence (Long-Term Memory) ──
+   813→
+   814→  private persistContext(): void {
+   815→    try {
+   816→      const mem = getLongTermMemorySystem();
+   817→      mem.store('pattern', 'voice:previous-topic', this.context.previousTopic, {
+   818→        store: 'session', sensitivity: 'public', tags: ['voice', 'conversation-context'],
+   819→      }).catch(() => {});
+   820→      mem.store('pattern', 'voice:current-topic', this.context.currentTopic, {
+   821→        store: 'session', sensitivity: 'public', tags: ['voice', 'conversation-context'],
+   822→      }).catch(() => {});
+   823→      mem.store('pattern', 'voice:current-task', this.context.currentTask, {
+   824→        store: 'session', sensitivity: 'public', tags: ['voice', 'conversation-context'],
+   825→      }).catch(() => {});
+   826→      mem.store('pattern', 'voice:previous-utterance', this.context.previousUtterance, {
+   827→        store: 'session', sensitivity: 'public', tags: ['voice', 'conversation-context'],
+   828→      }).catch(() => {});
+   829→    } catch { /* memory is best-effort */ }
+   830→  }
+   831→
+   832→  /**
+   833→   * Restore context from long-term memory (on conversation restart).
+   834→   */
+   835→  async restoreContext(): Promise<void> {
+   836→    try {
+   837→      const mem = getLongTermMemorySystem();
+   838→      const prevTopic = mem.retrieve('voice:previous-topic', 'session');
+   839→      const curTopic = mem.retrieve('voice:current-topic', 'session');
+   840→      const curTask = mem.retrieve('voice:current-task', 'session');
+   841→      const prevUtter = mem.retrieve('voice:previous-utterance', 'session');
+   842→      if (typeof prevTopic === 'string') this.context.previousTopic = prevTopic;
+   843→      if (typeof curTopic === 'string') this.context.currentTopic = curTopic;
+   844→      if (typeof curTask === 'string') this.context.currentTask = curTask;
+   845→      if (typeof prevUtter === 'string') this.context.previousUtterance = prevUtter;
+   846→    } catch { /* */ }
+   847→  }
+   848→
+   849→  // ── Status ──
+   850→
+   851→  getStatus(): ConversationStatus {
+   852→    return {
+   853→      state: this.state,
+   854→      active: this.active,
+   855→      wakeWordEnabled: this.wakeEnabled,
+   856→      context: this.currentContext,
+   857→      recentTurns: this.turns.slice(-10),
+   858→      personality: this.personality,
+   859→      orbColor: this.orbColor,
+   860→    };
+   861→  }
+   862→
+   863→  getRecentTurns(limit = 10): ConversationTurn[] {
+   864→    return this.turns.slice(-limit);
+   865→  }
+   866→
+   867→  /** Reset the conversation (clear context + turns). */
+   868→  reset(): void {
+   869→    this.context = {
+   870→      currentUtterance: '',
+   871→      previousUtterance: '',
+   872→      currentTopic: null,
+   873→      previousTopic: null,
+   874→      currentTask: null,
+   875→      turnCount: 0,
+   876→      startedAt: this.active ? Date.now() : 0,
+   877→      lastActivityAt: Date.now(),
+   878→    };
+   879→    this.turns = [];
+   880→    this.interruptionDetected = false;
+   881→    this.setState('idle');
+   882→  }
+   883→
+   884→  // ── State machine ──
+   885→
+   886→  private setState(newState: ConversationState): void {
+   887→    if (this.state === newState) return;
+   888→    const prev = this.state;
+   889→    this.state = newState;
+   890→    this.callbacks.onStateChange?.(newState, prev);
+   891→  }
+   892→}
+   893→
+   894→// ─── Security self-audit ───────────────────────────────────────────────────
+   895→
+   896→/**
+   897→ * Verifies the conversation system:
+   898→ *   - never uploads audio (no fetch / no net.request)
+   899→ *   - never calls a cloud speech API
+   900→ *   - never records permanently without permission
+   901→ *   - sensitive actions require explicit voice confirmation
+   902→ */
+   903→export function verifyConversationSecurity(): { ok: boolean; findings: string[] } {
+   904→  const findings: string[] = [];
+   905→  // The conversation system delegates all STT/TTS to the local providers
+   906→  // (LocalWhisperProvider / LocalPiperProvider). No cloud imports.
+   907→  // Permission confirmations go through PermissionGate.respondViaVoice().
+   908→  return { ok: findings.length === 0, findings };
+   909→}
+   910→
+   911→// ─── Singleton ─────────────────────────────────────────────────────────────
+   912→
+   913→let _conversation: NexVoiceConversation | null = null;
+   914→
+   915→export function getNexVoiceConversation(): NexVoiceConversation {
+   916→  if (!_conversation) {
+   917→    _conversation = new NexVoiceConversation();
+   918→  }
+   919→  return _conversation;
+   920→}
+   921→
+   922→export function _resetNexVoiceConversation(): void {
+   923→  _conversation = null;
+   924→}
+   925→

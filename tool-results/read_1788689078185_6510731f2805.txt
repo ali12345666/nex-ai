@@ -1,0 +1,302 @@
+  8443→Task ID: P18-AUDIT-ADDITIONAL
+  8444→Agent: Explore (additional races)
+  8445→Phase: 18 — Voice Runtime & Orb State Integration Audit (additional races beyond BUG-21, AUDIO-NO-MUTE-TTS, BUG-37, GAP-7)
+  8446→Codebase: /home/z/my-project @ 07b23f1 (main)
+  8447→Mode: READ-ONLY — no files modified, no commits, no new files
+  8448→
+  8449→═══════════════════════════════════════════════════════════════════════════════
+  8450→WORK LOG
+  8451→═══════════════════════════════════════════════════════════════════════════════
+  8452→
+  8453→Files audited (read in full):
+  8454→- /home/z/my-project/src/main/main.ts (6500 lines — voice IPC handlers 1452-1700, conversation/engine wiring 1804-1892, plugin-event 5795-5801, interaction-loop 2749-2790, model-deployment-respond 2725, 3903-3909, update-manager 5800)
+  8455→- /home/z/my-project/src/main/preload.ts (825 lines — all 38 ipcRenderer.on listeners verified)
+  8456→- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (893 lines, full — FSM, feedTranscript, speakResponse, handleInterruption, captureVoiceConfirmation, abortCurrentTurn)
+  8457→- /home/z/my-project/src/main/voice/local-voice-engine.ts (509 lines, full — _currentTtsRequestId, speak, stopSpeaking, setState)
+  8458→- /home/z/my-project/src/main/voice/local-piper-provider.ts (383 lines, full — WAV file path 271, intermediate text unlink 380)
+  8459→- /home/z/my-project/src/main/voice/local-whisper-provider.ts (391 lines — full)
+  8460→- /home/z/my-project/src/main/voice/wake-word-detector.ts (414 lines — full, offline-first verified)
+  8461→- /home/z/my-project/src/main/ai/interaction-loop.ts (393 lines — speakText 275-285)
+  8462→- /home/z/my-project/src/main/update/permission-gate.ts (183 lines — respondViaVoice 126-130)
+  8463→- /home/z/my-project/src/main/update/update-manager.ts (271 lines — onCaptureVoiceInput 91-93)
+  8464→- /home/z/my-project/src/main/ai/local-model-provider.ts (466 lines — getEffectiveLoadedModel 285-305, loadedModelId 364-378)
+  8465→- /home/z/my-project/src/renderer/App.tsx (413 lines — currentAudioRef 88-89, onVoiceTTSAudio 91-179, onVoiceTtsStopPlayback 189-201)
+  8466→- /home/z/my-project/src/renderer/components/layout/AppShell.tsx (608 lines — orbStateMap 265-278, setCallbacks cleanup 188, queue timers 215-245, voice-conversation-error 339-344)
+  8467→- /home/z/my-project/src/renderer/components/chat/NexChatPanel.tsx (1465 lines — isGenerating 44, voice transcript handler 322-347, speakResponseIfVoice 360-373, agent event listener 408-647, handleStop 1055-1067, handleSend isGenerating check 708)
+  8468→- /home/z/my-project/src/renderer/components/layout/BottomStatusBar.tsx (316 lines — local aiMode state 70, cycleMode 126-146)
+  8469→- /home/z/my-project/src/renderer/components/SettingsPanel.tsx (verified setAIMode usage 541, 655)
+  8470→- /home/z/my-project/src/renderer/components/BasicInteractionPanel.tsx (264 lines — interactionProcessText 56, interactionSpeak 76, interactionStop 86 — interactionProcessVoice NOT used)
+  8471→- /home/z/my-project/src/renderer/services/voice-service.ts (590 lines — enableMicrophone 136-249, dispose 416-437, _ttsActive never set true, speak() 357-393 dead)
+  8472→- /home/z/my-project/src/renderer/services/voice-controller.ts (192 lines — handleStateChange 171-176, dispose 160-167)
+  8473→- /home/z/my-project/src/renderer/components/orb/orb-state.ts (454 lines — VALID_TRANSITIONS 42-56, safeOrbTransition never called)
+  8474→- /home/z/my-project/src/renderer/store/useStore.ts (370 lines — setAIMode 342-345, setActiveLocalModel 351-354)
+  8475→- /home/z/my-project/src/renderer/components/VoiceCenterPanel.tsx (verified — never imported, dead code)
+  8476→- /home/z/my-project/src/renderer/components/VoiceManagerPanel.tsx (verified — live subscriber to voice-conversation-state)
+  8477→
+  8478→Cross-referenced against sibling Phase 18 audits:
+  8479→- P18-AUDIT-ORBSTATED (worklog line 6473) — BUG-37 safeOrbTransition, 3 parallel Orb state systems, unreachable states
+  8480→- P18-AUDIT-BARGEIN (worklog line 7054) — BUG-21/AUDIO-NO-MUTE-TTS deep analysis, _ttsActive never set
+  8481→- P18-AUDIT-IPC-INTERACTIONS (worklog line 7570) — GAP-7 overloaded IPC, TTS requestId duplicate, interaction-speak desync, CONCERN #1 Stop-during-TTS wait hang
+  8482→
+  8483→═══════════════════════════════════════════════════════════════════════════════
+  8484→AUDIT AREAS — RESULTS
+  8485→═══════════════════════════════════════════════════════════════════════════════
+  8486→
+  8487→1. ORPHAN IPC CHANNELS (main sends, no preload listener):
+  8488→   - voice-conversation-partial (main.ts:1833) — STILL ORPHAN. RE-CONFIRMED from Phase 16/17.
+  8489→   - plugin-event (main.ts:5800) — STILL ORPHAN. RE-CONFIRMED from Phase 16/17.
+  8490→   - All 38 other webContents.send channels have matching preload ipcRenderer.on listeners. No new orphans.
+  8491→   - Dead listeners (preload has listener but no main sender): NONE. All 31 non-generic preload listeners have main senders. open-file-in-editor has main sender in open-file-in-editor-tool.ts:73 (not main.ts).
+  8492→
+  8493→2. DEAD LISTENERS IN RENDERER (useEffect without cleanup, or double-registration):
+  8494→   - All useEffect subscriptions in App.tsx, AppShell.tsx, NexChatPanel.tsx, voice-service.ts have proper cleanup functions returned. No leak.
+  8495→   - Double-registration: NONE. App.tsx root listeners (onVoiceStartMicCapture, onVoiceStopMicCapture, onVoiceTTSAudio, onVoiceTtsStopPlayback) registered once in dedicated useEffects with [] deps.
+  8496→   - AppShell.tsx onVoiceConversationState / onVoiceConversationUser / onVoiceConversationNex / onVoiceConversationError all in one useEffect (deps []) — single registration, cleanup clears all four.
+  8497→   - NexChatPanel onChatToken (deps []) — single. onAgentEvent (deps [saveConversation]) — re-registers when saveConversation changes, but cleanup properly removes previous listener. No double-registration.
+  8498→
+  8499→3. DUPLICATED STATE:
+  8500→   - aiMode: Phase 17 P0 13-1 fix to setAIMode (useStore.ts:342-345) updates BOTH top-level aiMode AND settings.aiMode. But BottomStatusBar.tsx has its OWN local aiMode state (line 70) and calls settingsSave IPC directly without calling setAIMode (lines 126-146). When user cycles via BottomStatusBar, Zustand aiMode is NOT updated → NexChatPanel.tsx:40, SettingsPanel.tsx:326 see stale value. INCOMPLETE FIX. (NEW finding AIMODE-DESYNC-BOTTOMBAR, P1)
+  8501→   - activeLocalModelId: useStore.ts:351-354 — set via setActiveLocalModel which updates both. No desync path found.
+  8502→   - isGenerating: NexChatPanel local state only. Propagated to voiceController via setThinking useEffect (line 376-379). No duplication.
+  8503→   - Loaded model: Phase 17 P1 14-3 fix made inference.ts the source of truth (local-model-provider.ts:285-305, 364-378). Shadow state cleaned up via getEffectiveLoadedModel. No residual shadow state.
+  8504→   - Orb state: 3 parallel systems (NexOrbState / VoiceState / VoiceEngineState) + ConversationState — already covered by P18-AUDIT-ORBSTATED. AppShell's orbState React state subscribes to voiceController.subscribeOrbState. Single source via voiceController.orbStateRef. No additional duplication.
+  8505→
+  8506→4. STATE-MACHINE INCONSISTENCIES:
+  8507→   - ConversationState (5 states: idle/listening/thinking/speaking/interrupted) — DOES NOT INCLUDE 'error' but CONVERSATION_ORB_COLOR includes 'error' (color only, never sent). Already covered by P18-AUDIT-IPC-INTERACTIONS INCONSISTENCY #2.
+  8508→   - VoiceEngineState (6 states) — 'error'/'offline' never emitted by engine.setState. Already covered by P18-AUDIT-IPC-INTERACTIONS INCONSISTENCY #1.
+  8509→   - NexOrbState (13 states) — safeOrbTransition defined, never called. Already covered by P18-AUDIT-ORBSTATED.
+  8510→   - VoiceState (9 states) — recomputeState direct assignment, no validation. Already covered by P18-AUDIT-ORBSTATED.
+  8511→   - 'interrupted' → 'active' (red) by AppShell mapping, but CONVERSATION_ORB_COLOR says interrupted = amber (#f59e0b). Visual mismatch. Already covered by P18-AUDIT-IPC-INTERACTIONS INCONSISTENCY #3.
+  8512→   - AppShell orbStateMap has 6 unreachable entries ('active', 'working', 'success', 'cancelled', 'initializing', 'ready') because main never sends these. Already covered by P18-AUDIT-IPC-INTERACTIONS INCONSISTENCY #1.
+  8513→
+  8514→5. MIC CAPTURE LIFECYCLE:
+  8515→   - enableMicrophone (voice-service.ts:136-249): idempotent — early-returns true if this._stream already exists (line 137). Double-call is safe — does NOT double-allocate AudioContext.
+  8516→   - disableMicrophone: DOES NOT EXIST. No method to release mic without full dispose.
+  8517→   - Mic starts: voiceController.start() (voice-controller.ts:101-103) → voiceService.startListening() → enableMicrophone() + setIPCFeedingEnabled(true) + startSTT(). Called from AppShell.tsx:181 (mount) and App.tsx:42 (voice-start-mic-capture IPC from main).
+  8518→   - Mic stops: voiceController.stop() → voiceService.stopListening() (stops STT + IPC feeding + clears 'mic' condition). Does NOT release _stream or _audioContext.
+  8519→   - Mic released: ONLY in voiceService.dispose() (line 416-437) which stops tracks + closes audioContext. Called from voiceController.dispose() → AppShell.tsx:196 cleanup on unmount.
+  8520→   - STUCK ON scenario: If app exits with mic still capturing (Electron force-quit), Electron's process cleanup releases the AudioContext. During normal operation, mic is ALWAYS capturing once enabled — there's no "mic off" mode unless user switches to push-to-talk/disabled (setMode). Mode='disabled' (line 124-126) stops listening + speaking but DOES NOT release mic — _stream, _audioContext, _scriptProcessor remain allocated. MINOR LEAK when mode='disabled' (mic still capturing, no chunks sent to main because _ipcFeedingEnabled=false).
+  8521→
+  8522→6. TTS WAV FILE LEAK:
+  8523→   - local-piper-provider.ts:271 — writes to `os.tmpdir()/nex-tts-${Date.now()}.wav`. NEVER deleted. Grep verified: only the intermediate text file (line 380 `fs.unlinkSync(textFile)`) is cleaned up. The final WAV file is never touched after creation.
+  8524→   - App.tsx:127-142 onended handler does NOT call any IPC to delete the WAV file. The renderer has no fs access (contextIsolation: true) — would need a new IPC.
+  8525→   - Engine.speak onTTSAudioReady callback (local-voice-engine.ts:416) just sends the audio path to main.ts:1884 which forwards to renderer. No cleanup.
+  8526→   - Phase 16 BUG-13 noted this. Phase 17 did NOT address it. STILL LEAKING.
+  8527→   - Estimate: 30-min continuous voice session ≈ 90 turns × ~220KB (5s × 22kHz mono 16-bit) ≈ 20MB in /tmp. 8-hour daily session for a week ≈ 8GB.
+  8528→
+  8529→7. VOICE CONVERSATION FSM EDGE CASES:
+  8530→   - feedTranscript routing logic (nex-voice-conversation.ts:276-314):
+  8531→     1. parseVoiceCommand FIRST (line 280-285) — if recognized, handleVoiceCommand + return.
+  8532→     2. pendingPermission check (line 288-291) — if true, handlePermissionConfirmation + return.
+  8533→     3. state==='speaking' check (line 294-297) — if true, handleInterruption + return.
+  8534→     4. wakeWord check (line 300-307) — if matched, handleWakeWord + return.
+  8535→     5. else handleUserUtterance (line 313).
+  8536→   - pendingPermission=true case: handlePermissionConfirmation (line 769-777) clears pendingPermission and re-emits onUserUtterance. But captureVoiceConfirmation is DEAD CODE (see finding #5 below — only called by setPermissionVoiceCapture which is recursive and unreachable). So pendingPermission is never true in practice.
+  8537→   - state='thinking' case: handleUserUtterance updates context, setState('thinking') (no-op, already thinking), fires onUserUtterance IPC → AppShell.tsx:313 → nex:voice-transcript → NexChatPanel.handleSend → `if (isGenerating) return` (line 708) → DROPPED. User's utterance silently lost.
+  8538→   - abortCurrentTurn during captureVoiceConfirmation: captureVoiceConfirmation's 10s timeout (line 747) is not stored in any instance field — cannot be cleared. After 10s, resolves with ''.
+  8539→   - handleInterruption's setTimeout(50ms) (line 663) — not stored, cannot be cleared. If abortCurrentTurn fires within 50ms, setTimeout still runs handleUserUtterance(text) → new agent task starts despite user's Stop. (CLEANUP-LEAK-1 re-confirmed — see finding #7)
+  8540→
+  8541→8. AUDIO ELEMENT LIFECYCLE IN App.tsx:
+  8542→   - currentAudioRef (line 88) — Phase 16 added. Tracks currently-playing <audio> element.
+  8543→   - currentAudioRequestIdRef (line 89) — Phase 16 added. Tracks requestId of current audio.
+  8544→   - When new TTS audio arrives (line 91-104):
+  8545→     - Stale check: if requestId < currentAudioRequestIdRef.current, discard.
+  8546→     - Pause old: `currentAudioRef.current.pause()` (line 110).
+  8547→     - Set currentAudioRef.current = null (line 112).
+  8548→   - RELEASE GAP: paused audio's `src` attribute is NOT cleared, `load()` is NOT called. The file:// URL handle remains open until GC. On Windows, the WAV file is LOCKED by the audio element until GC. Compounds the TTS WAV leak — even if cleanup code were added to delete the WAV, the locked file couldn't be deleted until GC. (NEW finding AUDIO-ELEMENT-NO-RELEASE, P2)
+  8549→   - Double-pause: `audio.pause()` is idempotent on already-paused element (HTMLMediaElement spec). Safe.
+  8550→   - play() on already-playing element: each TTS creates a NEW Audio element (line 121 `new Audio(fileUrl)`). No play() on existing element. Safe — no restart concern.
+  8551→
+  8552→9. PHASE 16 REQUESTID COUNTER CONSISTENCY:
+  8553→   - NexVoiceConversation.currentTtsRequestId (nex-voice-conversation.ts:160) — bumped by speakResponse (line 489), abortCurrentTurn (line 710), handleInterruption (line 655).
+  8554→   - LocalVoiceEngine._currentTtsRequestId (local-voice-engine.ts:183) — set by speak (line 391, adopts opts.requestId if passed, else auto-increments), bumped by stopSpeaking (line 452).
+  8555→   - speakResponse path (production): bumps conversation counter, passes to engine.speak as opts.requestId, engine adopts it. Both counters EQUAL after speakResponse.
+  8556→   - InteractionLoopManager.speakText path (legacy, interaction-loop.ts:280): calls engine.speak(text) WITHOUT opts.requestId. Engine auto-increments _currentTtsRequestId. Conversation counter UNCHANGED. DIVERGENCE: engine counter = N+1, conversation counter = N. (Already covered by P18-AUDIT-IPC-INTERACTIONS DUPLICATE #2)
+  8557→   - Self-recovery: next speakResponse bumps conversation counter (N → N+1), passes to engine, engine adopts N+1. Counters re-sync. Transient divergence.
+  8558→   - Bug impact: minimal — renderer matches requestId via voice-tts-audio IPC (which carries engine's value). Race protection still works. State inconsistency only.
+  8559→
+  8560→10. OFFLINE-FIRST VERIFICATION:
+  8561→    - Searched src/main/voice/ and src/renderer/services/voice-*.ts for `fetch(`, `net.request`, `https.request`, `http.request`.
+  8562→    - ZERO matches in any voice file (the only `fetch` reference is a comment in nex-voice-conversation.ts:866 documenting that the system never fetches).
+  8563→    - All voice providers use only `safeExecFile` (local-piper-provider.ts:369, local-whisper-provider.ts:313, 380) — local binary subprocess invocation, no shell, no network.
+  8564→    - wake-word-detector.ts is pure logic (no I/O, no network, no persistence).
+  8565→    - nex-voice-conversation.ts has no network calls — all STT/TTS delegated to local providers.
+  8566→    - voice-service.ts (renderer) uses getUserMedia + AudioContext + webkitSpeechRecognition (all local browser APIs). No fetch.
+  8567→    - No telemetry on voice usage — no analytics calls, no usage reporting, no metric submission anywhere in voice code.
+  8568→    - VERIFIED: Whisper + Piper are 100% local. No network calls. Offline-first PRESERVED.
+  8569→
+  8570→═══════════════════════════════════════════════════════════════════════════════
+  8571→FINDINGS (sorted by severity)
+  8572→═══════════════════════════════════════════════════════════════════════════════
+  8573→
+  8574→───────── NEW FINDING #1 — AIMODE-DESYNC-BOTTOMBAR ─────────
+  8575→ISSUE: BottomStatusBar.tsx manages its own local aiMode state and calls settingsSave IPC directly without calling Zustand setAIMode — Phase 17 P0 13-1 fix is INCOMPLETE.
+  8576→SEVERITY: P1
+  8577→TYPE: DUPLICATED STATE
+  8578→LOCATION: src/renderer/components/layout/BottomStatusBar.tsx:70 (local state), 126-146 (cycleMode), src/renderer/store/useStore.ts:342-345 (setAIMode — not called by BottomStatusBar)
+  8579→ROOT CAUSE:
+  8580→  - useStore.setAIMode (line 342-345) updates both `aiMode` and `settings.aiMode` (Phase 17 P0 13-1 fix).
+  8581→  - SettingsPanel.tsx:541, 655 correctly calls setAIMode.
+  8582→  - BottomStatusBar.tsx:70 declares its OWN local `const [aiMode, setAiModeState] = useState<AIMode>('local')`.
+  8583→  - BottomStatusBar cycleMode (lines 126-146): loads settings via IPC, mutates aiMode, calls `window.nexAPI.settingsSave(updatedSettings)`, calls `setAiModeState(nextMode)` (local). NEVER calls `useStore.setAIMode`.
+  8584→  - Result: Zustand `aiMode` and `settings.aiMode` are NOT updated in the store when the user cycles via BottomStatusBar.
+  8585→RISK IF UNFIXED:
+  8586→  - User clicks LOCAL→ONLINE in BottomStatusBar. Settings persisted to disk as 'online'.
+  8587→  - NexChatPanel.tsx:40 reads `aiMode` from useStore → still 'local' → routes to local chat path even though user wanted online.
+  8588→  - SettingsPanel.tsx:326 reads `aiMode` → still 'local' → UI shows "LOCAL" mode highlighted even though status bar shows "ONLINE".
+  8589→  - On next settingsSave (from any other panel), BottomStatusBar's choice is OVERWRITTEN by the stale Zustand value (which gets persisted as 'local' again).
+  8590→  - User's mode choice is functionally lost until app restart (settingsLoad at App.tsx:371 re-syncs Zustand from disk).
+  8591→RECOMMENDED FIX:
+  8592→  - Import useStore in BottomStatusBar.tsx, replace local `aiMode` state with `useStore(s => s.aiMode)` + `setAIMode` action.
+  8593→  - In cycleMode, after settingsSave succeeds, call `setAIMode(nextMode)` instead of `setAiModeState(nextMode)`.
+  8594→  - This keeps Zustand as the single source of truth, with settingsSave as the persistence side-effect.
+  8595→
+  8596→───────── NEW FINDING #2 — VOICE-CONFIRMATION-DEAD-CODE ─────────
+  8597→ISSUE: captureVoiceConfirmation is wired via setPermissionVoiceCapture to itself — would infinitely recurse if ever called. The conversation's voice-confirmation mechanism is completely unused.
+  8598→SEVERITY: P1
+  8599→TYPE: DEAD CODE / LATENT RECURSION
+  8600→LOCATION: src/main/main.ts:1562-1564 (setPermissionVoiceCapture wiring), src/main/voice/nex-voice-conversation.ts:737-763 (captureVoiceConfirmation), 727-729 (setPermissionVoiceCapture)
+  8601→ROOT CAUSE:
+  8602→  - main.ts:1562-1564: `conversation.setPermissionVoiceCapture(async () => { return await conversation.captureVoiceConfirmation(); });`
+  8603→  - This sets `permissionVoiceCaptureFn = async () => conversation.captureVoiceConfirmation()`.
+  8604→  - captureVoiceConfirmation (line 742-744): if `this.permissionVoiceCaptureFn` exists, `return await this.permissionVoiceCaptureFn()` — i.e. calls itself recursively.
+  8605→  - The recursion would blow the stack: captureVoiceConfirmation → permissionVoiceCaptureFn → captureVoiceConfirmation → permissionVoiceCaptureFn → ... infinite.
+  8606→  - In practice, NO external caller invokes `conversation.captureVoiceConfirmation()` — only the recursive hook in main.ts:1563 calls it, but the hook is only invoked FROM captureVoiceConfirmation itself (chicken-and-egg). So the path is NEVER entered.
+  8607→  - PermissionGate.respondViaVoice (permission-gate.ts:126-130) uses `this.callbacks.onCaptureVoiceInput` — NOT the conversation's permissionVoiceCaptureFn.
+  8608→  - update-manager.ts:91-93 sets `onCaptureVoiceInput` to `this.voiceVerifier.captureConfirmation()` — its own VoiceVerifier, not the conversation.
+  8609→  - model-deployment-manager.ts:206-208, knowledge-pack-manager.ts:123-125 only set `onRequestPermission` — NOT `onCaptureVoiceInput`. Their respondViaVoice (line 655-657, 605-607) calls `this.gate.respondViaVoice()` which sees `onCaptureVoiceInput` as undefined → returns immediately (permission-gate.ts:127). Voice confirmation is a NO-OP for these.
+  8610→  - Result: captureVoiceConfirmation is dead code. pendingPermission is never true. handlePermissionConfirmation branch in feedTranscript is unreachable.
+  8611→RISK IF UNFIXED:
+  8612→  - If a future developer wires `onCaptureVoiceInput` to `conversation.captureVoiceConfirmation()` (intending to use the conversation's voice-confirmation flow), the app would crash with stack overflow on first permission request via voice.
+  8613→  - The dead code misleads future maintainers — they may believe voice-confirmation is wired up when it isn't.
+  8614→RECOMMENDED FIX:
+  8615→  - Either: (a) Remove the recursive wiring in main.ts:1562-1564 + the `permissionVoiceCaptureFn` field + captureVoiceConfirmation method + setPermissionVoiceCapture + handlePermissionConfirmation + the pendingPermission branch in feedTranscript. All dead.
+  8616→  - Or: (b) Fix the wiring to call a non-recursive capture (e.g. `permissionVoiceCaptureFn = async () => { /* STT capture hook that returns next utterance */ }`), wire it into ALL PermissionGate instances (update-manager, model-deployment, knowledge-pack), and test the recursion is broken.
+  8617→
+  8618→───────── NEW FINDING #3 — VOICE-CONFIRMATION-COMMAND-LEAK ─────────
+  8619→ISSUE: When pendingPermission=true (currently unreachable per finding #2) and user says "stop" or "cancel", parseVoiceCommand fires BEFORE the pendingPermission check, leaving captureVoiceConfirmation's 10s timeout ticking.
+  8620→SEVERITY: P2
+  8621→TYPE: RACE / STATE DESYNC (latent — masked by finding #2)
+  8622→LOCATION: src/main/voice/nex-voice-conversation.ts:280-291 (feedTranscript order), 747-750 (10s timeout), 669-690 (handleVoiceCommand)
+  8623→ROOT CAUSE:
+  8624→  - feedTranscript order: parseVoiceCommand FIRST (line 280-285). If "stop" recognized → handleVoiceCommand('stop-speaking') → setState('idle'), return. pendingPermission check at line 288 is NEVER reached.
+  8625→  - If pendingPermission was true (only reachable via the dead captureVoiceConfirmation path), it stays true after handleVoiceCommand.
+  8626→  - captureVoiceConfirmation's fallback Promise (line 746-758) has a 10s setTimeout (line 747) that resolves with '' after 10s.
+  8627→  - The 10s timeout is local to the Promise — NOT stored in any instance field. Cannot be cleared by handleVoiceCommand or abortCurrentTurn.
+  8628→  - After 10s, captureVoiceConfirmation returns ''. PermissionGate.respondViaVoice (line 128-129) gets '' → `if (transcript) this.respondToPermissionRequest(transcript)` — transcript is '', so respondToPermissionRequest is NOT called. Permission is silently denied after 10s.
+  8629→RISK IF UNFIXED:
+  8630→  - Currently LATENT — pendingPermission is never true because captureVoiceConfirmation is dead code (finding #2).
+  8631→  - If finding #2 is fixed (voice-confirmation wired up), this becomes a real bug: user says "stop" during permission prompt → 10s hang → permission denied without clear feedback.
+  8632→RECOMMENDED FIX:
+  8633→  - In feedTranscript, REORDER: check pendingPermission FIRST (line 288-291), then parseVoiceCommand. If a permission is pending, ALL transcripts (including voice commands) route to handlePermissionConfirmation. The user's "stop" intent would be treated as a permission denial, not a voice command.
+  8634→  - OR: Add a 'cancel' command check that ALSO cancels the pending captureVoiceConfirmation (clears the 10s timeout + resolves with '').
+  8635→
+  8636→───────── NEW FINDING #4 — FEED-TRANSCRIPT-THINKING-DROP ─────────
+  8637→ISSUE: When a transcript arrives while the conversation FSM is in 'thinking' state (agent task running), the renderer silently drops it — the user's utterance is lost without feedback.
+  8638→SEVERITY: P1
+  8639→TYPE: RACE / SILENT SWALLOW
+  8640→LOCATION: src/main/voice/nex-voice-conversation.ts:309-313 (handleUserUtterance call), 369-404 (handleUserUtterance), src/renderer/components/chat/NexChatPanel.tsx:708 (isGenerating check), 322-347 (nex:voice-transcript handler)
+  8641→ROOT CAUSE:
+  8642→  - feedTranscript (line 309-313 comment): "at this point we're in idle/listening/thinking/interrupted — all of which accept a new user utterance as a fresh turn."
+  8643→  - handleUserUtterance updates context, calls setState('thinking') (line 390, no-op if already thinking), fires `onUserUtterance` (line 384).
+  8644→  - main.ts:1821 forwards onUserUtterance via `voice-conversation-user` IPC to renderer.
+  8645→  - AppShell.tsx:313 dispatches `nex:voice-transcript` DOM event.
+  8646→  - NexChatPanel.tsx:322-347 handler: sets input value, dispatches Enter key.
+  8647→  - NexChatPanel.tsx:708 handleSend: `if ((!trimmed && attachments.length === 0) || isGenerating) return;` — DROPS the new utterance because the previous agent task is still running (isGenerating=true).
+  8648→  - User's utterance is silently lost — no error, no queue, no visual feedback.
+  8649→RISK IF UNFIXED:
+  8650→  - User speaks a follow-up while the agent is running (e.g. "wait, also do X"). NEX continues with the first task only. The user's "do X" is gone — they have to wait for the first task to finish and then say "do X" again.
+  8651→  - No indication to the user that their input was dropped. They may believe NEX is queuing it.
+  8652→  - Voice mode is especially prone to this because the user can't see the chat input is locked.
+  8653→RECOMMENDED FIX:
+  8654→  - Options:
+  8655→    (a) NexChatPanel: if isGenerating, show a transient toast "Agent is busy — please wait" when a voice transcript arrives. Don't auto-send.
+  8656→    (b) NexChatPanel: queue the new utterance (push to a queueRef) and process when isGenerating becomes false.
+  8657→    (c) feedTranscript: when state='thinking', DON'T call handleUserUtterance. Instead emit a `onUserUtteranceDropped` callback that main forwards to renderer for toast display.
+  8658→  - Option (a) is the simplest and matches user expectation (visible feedback that the input was received but not processed).
+  8659→
+  8660→───────── NEW FINDING #5 — TTS-WAV-FILE-LEAK ─────────
+  8661→ISSUE: Piper TTS writes WAV files to `os.tmpdir()/nex-tts-<ts>.wav` and they are NEVER deleted. Continuous leak in /tmp (or %TEMP% on Windows).
+  8662→SEVERITY: P1
+  8663→TYPE: LEAK (disk)
+  8664→LOCATION: src/main/voice/local-piper-provider.ts:271 (WAV file creation), NO deletion anywhere (grep verified)
+  8665→ROOT CAUSE:
+  8666→  - local-piper-provider.ts:271: `const outputFile = opts?.outputFilePath || path.join(tmpDir, `nex-tts-${Date.now()}.wav`);`
+  8667→  - The file is created by the piper subprocess (`--output_file` arg, line 277).
+  8668→  - Grep for `unlink`, `unlinkSync`, `fs.remove`, `rimraf`, `nex-tts-.*\.wav`, `deleteFile` in src/ — only the intermediate text file at local-piper-provider.ts:380 (`fs.unlinkSync(textFile)`) is cleaned up. The final WAV file is never touched after creation.
+  8669→  - App.tsx:127-142 onended handler does NOT call any IPC to delete the WAV. Renderer has no fs access (contextIsolation: true).
+  8670→  - Engine.speak onTTSAudioReady callback (local-voice-engine.ts:416) just sends the path to main.ts:1884 → renderer. No cleanup.
+  8671→  - Phase 16 BUG-13 noted this. Phase 17 did NOT address it.
+  8672→RISK IF UNFIXED:
+  8673→  - 30-min voice session ≈ 90 turns × ~220KB (5s audio × 44100 bytes/sec) ≈ 20MB.
+  8674→  - 8-hour daily usage for a week ≈ 8GB in /tmp.
+  8675→  - On Windows %TEMP% on system drive — can fill up C: drive.
+  8676→  - Disk fill can cause app crashes, OS instability, or failed TTS (no space to write).
+  8677→  - Files have unique timestamps (Date.now()) so no collision risk — but never reused.
+  8678→RECOMMENDED FIX:
+  8679→  - In local-voice-engine.ts, after firing onTTSAudioReady callback, schedule a delayed cleanup (e.g. 60s after TTS playback should be done): `setTimeout(() => { try { fs.unlinkSync(audioFilePath); } catch {} }, 60000)`. The 60s delay ensures the renderer has finished playing even for long TTS.
+  8680→  - OR: Add a new IPC `voice-tts-cleanup` that the renderer calls from App.tsx onended (after voiceTtsEnded) — main deletes the file.
+  8681→  - OR: Have the engine track all generated WAV files in a Set, and on shutdown (engine.dispose) delete them all.
+  8682→
+  8683→───────── NEW FINDING #6 — AUDIO-ELEMENT-NO-RELEASE ─────────
+  8684→ISSUE: App.tsx pauses the old <audio> element when superseded but never releases the file handle (no audio.src = '' or audio.load()). On Windows, the WAV file remains locked until GC. Compounds finding #5.
+  8685→SEVERITY: P2
+  8686→TYPE: LEAK (file handle, OS-level lock on Windows)
+  8687→LOCATION: src/renderer/App.tsx:108-113 (pause + null), 122-124 (new Audio created)
+  8688→ROOT CAUSE:
+  8689→  - When a new TTS audio arrives, App.tsx:108-113:
+  8690→    ```
+  8691→    if (currentAudioRef.current) {
+  8692→      try { currentAudioRef.current.pause(); } catch { /* */ }
+  8693→      currentAudioRef.current = null;
+  8694→    }
+  8695→    ```
+  8696→  - The paused audio element is dereferenced (currentAudioRef.current = null). GC eventually collects it.
+  8697→  - BUT: the audio element's `src` attribute is NOT cleared. The file:// URL handle remains open until GC.
+  8698→  - On Windows, file locks are strict — the OS keeps the file locked as long as any process holds a handle. The audio element holds a handle to the WAV file via the file:// URL.
+  8699→  - Compounds finding #5: even if cleanup code were added to delete the WAV file, the locked file couldn't be deleted until GC.
+  8700→  - On macOS/Linux, file locks are advisory — the file can be deleted while the handle is open. So this is primarily a Windows-only issue.
+  8701→RISK IF UNFIXED:
+  8702→  - Windows users accumulate locked WAV files in %TEMP% that can't be deleted until Electron's GC runs (which is non-deterministic and may not happen during a long session).
+  8703→  - If finding #5 is fixed (deletion attempt after 60s), the deletion would FAIL on Windows for any audio that's still being referenced by a paused-but-not-yet-GC'd audio element.
+  8704→  - Combined with finding #5, the leak is worse on Windows than the simple "WAV never deleted" estimate suggests.
+  8705→RECOMMENDED FIX:
+  8706→  - In App.tsx:108-113, after pause, add:
+  8707→    ```
+  8708→    try { currentAudioRef.current.pause(); } catch { /* */ }
+  8709→    try { currentAudioRef.current.src = ''; } catch { /* */ }
+  8710→    try { currentAudioRef.current.load(); } catch { /* */ }  // releases the file handle
+  8711→    currentAudioRef.current = null;
+  8712→    ```
+  8713→  - `audio.src = ''` + `audio.load()` is the standard pattern to release the file handle per HTMLMediaElement spec.
+  8714→
+  8715→───────── RE-CONFIRMED FINDING #7 — CLEANUP-LEAK-1 (handleInterruption setTimeout 50ms not stored) ─────────
+  8716→ISSUE: handleInterruption schedules `setTimeout(() => this.handleUserUtterance(text), 50)` without storing the handle. If abortCurrentTurn fires within 50ms, the setTimeout still runs and starts a new agent task despite the user's Stop.
+  8717→SEVERITY: P1
+  8718→TYPE: RACE / CLEANUP LEAK
+  8719→LOCATION: src/main/voice/nex-voice-conversation.ts:663 (setTimeout, handle not stored), 705-719 (abortCurrentTurn — doesn't clear the timer)
+  8720→ROOT CAUSE:
+  8721→  - handleInterruption (line 651-664):
+  8722→    ```
+  8723→    this.setState('interrupted');
+  8724→    setTimeout(() => this.handleUserUtterance(text), 50);
+  8725→    ```
+  8726→  - The setTimeout handle is NOT stored in any instance field. Cannot be cleared by abortCurrentTurn.
+  8727→  - abortCurrentTurn (line 705-719): bumps currentTtsRequestId, releaseTtsPlaybackWait, stopSpeaking, stopListening, setState('idle'). DOES NOT clear any pending handleUserUtterance timer.
+  8728→  - P17-AUDIT-STREAMING worklog (line 6342) noted this as CLEANUP-LEAK-1 — re-confirmed NOT FIXED at 07b23f1.
+  8729→RISK IF UNFIXED:
+  8730→  - User speaks during TTS → handleInterruption schedules handleUserUtterance in 50ms.
+  8731→  - Within 50ms, user clicks Stop (or says "cancel" via handleVoiceCommand) → abortCurrentTurn fires, state='idle'.
+  8732→  - 50ms later: handleUserUtterance(text) runs → setState('thinking'), updates context, fires onUserUtterance IPC → renderer dispatches nex:voice-transcript → NexChatPanel.handleSend → starts a NEW agent task with the interrupting utterance.
+  8733→  - User explicitly cancelled but a new task started anyway. Confusing UX.
+  8734→RECOMMENDED FIX:
+  8735→  - Add an instance field: `private handleInterruptionTimer: ReturnType<typeof setTimeout> | null = null;`
+  8736→  - In handleInterruption: `this.handleInterruptionTimer = setTimeout(() => { this.handleInterruptionTimer = null; this.handleUserUtterance(text); }, 50);`
+  8737→  - In abortCurrentTurn: `if (this.handleInterruptionTimer) { clearTimeout(this.handleInterruptionTimer); this.handleInterruptionTimer = null; }`
+  8738→  - Also clear in `stop()` and `reset()`.
+  8739→
+  8740→───────── RE-CONFIRMED FINDING #8 — CLEANUP-LEAK-2 (captureVoiceConfirmation 10s timeout not stored) ─────────
+  8741→ISSUE: captureVoiceConfirmation's fallback 10s setTimeout is not stored in an instance field. If abortCurrentTurn fires during captureVoiceConfirmation, the 10s timeout still fires (resolves with '' → captureVoiceConfirmation returns ''). PermissionGate.respondViaVoice gets '' → permission silently denied.
+  8742→SEVERITY: P1
+
+[showing lines 8443-8742 of 9201; use offset=8743 with limit to continue reading]

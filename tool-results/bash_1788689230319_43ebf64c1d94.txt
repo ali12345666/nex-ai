@@ -1,0 +1,593 @@
+     1→/**
+     2→ * NEX AI — Phase 18 Stage 1: Voice Runtime & Orb State Integration Tests
+     3→ *
+     4→ * Stage 1 covers:
+     5→ *   - P0-1: Stop-during-TTS wait hang — waitForTtsPlayback releases immediately
+     6→ *   - P1-5: AI Mode desync — BottomStatusBar uses Zustand canonical path
+     7→ *   - P1-6: Voice confirmation dead/recursive code removed
+     8→ *   - P2-6: Dead renderer voice/TTS path removed (_ttsActive, _bargeInEnabled,
+     9→ *     voiceService.speak, renderer-side barge-in)
+    10→ *
+    11→ * These tests verify BOTH:
+    12→ *   (a) source-level patterns: the new code structure is correct
+    13→ *   (b) runtime semantics: race/cancellation behavior is correct
+    14→ *
+    15→ * Run with: npx tsx tests/tools/test-phase-18-stage1.ts
+    16→ */
+    17→
+    18→import * as path from 'path';
+    19→import * as fs from 'fs';
+    20→
+    21→let passed = 0, failed = 0;
+    22→const failures: string[] = [];
+    23→
+    24→function assert(condition: boolean, name: string) {
+    25→  if (condition) { passed++; console.log(`  PASS: ${name}`); }
+    26→  else { failed++; failures.push(name); console.error(`  FAIL: ${name}`); }
+    27→}
+    28→
+    29→async function testSection(name: string, fn: () => Promise<void> | void): Promise<void> {
+    30→  console.log(`\n=== ${name} ===`);
+    31→  try { await fn(); }
+    32→  catch (err) { failed++; failures.push(`${name} (threw: ${(err as Error).message})`); console.error(`  CRASH: ${name}:`, (err as Error).message); }
+    33→}
+    34→
+    35→async function runTests() {
+    36→  console.log('Phase 18 Stage 1: Voice Runtime & Orb State Integration Tests\n');
+    37→
+    38→  const mainSource = fs.readFileSync(
+    39→    path.join(__dirname, '..', '..', 'src', 'main', 'main.ts'),
+    40→    'utf-8',
+    41→  );
+    42→  const conversationSource = fs.readFileSync(
+    43→    path.join(__dirname, '..', '..', 'src', 'main', 'voice', 'nex-voice-conversation.ts'),
+    44→    'utf-8',
+    45→  );
+    46→  const bottomBarSource = fs.readFileSync(
+    47→    path.join(__dirname, '..', '..', 'src', 'renderer', 'components', 'layout', 'BottomStatusBar.tsx'),
+    48→    'utf-8',
+    49→  );
+    50→  const useStoreSource = fs.readFileSync(
+    51→    path.join(__dirname, '..', '..', 'src', 'renderer', 'store', 'useStore.ts'),
+    52→    'utf-8',
+    53→  );
+    54→  const voiceServiceSource = fs.readFileSync(
+    55→    path.join(__dirname, '..', '..', 'src', 'renderer', 'services', 'voice-service.ts'),
+    56→    'utf-8',
+    57→  );
+    58→  const voiceControllerSource = fs.readFileSync(
+    59→    path.join(__dirname, '..', '..', 'src', 'renderer', 'services', 'voice-controller.ts'),
+    60→    'utf-8',
+    61→  );
+    62→  const permissionGateSource = fs.readFileSync(
+    63→    path.join(__dirname, '..', '..', 'src', 'main', 'update', 'permission-gate.ts'),
+    64→    'utf-8',
+    65→  );
+    66→  const updateManagerSource = fs.readFileSync(
+    67→    path.join(__dirname, '..', '..', 'src', 'main', 'update', 'update-manager.ts'),
+    68→    'utf-8',
+    69→  );
+    70→
+    71→  // ════════════════════════════════════════════════════════════════════════
+    72→  // 1. P0-1: Stop-during-TTS wait hang fix
+    73→  // ════════════════════════════════════════════════════════════════════════
+    74→  await testSection('1. P0-1: Stop-during-TTS wait hang fix', async () => {
+    75→    console.log('\nTest 1.1: voice-conversation-stop-speaking handler calls abortCurrentTurn');
+    76→    // Find the stop-speaking handler
+    77→    const stopIdx = mainSource.indexOf("'voice-conversation-stop-speaking'");
+    78→    assert(stopIdx > 0, 'voice-conversation-stop-speaking handler exists');
+    79→    const stopSection = mainSource.substring(stopIdx, stopIdx + 3000);
+    80→    assert(stopSection.includes('abortCurrentTurn'), 'handler calls abortCurrentTurn');
+    81→    assert(stopSection.includes('getNexVoiceConversation().abortCurrentTurn'), 'calls conversation.abortCurrentTurn()');
+    82→
+    83→    console.log('\nTest 1.2: abortCurrentTurn is called BEFORE engine.stopSpeaking');
+    84→    // The abortCurrentTurn call must come before engine.stopSpeaking so the
+    85→    // wait is released first. Find the positions in the stop-speaking handler.
+    86→    const abortIdx = stopSection.indexOf('abortCurrentTurn');
+    87→    const engineStopIdx = stopSection.indexOf('engine.stopSpeaking()');
+    88→    assert(abortIdx > 0 && engineStopIdx > 0, 'both calls present in handler');
+    89→    assert(abortIdx < engineStopIdx, 'abortCurrentTurn called before engine.stopSpeaking');
+    90→
+    91→    console.log('\nTest 1.3: NexVoiceConversation.abortCurrentTurn releases playback wait');
+    92→    // Verify abortCurrentTurn calls releaseTtsPlaybackWait + bumps currentTtsRequestId
+    93→    const abortMethodStart = conversationSource.indexOf('abortCurrentTurn(): void {');
+    94→    assert(abortMethodStart > 0, 'abortCurrentTurn method exists');
+    95→    const abortMethodEnd = conversationSource.indexOf('// ── Permission voice confirmation', abortMethodStart);
+    96→    const abortMethod = abortMethodEnd > abortMethodStart
+    97→      ? conversationSource.substring(abortMethodStart, abortMethodEnd)
+    98→      : conversationSource.substring(abortMethodStart, abortMethodStart + 800);
+    99→    assert(abortMethod.includes('this.currentTtsRequestId++'), 'abortCurrentTurn bumps currentTtsRequestId');
+   100→    assert(abortMethod.includes('this.releaseTtsPlaybackWait()'), 'abortCurrentTurn calls releaseTtsPlaybackWait');
+   101→
+   102→    console.log('\nTest 1.4: releaseTtsPlaybackWait resolves the pending promise');
+   103→    // Verify releaseTtsPlaybackWait resolves ttsPlaybackResolve
+   104→    const releaseStart = conversationSource.indexOf('private releaseTtsPlaybackWait(): void {');
+   105→    assert(releaseStart > 0, 'releaseTtsPlaybackWait method exists');
+   106→    // Extract the full method body (until the closing brace at the same indent level)
+   107→    const releaseMethodStart = conversationSource.indexOf('{', releaseStart);
+   108→    let braceDepth = 0;
+   109→    let releaseEnd = releaseMethodStart;
+   110→    for (let i = releaseMethodStart; i < conversationSource.length; i++) {
+   111→      if (conversationSource[i] === '{') braceDepth++;
+   112→      else if (conversationSource[i] === '}') {
+   113→        braceDepth--;
+   114→        if (braceDepth === 0) { releaseEnd = i; break; }
+   115→      }
+   116→    }
+   117→    const releaseMethod = conversationSource.substring(releaseStart, releaseEnd + 1);
+   118→    assert(releaseMethod.includes('ttsPlaybackResolve'), 'touches ttsPlaybackResolve');
+   119→    assert(releaseMethod.includes('resolve()'), 'resolves the promise');
+   120→    assert(releaseMethod.includes('clearTimeout'), 'clears the safety timeout');
+   121→  });
+   122→
+   123→  // ════════════════════════════════════════════════════════════════════════
+   124→  // 2. P0-1 Runtime: Stop-during-TTS releases wait immediately (not 30s)
+   125→  // ════════════════════════════════════════════════════════════════════════
+   126→  await testSection('2. Runtime: Stop-during-TTS releases wait immediately', async () => {
+   127→    console.log('\nTest 2.1: waitForTtsPlayback resolves immediately on abortCurrentTurn');
+   128→
+   129→    // Mirror NexVoiceConversation's waitForTtsPlayback + releaseTtsPlaybackWait
+   130→    // + abortCurrentTurn semantics with a fake implementation.
+   131→    let currentTtsRequestId = 0;
+   132→    let ttsPlaybackResolve: (() => void) | null = null;
+   133→    let ttsPlaybackRequestId: number | null = null;
+   134→    let ttsPlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
+   135→
+   136→    function releaseTtsPlaybackWait() {
+   137→      if (ttsPlaybackResolve) {
+   138→        const resolve = ttsPlaybackResolve;
+   139→        ttsPlaybackResolve = null;
+   140→        ttsPlaybackRequestId = null;
+   141→        if (ttsPlaybackTimeout) { clearTimeout(ttsPlaybackTimeout); ttsPlaybackTimeout = null; }
+   142→        resolve();
+   143→      }
+   144→    }
+   145→
+   146→    function waitForTtsPlayback(requestId: number): Promise<void> {
+   147→      if (currentTtsRequestId !== requestId) return Promise.resolve();
+   148→      releaseTtsPlaybackWait();
+   149→      return new Promise<void>((resolve) => {
+   150→        ttsPlaybackRequestId = requestId;
+   151→        ttsPlaybackResolve = resolve;
+   152→        ttsPlaybackTimeout = setTimeout(() => releaseTtsPlaybackWait(), 30000);
+   153→      });
+   154→    }
+   155→
+   156→    function abortCurrentTurn() {
+   157→      currentTtsRequestId++;
+   158→      releaseTtsPlaybackWait();
+   159→    }
+   160→
+   161→    // Scenario: speakResponse is awaiting waitForTtsPlayback(1).
+   162→    // User clicks Stop → abortCurrentTurn() fires.
+   163→    currentTtsRequestId = 1;
+   164→    const waitPromise = waitForTtsPlayback(1);
+   165→
+   166→    // Yield to let the promise set up
+   167→    await new Promise((r) => setTimeout(r, 10));
+   168→
+   169→    // The wait should still be pending (no signal yet)
+   170→    let resolved = false;
+   171→    waitPromise.then(() => { resolved = true; });
+   172→    await new Promise((r) => setTimeout(r, 10));
+   173→    assert(resolved === false, 'waitForTtsPlayback still pending before Stop');
+   174→
+   175→    // Now simulate Stop → abortCurrentTurn
+   176→    const stopStart = Date.now();
+   177→    abortCurrentTurn();
+   178→    await waitPromise;
+   179→    const elapsed = Date.now() - stopStart;
+   180→
+   181→    assert(resolved === true, 'waitForTtsPlayback resolved after Stop');
+   182→    assert(elapsed < 1000, `waitForTtsPlayback resolved immediately (elapsed=${elapsed}ms, not 30s)`);
+   183→  });
+   184→
+   185→  // ════════════════════════════════════════════════════════════════════════
+   186→  // 3. P0-1 Runtime: Stop-during-TTS does NOT restart listening
+   187→  // ════════════════════════════════════════════════════════════════════════
+   188→  await testSection('3. Runtime: Stop-during-TTS does NOT restart listening', async () => {
+   189→    console.log('\nTest 3.1: GUARD 3 in speakResponse prevents enterListening after cancel');
+   190→
+   191→    // Mirror speakResponse's GUARD 3: after waitForTtsPlayback resolves,
+   192→    // re-check currentTtsRequestId — if it changed (Stop bumped it), do
+   193→    // NOT call enterListening.
+   194→    let currentTtsRequestId = 0;
+   195→    let ttsPlaybackResolve: (() => void) | null = null;
+   196→    let ttsPlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
+   197→
+   198→    function releaseTtsPlaybackWait() {
+   199→      if (ttsPlaybackResolve) {
+   200→        const resolve = ttsPlaybackResolve;
+   201→        ttsPlaybackResolve = null;
+   202→        if (ttsPlaybackTimeout) { clearTimeout(ttsPlaybackTimeout); ttsPlaybackTimeout = null; }
+   203→        resolve();
+   204→      }
+   205→    }
+   206→
+   207→    function waitForTtsPlayback(requestId: number): Promise<void> {
+   208→      if (currentTtsRequestId !== requestId) return Promise.resolve();
+   209→      releaseTtsPlaybackWait();
+   210→      return new Promise<void>((resolve) => {
+   211→        ttsPlaybackResolve = resolve;
+   212→        ttsPlaybackTimeout = setTimeout(() => releaseTtsPlaybackWait(), 30000);
+   213→      });
+   214→    }
+   215→
+   216→    function abortCurrentTurn() {
+   217→      currentTtsRequestId++;
+   218→      releaseTtsPlaybackWait();
+   219→    }
+   220→
+   221→    let enterListeningCalled = false;
+   222→    async function speakResponse(text: string): Promise<void> {
+   223→      currentTtsRequestId++;
+   224→      const requestId = currentTtsRequestId;
+   225→      // Simulate audioReady=true (synthesis completed)
+   226→      const audioReady = true;
+   227→      if (currentTtsRequestId !== requestId) return; // GUARD 1
+   228→      if (!audioReady) return; // GUARD 2
+   229→      await waitForTtsPlayback(requestId);
+   230→      // GUARD 3: if currentTtsRequestId changed during playback, do NOT enterListening
+   231→      if (currentTtsRequestId !== requestId) {
+   232→        console.log(`[test] GUARD 3: req=${requestId} cancelled during playback — not entering listening`);
+   233→        return;
+   234→      }
+   235→      enterListeningCalled = true; // this should NOT happen after Stop
+   236→    }
+   237→
+   238→    // Start speakResponse
+   239→    const speakPromise = speakResponse('Hello');
+   240→    await new Promise((r) => setTimeout(r, 10));
+   241→
+   242→    // Simulate Stop during playback
+   243→    abortCurrentTurn();
+   244→    await speakPromise;
+   245→
+   246→    assert(enterListeningCalled === false, 'Stop during TTS does NOT restart listening (GUARD 3)');
+   247→  });
+   248→
+   249→  // ════════════════════════════════════════════════════════════════════════
+   250→  // 4. P1-5: AI Mode desync fix
+   251→  // ════════════════════════════════════════════════════════════════════════
+   252→  await testSection('4. P1-5: BottomStatusBar AI Mode desync fix', async () => {
+   253→    console.log('\nTest 4.1: BottomStatusBar imports useStore');
+   254→    assert(bottomBarSource.includes("from '../../store/useStore'"), 'imports useStore');
+   255→    assert(bottomBarSource.includes('useStore'), 'uses useStore');
+   256→
+   257→    console.log('\nTest 4.2: BottomStatusBar reads aiMode from useStore (not local state)');
+   258→    assert(bottomBarSource.includes('useStore((s) => s.aiMode)'), 'reads aiMode via useStore selector');
+   259→    assert(bottomBarSource.includes('useStore((s) => s.setAIMode)'), 'reads setAIMode via useStore selector');
+   260→
+   261→    console.log('\nTest 4.3: BottomStatusBar no longer has local useState for aiMode');
+   262→    // The old pattern was `const [aiMode, setAiModeState] = useState<AIMode>('local')`.
+   263→    // After the fix, there should be NO `useState<AIMode>` in code lines
+   264→    // (comments mentioning it are OK — they explain what was removed).
+   265→    const useStateAiModeCodeLines = bottomBarSource.split('\n').filter(l =>
+   266→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('useState<AIMode>')
+   267→    );
+   268→    assert(useStateAiModeCodeLines.length === 0, 'no local useState<AIMode> in BottomStatusBar code');
+   269→    // Also check for the old setAiModeState pattern in code lines
+   270→    const setAiModeStateCodeLines = bottomBarSource.split('\n').filter(l =>
+   271→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('setAiModeState')
+   272→    );
+   273→    assert(setAiModeStateCodeLines.length === 0, 'no local setAiModeState in code');
+   274→
+   275→    console.log('\nTest 4.4: cycleMode calls setAIMode (canonical Zustand path)');
+   276→    // Find the cycleMode function
+   277→    const cycleStart = bottomBarSource.indexOf('const cycleMode = useCallback');
+   278→    assert(cycleStart > 0, 'cycleMode exists');
+   279→    const cycleEnd = bottomBarSource.indexOf('}, [', cycleStart);
+   280→    const cycleSection = bottomBarSource.substring(cycleStart, cycleEnd);
+   281→    assert(cycleSection.includes('setAIMode(nextMode)'), 'cycleMode calls setAIMode');
+   282→
+   283→    console.log('\nTest 4.5: cycleMode also persists via settingsSave');
+   284→    assert(cycleSection.includes('settingsSave'), 'cycleMode persists via settingsSave');
+   285→
+   286→    console.log('\nTest 4.6: useStore.setAIMode syncs both aiMode and settings.aiMode');
+   287→    // Verify the useStore.setAIMode implementation syncs both fields
+   288→    const setAiModeStart = useStoreSource.indexOf('setAIMode: (mode) => set((s) => ({');
+   289→    assert(setAiModeStart > 0, 'useStore.setAIMode exists');
+   290→    const setAiModeEnd = useStoreSource.indexOf('})),', setAiModeStart);
+   291→    const setAiModeSection = useStoreSource.substring(setAiModeStart, setAiModeEnd + 3);
+   292→    assert(setAiModeSection.includes('aiMode: mode'), 'updates top-level aiMode');
+   293→    assert(setAiModeSection.includes('settings: { ...s.settings, aiMode: mode }'), 'updates nested settings.aiMode');
+   294→
+   295→    console.log('\nTest 4.7: BottomStatusBar removed the settingsLoad on mount useEffect');
+   296→    // The old pattern had a useEffect that called settingsLoad() on mount to
+   297→    // populate the local aiMode state. After the fix, aiMode comes from useStore
+   298→    // (hydrated in App.tsx on startup), so the mount-time settingsLoad is gone.
+   299→    // Check that there's no `setAiModeState(r.settings.aiMode` pattern.
+   300→    assert(!bottomBarSource.includes('setAiModeState(r.settings.aiMode'), 'removed settingsLoad → setAiModeState on mount');
+   301→  });
+   302→
+   303→  // ════════════════════════════════════════════════════════════════════════
+   304→  // 5. P1-5 Runtime: AI Mode change syncs useStore + settings
+   305→  // ════════════════════════════════════════════════════════════════════════
+   306→  await testSection('5. Runtime: AI Mode change syncs useStore + settings', async () => {
+   307→    console.log('\nTest 5.1: setAIMode updates both aiMode and settings.aiMode in one set() call');
+   308→
+   309→    // Mirror the useStore.setAIMode implementation
+   310→    let storeState: { aiMode: string; settings: { aiMode: string } } = {
+   311→      aiMode: 'local',
+   312→      settings: { aiMode: 'local' },
+   313→    };
+   314→
+   315→    function set(updater: (s: typeof storeState) => Partial<typeof storeState>) {
+   316→      const partial = updater(storeState);
+   317→      storeState = { ...storeState, ...partial };
+   318→    }
+   319→
+   320→    // Phase 17 P0 13-1 fix: setAIMode syncs both fields
+   321→    function setAIMode(mode: string) {
+   322→      set((s) => ({
+   323→        aiMode: mode,
+   324→        settings: { ...s.settings, aiMode: mode },
+   325→      }));
+   326→    }
+   327→
+   328→    // Scenario: user clicks BottomStatusBar to cycle from local → online
+   329→    setAIMode('online');
+   330→
+   331→    assert(storeState.aiMode === 'online', 'top-level aiMode updated to online');
+   332→    assert(storeState.settings.aiMode === 'online', 'nested settings.aiMode updated to online');
+   333→
+   334→    // Cycle to auto
+   335→    setAIMode('auto');
+   336→    assert(storeState.aiMode === 'auto', 'top-level aiMode updated to auto');
+   337→    assert(storeState.settings.aiMode === 'auto', 'nested settings.aiMode updated to auto');
+   338→
+   339→    // Verify both fields stay in sync (the Phase 18 P1-5 invariant)
+   340→    assert(storeState.aiMode === storeState.settings.aiMode, 'aiMode and settings.aiMode are in sync');
+   341→  });
+   342→
+   343→  // ════════════════════════════════════════════════════════════════════════
+   344→  // 6. P1-6: Voice confirmation dead/recursive code removed
+   345→  // ════════════════════════════════════════════════════════════════════════
+   346→  await testSection('6. P1-6: Voice confirmation dead/recursive code removed', async () => {
+   347→    console.log('\nTest 6.1: main.ts no longer wires setPermissionVoiceCapture');
+   348→    // The old recursive wiring was:
+   349→    //   conversation.setPermissionVoiceCapture(async () => {
+   350→    //     return await conversation.captureVoiceConfirmation();
+   351→    //   });
+   352→    // After P1-6, this block should be gone from code (comments explaining
+   353→    // the removal are OK).
+   354→    const setPermissionCodeLines = mainSource.split('\n').filter(l =>
+   355→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('setPermissionVoiceCapture(async')
+   356→    );
+   357→    assert(setPermissionCodeLines.length === 0, 'removed setPermissionVoiceCapture wiring in main.ts code');
+   358→    const captureVoiceConfCodeLines = mainSource.split('\n').filter(l =>
+   359→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('captureVoiceConfirmation()')
+   360→    );
+   361→    assert(captureVoiceConfCodeLines.length === 0, 'removed captureVoiceConfirmation call in main.ts code');
+   362→
+   363→    console.log('\nTest 6.2: NexVoiceConversation removed setPermissionVoiceCapture method');
+   364→    // Code-line check (method definition should be gone — only comments remain)
+   365→    const setPermMethodLines = conversationSource.split('\n').filter(l =>
+   366→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('setPermissionVoiceCapture(fn')
+   367→    );
+   368→    assert(setPermMethodLines.length === 0, 'removed setPermissionVoiceCapture method definition');
+   369→
+   370→    console.log('\nTest 6.3: NexVoiceConversation removed captureVoiceConfirmation method');
+   371→    const captureMethodLines = conversationSource.split('\n').filter(l =>
+   372→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('async captureVoiceConfirmation()')
+   373→    );
+   374→    assert(captureMethodLines.length === 0, 'removed captureVoiceConfirmation method definition');
+   375→
+   376→    console.log('\nTest 6.4: NexVoiceConversation removed handlePermissionConfirmation method');
+   377→    const handlePermMethodLines = conversationSource.split('\n').filter(l =>
+   378→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('handlePermissionConfirmation')
+   379→    );
+   380→    assert(handlePermMethodLines.length === 0, 'removed handlePermissionConfirmation method');
+   381→
+   382→    console.log('\nTest 6.5: NexVoiceConversation removed permissionVoiceCaptureFn field');
+   383→    const permFieldLines = conversationSource.split('\n').filter(l =>
+   384→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('private permissionVoiceCaptureFn')
+   385→    );
+   386→    assert(permFieldLines.length === 0, 'removed permissionVoiceCaptureFn field');
+   387→
+   388→    console.log('\nTest 6.6: NexVoiceConversation removed pendingPermission field from ConversationContext');
+   389→    // The field declaration `pendingPermission: boolean;` should be gone from code
+   390→    const pendingFieldDeclLines = conversationSource.split('\n').filter(l =>
+   391→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('pendingPermission: boolean')
+   392→    );
+   393→    assert(pendingFieldDeclLines.length === 0, 'removed pendingPermission field declaration');
+   394→    // The initialization `pendingPermission: false,` should be gone from code
+   395→    const pendingInitLines = conversationSource.split('\n').filter(l =>
+   396→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('pendingPermission: false')
+   397→    );
+   398→    assert(pendingInitLines.length === 0, 'removed pendingPermission initialization');
+   399→
+   400→    console.log('\nTest 6.7: feedTranscript no longer checks pendingPermission');
+   401→    // The old feedTranscript had: `if (this.context.pendingPermission) { ... }`
+   402→    // After P1-6, this branch is removed. Check the feedTranscript method body.
+   403→    const feedTranscriptStart = conversationSource.indexOf('feedTranscript(text: string): void {');
+   404→    assert(feedTranscriptStart > 0, 'feedTranscript method exists');
+   405→    const feedTranscriptEnd = conversationSource.indexOf("// If we're speaking and the user talks", feedTranscriptStart);
+   406→    const feedTranscriptSection = conversationSource.substring(feedTranscriptStart, feedTranscriptEnd);
+   407→    // Code-line check (not comments)
+   408→    const pendingCheckCodeLines = feedTranscriptSection.split('\n').filter(l =>
+   409→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('this.context.pendingPermission')
+   410→    );
+   411→    assert(pendingCheckCodeLines.length === 0, 'feedTranscript no longer checks pendingPermission in code');
+   412→  });
+   413→
+   414→  // ════════════════════════════════════════════════════════════════════════
+   415→  // 7. P1-6: Active PermissionGate paths still intact
+   416→  // ════════════════════════════════════════════════════════════════════════
+   417→  await testSection('7. P1-6: Active PermissionGate paths still intact', async () => {
+   418→    console.log('\nTest 7.1: PermissionGate.requestPermission still exists');
+   419→    assert(permissionGateSource.includes('async requestPermission('), 'PermissionGate.requestPermission exists');
+   420→
+   421→    console.log('\nTest 7.2: PermissionGate.respondViaVoice still exists');
+   422→    assert(permissionGateSource.includes('async respondViaVoice('), 'PermissionGate.respondViaVoice exists');
+   423→
+   424→    console.log('\nTest 7.3: update-manager still wires onCaptureVoiceInput (own verifier)');
+   425→    // update-manager uses its own voiceVerifier — this path is separate from
+   426→    // the conversation's dead captureVoiceConfirmation. It should still work.
+   427→    assert(updateManagerSource.includes('onCaptureVoiceInput'), 'update-manager still wires onCaptureVoiceInput');
+   428→    assert(updateManagerSource.includes('voiceVerifier.captureConfirmation'), 'update-manager uses own voiceVerifier');
+   429→
+   430→    console.log('\nTest 7.4: VoicePermissionVerifier class still exists');
+   431→    assert(permissionGateSource.includes('class VoicePermissionVerifier'), 'VoicePermissionVerifier class exists');
+   432→    assert(permissionGateSource.includes('setCaptureFunction'), 'VoicePermissionVerifier.setCaptureFunction exists');
+   433→
+   434→    console.log('\nTest 7.5: main.ts still wires deploymentManager + knowledgePackManager onRequestPermission');
+   435→    // These are the ACTIVE permission paths — only onRequestPermission is wired
+   436→    // (no onCaptureVoiceInput for these managers, which is fine — they use the
+   437→    // respondViaVoice IPC path).
+   438→    assert(mainSource.includes("deploymentManager.setCallbacks"), 'deploymentManager.setCallbacks wired');
+   439→    assert(mainSource.includes("knowledgePackManager.setCallbacks"), 'knowledgePackManager.setCallbacks wired');
+   440→    assert(mainSource.includes("model-deployment-permission-request"), 'model-deployment permission IPC intact');
+   441→    assert(mainSource.includes("knowledge-pack-permission-request"), 'knowledge-pack permission IPC intact');
+   442→  });
+   443→
+   444→  // ════════════════════════════════════════════════════════════════════════
+   445→  // 8. P2-6: Dead renderer voice/TTS path removed
+   446→  // ════════════════════════════════════════════════════════════════════════
+   447→  await testSection('8. P2-6: Dead renderer voice/TTS path removed', async () => {
+   448→    console.log('\nTest 8.1: voice-service.ts removed _ttsActive field');
+   449→    assert(!voiceServiceSource.includes('private _ttsActive'), '_ttsActive field removed');
+   450→
+   451→    console.log('\nTest 8.2: voice-service.ts removed _bargeInEnabled field');
+   452→    assert(!voiceServiceSource.includes('private _bargeInEnabled'), '_bargeInEnabled field removed');
+   453→
+   454→    console.log('\nTest 8.3: voice-service.ts removed isSpeaking getter');
+   455→    // The old getter was `get isSpeaking(): boolean { return this._ttsActive; }`
+   456→    // After P2-6, it should be gone (or only in a comment explaining removal).
+   457→    const isSpeakingCodeLines = voiceServiceSource.split('\n').filter(l =>
+   458→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('get isSpeaking()')
+   459→    );
+   460→    assert(isSpeakingCodeLines.length === 0, 'isSpeaking getter removed from code');
+   461→
+   462→    console.log('\nTest 8.4: voice-service.ts removed speak(text: string) method');
+   463→    // The old method was `speak(text: string): void { ... }`
+   464→    // After P2-6, the method definition should be gone.
+   465→    const speakMethodMatch = voiceServiceSource.match(/^\s*speak\(text: string\): void \{/m);
+   466→    assert(!speakMethodMatch, 'speak(text: string) method definition removed');
+   467→
+   468→    console.log('\nTest 8.5: voice-service.ts stopSpeaking is a no-op');
+   469→    // stopSpeaking is kept (called by dispose()) but is now a no-op.
+   470→    const stopStart = voiceServiceSource.indexOf('stopSpeaking(): void {');
+   471→    assert(stopStart > 0, 'stopSpeaking method still exists (called by dispose)');
+   472→    const stopEnd = voiceServiceSource.indexOf('setCondition(key: string', stopStart);
+   473→    const stopSection = voiceServiceSource.substring(stopStart, stopEnd);
+   474→    assert(!stopSection.includes('this._ttsActive'), 'stopSpeaking does not touch _ttsActive (removed)');
+   475→    assert(!stopSection.includes("this.clearCondition('tts')"), 'stopSpeaking does not clear tts condition (dead)');
+   476→
+   477→    console.log('\nTest 8.6: voice-service.ts removed renderer-side barge-in branch');
+   478→    // The old branch was `if (this._ttsActive && this._bargeInEnabled) { ... }`
+   479→    // inside processVAD. After P2-6, this branch is gone.
+   480→    const vadStart = voiceServiceSource.indexOf('private processVAD(level: number): void {');
+   481→    assert(vadStart > 0, 'processVAD method exists');
+   482→    const vadEnd = voiceServiceSource.indexOf('private downsampleTo16k', vadStart);
+   483→    const vadSection = voiceServiceSource.substring(vadStart, vadEnd);
+   484→    // Code-line check (not comments)
+   485→    const bargeInCodeLines = vadSection.split('\n').filter(l =>
+   486→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('this._ttsActive') && l.includes('this._bargeInEnabled')
+   487→    );
+   488→    assert(bargeInCodeLines.length === 0, 'renderer-side barge-in branch removed from processVAD');
+   489→
+   490→    console.log('\nTest 8.7: voice-controller.ts removed speak() method');
+   491→    const controllerSpeakMatch = voiceControllerSource.match(/^\s*speak\(text: string\): void \{/m);
+   492→    assert(!controllerSpeakMatch, 'voiceController.speak() method removed');
+   493→
+   494→    console.log('\nTest 8.8: voice-controller.ts removed stopSpeaking() method');
+   495→    // The old method was `stopSpeaking(): void { voiceService.stopSpeaking(); }`
+   496→    // After P2-6, the method definition should be gone (voiceService.stopSpeaking
+   497→    // is now a no-op, and voiceController.stopSpeaking had zero external callers).
+   498→    const controllerStopMatch = voiceControllerSource.match(/^\s*stopSpeaking\(\): void \{/m);
+   499→    assert(!controllerStopMatch, 'voiceController.stopSpeaking() method removed');
+   500→
+   501→    console.log('\nTest 8.9: voice-controller.ts no longer calls voiceService.speak/stopSpeaking');
+   502→    // Code-line check (not comments)
+   503→    const controllerCallLines = voiceControllerSource.split('\n').filter(l =>
+   504→      !l.trim().startsWith('//') && !l.trim().startsWith('*') &&
+   505→      (l.includes('voiceService.speak(') || l.includes('voiceService.stopSpeaking('))
+   506→    );
+   507→    assert(controllerCallLines.length === 0, `voice-controller no longer calls voiceService.speak/stopSpeaking (found ${controllerCallLines.length})`);
+   508→  });
+   509→
+   510→  // ════════════════════════════════════════════════════════════════════════
+   511→  // 9. Regression: Phase 14/15/16 invariants preserved
+   512→  // ════════════════════════════════════════════════════════════════════════
+   513→  await testSection('9. Regression: Phase 14/15/16 invariants preserved', async () => {
+   514→    console.log('\nTest 9.1: Phase 14 — NexChatPanel wasVoiceInputRef intact');
+   515→    const chatSource = fs.readFileSync(
+   516→      path.join(__dirname, '..', '..', 'src', 'renderer', 'components', 'chat', 'NexChatPanel.tsx'),
+   517→      'utf-8',
+   518→    );
+   519→    assert(chatSource.includes('wasVoiceInputRef'), 'Phase 14 wasVoiceInputRef intact');
+   520→    assert(chatSource.includes('speakResponseIfVoice'), 'Phase 14 speakResponseIfVoice intact');
+   521→    assert(chatSource.includes('ttsCancelledRef'), 'Phase 14 ttsCancelledRef intact');
+   522→
+   523→    console.log('\nTest 9.2: Phase 14 — AppShell source=voice intact');
+   524→    const appShellSource = fs.readFileSync(
+   525→      path.join(__dirname, '..', '..', 'src', 'renderer', 'components', 'layout', 'AppShell.tsx'),
+   526→      'utf-8',
+   527→    );
+   528→    assert(appShellSource.includes("source: 'voice'"), 'Phase 14 source=voice intact');
+   529→
+   530→    console.log('\nTest 9.3: Phase 15 — voice-service.ts has no browser speechSynthesis');
+   531→    const synthSpeakLines = voiceServiceSource.split('\n').filter(l =>
+   532→      !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('window.speechSynthesis')
+   533→    );
+   534→    assert(synthSpeakLines.length === 0, 'no window.speechSynthesis in voice-service.ts code');
+   535→
+   536→    console.log('\nTest 9.4: Phase 16 — voice-tts-ended IPC intact');
+   537→    assert(mainSource.includes("'voice-tts-ended'"), 'Phase 16 voice-tts-ended IPC intact');
+   538→    assert(mainSource.includes('notifyTtsPlaybackEnded'), 'Phase 16 notifyTtsPlaybackEnded intact');
+   539→
+   540→    console.log('\nTest 9.5: Phase 16 — voice-tts-stop-playback IPC intact');
+   541→    assert(mainSource.includes("'voice-tts-stop-playback'"), 'Phase 16 voice-tts-stop-playback IPC intact');
+   542→
+   543→    console.log('\nTest 9.6: Phase 16 — requestId in voice-tts-audio payload');
+   544→    const onReadyIdx = mainSource.indexOf('onTTSAudioReady: (audioFilePath: string, text: string, requestId: number)');
+   545→    assert(onReadyIdx > 0, 'Phase 16 onTTSAudioReady has requestId param');
+   546→    const onReadySection = mainSource.substring(onReadyIdx, onReadyIdx + 1000);
+   547→    assert(onReadySection.includes("send('voice-tts-audio'"), 'Phase 16 sends voice-tts-audio');
+   548→    assert(onReadySection.includes('requestId'), 'Phase 16 payload includes requestId');
+   549→
+   550→    console.log('\nTest 9.7: Phase 17 — cancelTask still calls abortInference');
+   551→    const coreSource = fs.readFileSync(
+   552→      path.join(__dirname, '..', '..', 'src', 'main', 'agent', 'core.ts'),
+   553→      'utf-8',
+   554→    );
+   555→    const cancelStart = coreSource.indexOf('export async function cancelTask(');
+   556→    assert(cancelStart > 0, 'Phase 17 cancelTask is async');
+   557→    const cancelEnd = coreSource.indexOf('export function cancelTaskSync', cancelStart);
+   558→    const cancelSection = coreSource.substring(cancelStart, cancelEnd);
+   559→    assert(cancelSection.includes('abortInference'), 'Phase 17 cancelTask calls abortInference');
+   560→
+   561→    console.log('\nTest 9.8: Phase 17 — Orb error auto-clear intact');
+   562→    // Phase 17 ORB-ERROR-NO-CLEAR fix: task_failed error condition auto-clears after 1.5s
+   563→    // Phase 18 (P2-1): the clear is now via scheduleConditionClear helper.
+   564→    const taskFailedIdx = chatSource.indexOf("case 'task_failed':");
+   565→    assert(taskFailedIdx > 0, 'task_failed case exists');
+   566→    // Window increased to 1200 to cover the full case body (comments + setCondition + setTimeout)
+   567→    const taskFailedSection = chatSource.substring(taskFailedIdx, taskFailedIdx + 1200);
+   568→    assert(taskFailedSection.includes("setCondition('agent', 'error')"), 'Phase 17 sets error condition');
+   569→    // Phase 18 (P2-1): auto-clear is now via scheduleConditionClear helper
+   570→    assert(taskFailedSection.includes("scheduleConditionClear('agent'"), 'Phase 17 auto-clears error condition via scheduleConditionClear');
+   571→  });
+   572→
+   573→  // ════════════════════════════════════════════════════════════════════════
+   574→  // SUMMARY
+   575→  // ════════════════════════════════════════════════════════════════════════
+   576→  console.log('\n════════════════════════════════════════');
+   577→  console.log(`Phase 18 Stage 1 tests: ${passed}/${passed + failed} passed (${failed} failed)`);
+   578→  console.log('════════════════════════════════════════\n');
+   579→
+   580→  if (failed > 0) {
+   581→    console.error('Failed tests:');
+   582→    for (const f of failures) console.error(`  - ${f}`);
+   583→    console.error('');
+   584→    process.exit(1);
+   585→  }
+   586→}
+   587→
+   588→runTests().catch((err) => {
+   589→  console.error('Test runner crashed:', err);
+   590→  console.error(err.stack);
+   591→  process.exit(1);
+   592→});
+   593→

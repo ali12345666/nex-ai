@@ -9198,3 +9198,1266 @@ Stage Summary:
 - 4 files changed, 291 insertions(+), 12 deletions(-)
 - Pushed to https://github.com/ali12345666/nex-ai.git main branch
 - Phase 18 Stage 4 complete and committed
+
+---
+Task ID: P18-FINAL-AUDIT-PERM-TESTS
+Agent: Explore (permissions/tests)
+Phase: 18 — Final READ-ONLY audit of permission paths + test coverage (post-Stage 4)
+Codebase: /home/z/my-project @ f0830ed (main)
+Mode: READ-ONLY — no source files modified, no new files, no commits
+
+═══════════════════════════════════════════════════════════════════════════════
+WORK LOG
+═══════════════════════════════════════════════════════════════════════════════
+
+Files audited (read in full):
+- /home/z/my-project/src/main/update/permission-gate.ts (183 lines — requestPermission L91-106, respondViaVoice L126-130, VoicePermissionVerifier L174-182)
+- /home/z/my-project/src/main/update/update-manager.ts (271 lines — onCaptureVoiceInput wiring L91-93)
+- /home/z/my-project/src/main/ai/model-deployment-manager.ts (requestPermission L427-428, L588; setCallbacks L206-207; respondViaVoice L655-656)
+- /home/z/my-project/src/main/knowledge/knowledge-pack-manager.ts (requestPermission private helper L611-625; setCallbacks L122-123; respondViaVoice L605-606)
+- /home/z/my-project/src/main/ai/nex-agent-executor.ts (374 lines — requestPermission L297-300, respondToPermission L305-307, respondViaVoice L312-313)
+- /home/z/my-project/src/main/main.ts (6586 lines — deployment setCallbacks L2710, L3098; knowledge-pack setCallbacks L4980; executor IPC L4903-4932; conversation wiring L1858-1909; engine wiring L1929-1950; component-installer L4368-4433)
+- /home/z/my-project/src/main/preload.ts (825 lines — all ipcRenderer.on listeners verified)
+- /home/z/my-project/src/main/voice/nex-voice-conversation.ts (925 lines — comments at L98, L143-145, L288-294, L796-801 confirming P1-6 removal; onCaptureVoiceConfirmation callback type at L119 still declared but never invoked)
+- /home/z/my-project/src/renderer/services/voice-service.ts (P2-6 removals confirmed via comments at L93-101, L111, L134-135, L303-307, L363-364, L378-384, L406-408)
+- /home/z/my-project/src/renderer/services/voice-controller.ts (P2-6 removals confirmed via comments at L129-142)
+- /home/z/my-project/src/renderer/components/layout/AppShell.tsx (GAP-7 routing L333-354: conditionKey = source === 'conversation' ? 'conversation' : 'engine')
+- /home/z/my-project/tests/tools/test-phase-18-stage1.ts (592 lines, 82 assertions — verified coverage of P0-1, P1-5, P1-6, P2-6)
+- /home/z/my-project/tests/tools/test-phase-18-stage3.ts (540 lines, 68 assertions — verified coverage of BUG-21 barge-in + AUDIO-NO-MUTE-TTS)
+- /home/z/my-project/tests/tools/test-phase-18-stage4.ts (232 lines, 28 assertions — verified coverage of GAP-7)
+- /home/z/my-project/tests/tools/test-phase-18-orb-state-enforcement.ts (489 lines, 120 assertions — verified coverage of BUG-37)
+- /home/z/my-project/tests/tools/test-phase-18-stale-timers.ts (289 lines, 33 assertions — verified coverage of P2-1)
+- /home/z/my-project/tests/tools/test-phase-12-orchestration.ts (304 lines — executor PermissionGate coverage)
+- /home/z/my-project/tests/system/test-phase56-voice-conversation.ts (561 lines — BROKEN by P1-6 removal, see below)
+
+═══════════════════════════════════════════════════════════════════════════════
+1. PERMISSION / SECURITY PATHS
+═══════════════════════════════════════════════════════════════════════════════
+
+1.1 PermissionGate.requestPermission — CONFIRMED INVARIANT
+  Source: src/main/update/permission-gate.ts:91-106
+  Still exists; returns Promise<PermissionGateResult>; resolves via respondToPermissionRequest (L108-124).
+  Callers:
+    - update-manager.ts:150, 196, 224 (download/install/delete steps in executeUpdate)
+    - model-deployment-manager.ts:428 (downloadFromUrl), 588 (removeModel)
+    - knowledge-pack-manager.ts:625 (via private requestPermission helper)
+    - nex-agent-executor.ts:299 (requestPermission helper)
+    - main.ts:3145 (download-start helper for Phase 70)
+    - component-installer.ts (via installComponent flow)
+
+1.2 PermissionGate.respondViaVoice — CONFIRMED INVARIANT
+  Source: src/main/update/permission-gate.ts:126-130
+  Still exists; calls callbacks.onCaptureVoiceInput → respondToPermissionRequest.
+  Callers (IPC handlers):
+    - update-manager: main.ts:3992 (update-respond-voice)
+    - model-deployment-manager: main.ts:2811 (model-deploy-respond-voice)
+    - knowledge-pack-manager: main.ts:5162 (knowledge-pack-respond-voice)
+    - nex-agent-executor: main.ts:4917 (agent-respond-voice)
+    - component-installer: main.ts:4428 (component-respond-voice)
+
+1.3 update-manager onCaptureVoiceInput wiring — CONFIRMED INVARIANT
+  Source: src/main/update/update-manager.ts:91-93
+  update-manager wires onCaptureVoiceInput with its own voiceVerifier.captureConfirmation() (separate path from removed conversation path). Intact.
+  Verified by: tests/tools/test-phase-18-stage1.ts:427-428 (Test 7.3).
+
+1.4 model-deployment-manager onRequestPermission — CONFIRMED INVARIANT
+  Source: src/main/main.ts:2710-2714 (primary), 3098-3102 (override)
+  Both call setCallbacks with onRequestPermission that forwards to 'model-deployment-permission-request' IPC. Intact.
+  Verified by: tests/tools/test-phase-18-stage1.ts:438-441 (Test 7.5).
+  NOTE: Line 3098 override is REDUNDANT with line 2710 — both set the same callback. Not a bug, but dead duplicate wiring. Minor cleanup opportunity.
+
+1.5 knowledge-pack-manager onRequestPermission — CONFIRMED INVARIANT
+  Source: src/main/main.ts:4980-4984
+  setCallbacks wires onRequestPermission → 'knowledge-pack-permission-request' IPC. Intact.
+  Verified by: tests/tools/test-phase-18-stage1.ts:439-441 (Test 7.5).
+
+1.6 nex-agent-executor onRequestPermission — COVERAGE GAP (pre-existing, NOT broken by P1-6)
+  Source: src/main/ai/nex-agent-executor.ts:297-300
+  The executor's PermissionGate is constructed internally (L88-89 `new PermissionGate()`) and NEVER has setCallbacks({ onRequestPermission }) called. No `executor.setCallbacks` or `executor.getPermissionGate().setCallbacks` anywhere in src/main.
+  Result: when executor.executePlan hits a non-safe step and calls requestPermission, the gate's callbacks.onRequestPermission?.() is a no-op → renderer gets NO push notification.
+  Polling fallback exists: main.ts:4925 `agent-pending-permission` IPC + preload exposes `agentPendingPermission`. BUT no renderer component calls `agentPendingPermission` (verified by grep — only declaration in electron.d.ts:476).
+  Architectural impact: when planner-execute → executor.executePlan blocks on a non-safe step's permission, the promise hangs forever (no UI dialog, no resolve path).
+  Test coverage: tests/tools/test-phase-12-orchestration.ts Section 2 verifies the executor's gate exists but does NOT verify the renderer notification path. tests/tools/test-phase-18-stage1.ts Test 7.5 explicitly skips the executor (only checks deployment + knowledge-pack managers).
+  Pre-existing condition (not introduced by P1-6). The comment at src/main/main.ts:1571 grouping "nex-agent-executor" with managers that "only wire onRequestPermission" is INACCURATE.
+
+1.7 No new IPC channels bypassing PermissionGate — CONFIRMED INVARIANT
+  Phase 18 Stage 3 added onBargeIn (internal callback, not IPC) and onTtsPlaybackEnded (internal method, not IPC). No new permission-bypass IPC channels.
+  Verified by: tests/tools/test-phase-18-stage3.ts:512-518 (Test 13.2 — no barge-in-permission IPC).
+
+1.8 Removed P1-6 wiring left NO dangling references — CONFIRMED INVARIANT
+  All references to setPermissionVoiceCapture / captureVoiceConfirmation / handlePermissionConfirmation / permissionVoiceCaptureFn / pendingPermission (in conversation context) are in COMMENTS only:
+    - src/main/main.ts:1560-1584 (explanatory comment block)
+    - src/main/voice/nex-voice-conversation.ts:98-99, 143-145, 288-294, 796-801 (comments)
+  No code references remain. Verified by full-source grep across src/main and src/renderer.
+
+1.9 Leftover dead declaration in ConversationCallbacks — DEAD CODE (minor)
+  Source: src/main/voice/nex-voice-conversation.ts:119
+  `onCaptureVoiceConfirmation?: () => Promise<string>;` is still declared in the ConversationCallbacks interface, but never invoked anywhere in src/main or src/renderer. This is the callback TYPE that would have been fired by the removed captureVoiceConfirmation method. P1-6 removed the method but left the callback declaration in the interface. Minor cleanup gap (zero runtime impact — no caller, no implementer).
+
+═══════════════════════════════════════════════════════════════════════════════
+2. DEAD CODE CHECK (removed Phase 18 Stage 1 symbols)
+═══════════════════════════════════════════════════════════════════════════════
+
+All searches verified across src/ and tests/:
+
+2.1 _ttsActive in voice-service.ts — DEAD CODE REMOVED ✓
+  Only comments remain: voice-service.ts:93-101, 363-364, 406-408. No code.
+  Verified by: tests/tools/test-phase-18-stage1.ts:449 (Test 8.1), tests/tools/test-phase-15-voice-unification.ts:63 (Test 1.3).
+
+2.2 _bargeInEnabled in voice-service.ts — DEAD CODE REMOVED ✓
+  Only comments remain: voice-service.ts:111. No code.
+  Verified by: tests/tools/test-phase-18-stage1.ts:452 (Test 8.2), tests/tools/test-phase-15-voice-unification.ts:66 (Test 1.4).
+
+2.3 isSpeaking getter in voice-service.ts — DEAD CODE REMOVED ✓
+  Only comments remain: voice-service.ts:134-135. No code (the only `isSpeaking` references in the codebase are mock getters in tests/tools/test-phase-16-bug12.ts:215, 323, 407 — these mock the engine's isSpeaking, unrelated).
+  Verified by: tests/tools/test-phase-18-stage1.ts:460 (Test 8.3).
+
+2.4 speak(text: string) method in voice-service.ts — DEAD CODE REMOVED ✓
+  Only comments remain: voice-service.ts:378-384. No `speak(text: string): void {` method definition in code.
+  Verified by: tests/tools/test-phase-18-stage1.ts:466 (Test 8.4), tests/tools/test-phase-15-voice-unification.ts:59-60 (Test 1.2).
+
+2.5 voiceController.speak( calls in renderer .tsx files — ZERO ✓
+  Grep across src/renderer for `voiceController.speak(` returns 5 hits, ALL in voice-service.ts comments + voice-controller.ts comments. No production .tsx calls.
+  Verified by: tests/tools/test-phase-15-voice-unification.ts:174-188 (Test 5.3 — scans all renderer components).
+
+2.6 voiceController.stopSpeaking( calls in renderer .tsx files — ZERO ✓
+  Same comment-only pattern. Verified by: tests/tools/test-phase-18-stage1.ts:499 (Test 8.8).
+
+2.7 voiceService.speak( in any file — ZERO in code ✓
+  Only in voice-controller.ts:130 (comment). Verified by: tests/tools/test-phase-18-stage1.ts:507 (Test 8.9), tests/tools/test-phase-15-voice-unification.ts:172 (Test 5.2).
+
+2.8 window.speechSynthesis in any renderer file — ZERO ✓
+  Grep across src/renderer for `speechSynthesis` returns NO matches at all (not even in comments). Verified by: tests/tools/test-phase-18-stage1.ts:534 (Test 9.3).
+
+2.9 setPermissionVoiceCapture / captureVoiceConfirmation / pendingPermission in main.ts — only in comments ✓
+  All references are in the explanatory comment block at src/main/main.ts:1560-1584. No code.
+
+2.10 captureVoiceConfirmation / pendingPermission / handlePermissionConfirmation / permissionVoiceCaptureFn in nex-voice-conversation.ts — only in comments ✓
+  All references in nex-voice-conversation.ts:98-99, 143-145, 288-294, 796-801 are comments. Verified by: tests/tools/test-phase-18-stage1.ts:355-411 (Tests 6.1-6.7).
+
+═══════════════════════════════════════════════════════════════════════════════
+3. ORPHAN IPC CHANNELS
+═══════════════════════════════════════════════════════════════════════════════
+
+Listed all `webContents.send(channel, ...)` in src/main/main.ts (37 unique channels) and all `ipcRenderer.on(channel, ...)` in src/main/preload.ts (38 unique channels — 36 static + 2 dynamic session-scoped `terminal-output:${sessionId}` / `terminal-exit:${sessionId}`).
+
+3.1 ORPHAN — main sends, no renderer listener:
+  - `plugin-event` — sent at src/main/main.ts:5886 (`mainWindow?.webContents.send('plugin-event', e)` from PluginLoader onEvent). NO matching `ipcRenderer.on('plugin-event', ...)` in preload.ts, NO renderer subscriber. Wasted main→renderer serialization (low impact; pre-existing — not introduced by P1-6).
+  - `voice-conversation-partial` — sent at src/main/main.ts:1899 (`mainWindow?.webContents.send('voice-conversation-partial', { text })` from conversation.onPartialTranscript). NO matching listener in preload.ts. The renderer has its own partial-transcript pipeline (voice-service.ts onPartialTranscript callback), so this main→renderer event is redundant. Pre-existing.
+
+3.2 DEAD LISTENER — renderer listens, main never sends:
+  - NONE in main.ts. (open-file-in-editor is sent from src/main/ai/tools/open-file-in-editor-tool.ts:73, not main.ts — verified not orphan.)
+
+3.3 Summary: 2 orphan IPC channels (plugin-event, voice-conversation-partial). Neither is a security issue (no permission surface). Neither was introduced by P1-6. Both are pre-existing minor cleanup opportunities.
+
+═══════════════════════════════════════════════════════════════════════════════
+4. TEST COVERAGE MAPPING
+═══════════════════════════════════════════════════════════════════════════════
+
+4.1 P0-1 Stop-during-TTS wait hang → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage1.ts Section 1 (source-level: abortCurrentTurn + releaseTtsPlaybackWait wiring order) + Section 2 (RUNTIME: assert elapsed < 1000ms — NOT 30s — Test 2.1) + Section 3 (RUNTIME: GUARD 3 prevents enterListening after cancel, Test 3.1).
+  Regression: tests/tools/test-phase-16-bug26.ts Section 6 (abortCurrentTurn bumps requestId + releases wait) + Section 7 (Stop during synthesis → discard).
+  No coverage gap.
+
+4.2 P1-5 AI Mode desync (BottomStatusBar) → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage1.ts Section 4 (source-level: BottomStatusBar uses useStore, no local useState<AIMode>, cycleMode calls setAIMode + settingsSave) + Section 5 (RUNTIME: setAIMode syncs both aiMode AND settings.aiMode in one set() call).
+  No coverage gap.
+
+4.3 P1-6 Voice confirmation dead code → COVERED for removal ✓
+  Primary: tests/tools/test-phase-18-stage1.ts Section 6 (source-level: setPermissionVoiceCapture, captureVoiceConfirmation, handlePermissionConfirmation, permissionVoiceCaptureFn, pendingPermission all REMOVED from code) + Section 7 (active paths still intact — PermissionGate.requestPermission/respondViaVoice, update-manager onCaptureVoiceInput, VoicePermissionVerifier, deployment + knowledge-pack setCallbacks).
+  No coverage gap for the removal itself.
+  BUT — see §4.10 below for a CRITICAL broken-test finding.
+
+4.4 P2-6 Dead renderer TTS path → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage1.ts Section 8 (source-level: _ttsActive, _bargeInEnabled, isSpeaking getter, speak() method, renderer-side barge-in branch, voiceController.speak, voiceController.stopSpeaking all REMOVED).
+  Reinforced by: tests/tools/test-phase-15-voice-unification.ts Tests 1.1-1.5 (no speechSynthesis, no speak method, no _ttsActive, stopSpeaking no-op), Test 5.2-5.3 (no voiceController.speak() in renderer components — scans ALL .tsx files).
+  No coverage gap.
+
+4.5 BUG-37 Orb state enforcement → COVERED ✓
+  Primary: tests/tools/test-phase-18-orb-state-enforcement.ts (120 assertions across 10 sections):
+    - Section 1: VALID_TRANSITIONS relaxed for flash states (success/error/cancelled → all active states)
+    - Section 2: Barge-in transitions allowed (listening→working, speaking→working, speaking→thinking, working→thinking/speaking/listening)
+    - Section 3: idle → thinking/working/cancelled allowed
+    - Section 4: True terminal states (offline, installing) preserved (NOT relaxed)
+    - Section 5: safeOrbTransition new diagnostic message `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+    - Section 6: voice-service.ts recomputeState calls safeOrbTransition (source-level)
+    - Section 7: voice-controller.ts handleStateChange calls safeOrbTransition (source-level)
+    - Section 8: Runtime shadow test of safeOrbTransition logic (valid/invalid/no-op)
+    - Section 9: Runtime recomputeState enforcement (BLOCKED transitions do NOT update state — verified with offline→speaking scenario)
+  Reinforced by: tests/tools/test-phase-18-orb-state-flows.ts (38 assertions — E2E flow tests covering voice, chat, agent, voice-agent, barge-in, flash recovery, error/cancel flash, terminal states).
+  No coverage gap.
+
+4.6 P2-1 Stale timers → COVERED ✓
+  Primary: tests/tools/test-phase-18-stale-timers.ts (33 assertions):
+    - Section 1: NexChatPanel agentClearTimerRef + chatClearTimerRef declared, scheduleConditionClear helper exists and clears previous timer before scheduling, all 6 condition auto-clears (3 agent + 3 chat) use scheduleConditionClear, NO anonymous setTimeout clearCondition remain
+    - Section 2: AppShell scheduleQueueClear helper exists, clears previous timer, all 3 queue auto-clears use it, engineClearTimer + scheduleEngineClear added
+    - Section 3-5: Runtime tests verify stale timer from old task CANNOT clear newer task's condition
+  No coverage gap.
+
+4.7 BUG-21 Barge-in → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage3.ts Section 1 (source-level: onBargeIn callback, VAD checks speech+ttsActive+2× threshold, handleBargeIn guards state !== speaking, bumps requestId, releases wait, stops engine, setState interrupted, enterListening) + Section 5 (RUNTIME: handleBargeIn bumps requestId + releases wait + stops engine + transitions to listening) + Section 7 (GUARD 3 prevents enterListening after barge-in) + Section 8 (rapid barge-in idempotent — second barge-in ignored).
+  No coverage gap.
+
+4.8 AUDIO-NO-MUTE-TTS → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage3.ts Section 4 (source-level: processVAD gated with `_stateConditions.get('engine') === 'speaking'` return — skips renderer VAD when engine is speaking; audio level still sent to main for barge-in detection).
+  No coverage gap.
+
+4.9 GAP-7 Separation → COVERED ✓
+  Primary: tests/tools/test-phase-18-stage4.ts (28 assertions):
+    - Section 1: conversation.onStateChange sends `source: 'conversation'` (main.ts:1875), engine.onStateChange sends `source: 'engine'` (main.ts:1945)
+    - Section 2: AppShell reads ev.source, computes conditionKey = source === 'conversation' ? 'conversation' : 'engine' (AppShell.tsx:333), uses conditionKey for setCondition + clearCondition
+    - Section 3: RUNTIME race condition eliminated — engine idle does NOT clear conversation speaking (separate condition keys, independent priority contribution)
+  No coverage gap.
+
+4.10 CRITICAL — test-phase56-voice-conversation.ts BROKEN by P1-6 (COVERAGE GAP + BUG)
+  File: tests/system/test-phase56-voice-conversation.ts (561 lines)
+  Status: NOT included in Phase 18 Stage 1-4 regression suite (only tests/tools/* were run; tests/system/* were not). Verified by running it directly:
+    ```
+    7) Permission Voice Confirmation:
+    FATAL: TypeError: convP.setPermissionVoiceCapture is not a function
+        at /home/z/my-project/tests/system/test-phase56-voice-conversation.ts:340:9
+    ```
+  Broken lines (all call methods REMOVED by P1-6):
+    - L184: `assert('captureVoiceConfirmation method', convSrc.includes('captureVoiceConfirmation'))` — false POSITIVE (passes by accident because the string is still in comments at nex-voice-conversation.ts:294, 797-798, 801). The actual METHOD was removed.
+    - L340: `convP.setPermissionVoiceCapture(async () => { ... })` — TypeError: not a function
+    - L348: `return await convP.captureVoiceConfirmation()` — would also TypeError if L340 didn't crash first
+    - L364: `convD.setPermissionVoiceCapture(async () => 'نه')` — would TypeError
+    - L366: `gate2.setCallbacks({ onCaptureVoiceInput: async () => convD.captureVoiceConfirmation() })` — would TypeError
+    - L395: `assert('main wires permission voice capture', mainSrc.includes('setPermissionVoiceCapture'))` — false POSITIVE (passes by accident because the comment block at main.ts:1560-1584 mentions setPermissionVoiceCapture). The actual WIRING was removed.
+    - L509: `convSec.setPermissionVoiceCapture(async () => 'نه')` — would TypeError
+    - L511: `gateSec.setCallbacks({ onCaptureVoiceInput: async () => convSec.captureVoiceConfirmation() })` — would TypeError
+  Also: L171 `assert('context has pendingPermission', convSrc.includes('pendingPermission'))` — false POSITIVE (passes because comment at nex-voice-conversation.ts:98 says "REMOVED `pendingPermission: boolean` field"; the field itself was removed).
+  Root cause: P1-6 implementation removed the conversation's setPermissionVoiceCapture/captureVoiceConfirmation methods but did NOT update test-phase56-voice-conversation.ts (which exercises them at runtime) — and the test was not in the regression suite that would have detected this.
+  Pre-existing color-mismatch FAILs (unrelated to P1-6): L211, L212, L214 (idle/listening/speaking orb color hex assertions — CONVERSATION_ORB_COLOR.idle is `#00e5ff` (cyan) but test expects `#3b82f6` (blue); test was already failing before P1-6).
+  Action required: Update test-phase56-voice-conversation.ts to delete or rewrite Section 7 (Permission Voice Confirmation) and the security-test sub-block (L509-515) — both exercise the now-removed recursive voice-confirmation path. Optionally: add test-phase56 to the standard test:all suite so future regressions are caught.
+
+═══════════════════════════════════════════════════════════════════════════════
+FINDINGS SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+CONFIRMED INVARIANT (16):
+  1.1  PermissionGate.requestPermission still exists + 6 callers
+  1.2  PermissionGate.respondViaVoice still exists + 5 IPC callers
+  1.3  update-manager onCaptureVoiceInput (own voiceVerifier) intact
+  1.4  model-deployment-manager onRequestPermission wired (L2710+L3098 — L3098 is redundant duplicate)
+  1.5  knowledge-pack-manager onRequestPermission wired (L4980)
+  1.7  No new IPC channels added that bypass PermissionGate (Stage 3 verified)
+  1.8  Removed P1-6 wiring left ZERO dangling references in code
+  2.1-2.10  All 10 removed P1-6/P2-6 symbols confirmed gone from code (comments only)
+  4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9  All 9 named Phase 18 invariants have a corresponding passing test (see mapping above)
+
+DEAD CODE (1 — minor):
+  1.9  nex-voice-conversation.ts:119 `onCaptureVoiceConfirmation?: () => Promise<string>;` left in ConversationCallbacks interface after P1-6 removal. Never invoked, never implemented. Zero runtime impact.
+
+ORPHAN IPC CHANNELS (2 — pre-existing, low impact):
+  3.1a  `plugin-event` (main.ts:5886 → no preload listener)
+  3.1b  `voice-conversation-partial` (main.ts:1899 → no preload listener)
+  Neither is a security surface. Both pre-date P1-6.
+
+BUG (1 — CRITICAL):
+  4.10  tests/system/test-phase56-voice-conversation.ts FATAL crash at L340 (`setPermissionVoiceCapture is not a function`) — Phase 56 test broken by P1-6 removal of conversation voice-confirmation methods. Test was NOT in Phase 18 Stage 1-4 regression suite, so the break was not detected. Affected lines: L184 (false-positive source check), L340, L348, L364, L366, L395 (false-positive), L509, L511, plus L171 (false-positive pendingPermission source check). Action: rewrite Section 7 + L509-515 to assert the REMOVAL (mirror test-phase-18-stage1.ts Section 6 pattern), or remove the test sections entirely.
+
+COVERAGE GAP (1 — pre-existing, not broken by P1-6):
+  1.6  nex-agent-executor's PermissionGate has NO onRequestPermission callback wired (no setCallbacks anywhere in src/main). Renderer's `agentPendingPermission` API exposed but no renderer component calls it. If planner-execute → executor.executePlan hits a non-safe step, the promise hangs forever (no UI notification, no resolve path). tests/tools/test-phase-12-orchestration.ts verifies the gate exists but does NOT verify the renderer notification path. tests/tools/test-phase-18-stage1.ts Test 7.5 explicitly excludes the executor. Pre-existing condition (the executor never had this callback wired). The comment at main.ts:1571 grouping the executor with managers that "only wire onRequestPermission" is INACCURATE.
+
+DUPLICATE WIRING (1 — minor cleanup):
+  1.4  main.ts:3098 second `getModelDeploymentManager().setCallbacks({ onRequestPermission: ... })` is identical to the primary wiring at main.ts:2710. Same callback, sent to same IPC channel. Redundant. Likely introduced by Phase 70 download-permission refactor that needed to "override" the callbacks — but since the override is identical, it's effectively a no-op. Pre-existing.
+
+═══════════════════════════════════════════════════════════════════════════════
+NEXT ACTIONS (recommended, NOT executed by this audit)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Fix tests/system/test-phase56-voice-conversation.ts (CRITICAL): rewrite Section 7 (Permission Voice Confirmation, L331-370) + Section 11 last block (L503-515) to assert the REMOVAL (mirror test-phase-18-stage1.ts Tests 6.1-6.7), OR remove these test sections. Update L184 + L395 + L171 to assert REMOVAL (mirror test-phase-18-stage1.ts pattern: filter out comment lines before substring check).
+2. Add test-phase56-voice-conversation.ts (and tests/system/* in general) to the Phase 18 regression suite so future removals are caught.
+3. Cleanup: remove the redundant `getModelDeploymentManager().setCallbacks` at main.ts:3098 (identical to L2710).
+4. Cleanup: remove the dead `onCaptureVoiceConfirmation?` declaration from ConversationCallbacks (nex-voice-conversation.ts:119).
+5. Cleanup: consider subscribing the renderer to `voice-conversation-partial` (preload listener) OR removing the main.ts:1899 send (since the renderer already has its own partial-transcript path via voice-service.ts).
+6. Cleanup: consider subscribing the renderer to `plugin-event` (preload listener) OR removing the main.ts:5886 send (sandbox audit/debug events currently have no consumer).
+7. (Optional) Investigate whether nex-agent-executor's PermissionGate needs an onRequestPermission callback wired (the planner UI may be silently hanging on non-safe steps). Either wire it or document that the planner only uses safe steps.
+
+═══════════════════════════════════════════════════════════════════════════════
+END OF AUDIT
+═══════════════════════════════════════════════════════════════════════════════
+
+---
+Task ID: P18-FINAL-AUDIT-IPC-ORB
+Agent: Explore (IPC/Orb/lifecycle)
+Phase: 18 — Final READ-ONLY audit of voice-conversation-state IPC, Orb condition architecture, timer lifecycle, component lifecycle, IPC lifecycle (post-Stage 4)
+Codebase: /home/z/my-project @ f0830ed (main)
+Mode: READ-ONLY — no source files modified, no new files, no commits
+
+═══════════════════════════════════════════════════════════════════════════════
+WORK LOG
+═══════════════════════════════════════════════════════════════════════════════
+
+Files audited (read in full or via targeted grep):
+- src/main/main.ts (6586 lines — voice-conversation-state senders L1875, L1945; voice-conversation-error senders L1917, L1975; before-quit handler L6474-6565; voice-conversation-reset IPC L1805-1812)
+- src/main/preload.ts (825 lines — onVoiceConversationState L191-198; all 35 ipcRenderer.on calls + removeListener cleanup verified)
+- src/main/voice/local-voice-engine.ts (570 lines — VoiceEngineState type L148; setState calls L311/327/339/361/364/367/427/514/520/522; dispose L554-561 — NEVER called from main.ts)
+- src/main/voice/nex-voice-conversation.ts (925 lines — ConversationState type L62; CONVERSATION_ORB_COLOR L72-79; setState calls L219/235/349/395/502/512/528/559/666/727/734/745/790/881; reset L868-882; ttsPlaybackTimeout L165, L592-597, L640-643; NO dispose method)
+- src/renderer/types/electron.d.ts (648 lines — onVoiceConversationState: (callback: (ev: any) => void) => () => void L173 — payload typed as `any`)
+- src/renderer/components/layout/AppShell.tsx (664 lines — orbState React state L56, L148; onVoiceConversationState listener L294-355; onVoiceConversationError listener L392-398; queueClearTimer L227-264; engineClearTimer L282-407; voiceController.dispose L196)
+- src/renderer/components/VoiceManagerPanel.tsx (460 lines — onVoiceConversationState listener L75-78; orbColor L49, L77, L335)
+- src/renderer/components/VoiceCenterPanel.tsx (463 lines — onVoiceConversationState listener L101-103; DEAD CODE — not imported anywhere)
+- src/renderer/components/chat/NexChatPanel.tsx (1502 lines — agentClearTimerRef/chatClearTimerRef L360-361; scheduleConditionClear L365-381; setThinking useEffect L407-410; agent event listener L439-681; chat error setCondition L1012, L1056, L1079)
+- src/renderer/services/voice-service.ts (632 lines — STATE_PRIORITY L65-67; setCondition/clearCondition L424-432; dispose L434-455; recomputeState L457-491 with safeOrbTransition L482)
+- src/renderer/services/voice-controller.ts (221 lines — singleton L220; handleStateChange L177-204 with safeOrbTransition L195; dispose L165-173)
+- src/renderer/components/orb/orb-state.ts (500 lines — VALID_TRANSITIONS L75-89; safeOrbTransition L117-121; isValidOrbTransition L100-104)
+- tests/tools/test-phase-18-stale-timers.ts (289 lines — verifies NexChatPanel + AppShell timer capture; verifies AppShell unmount cleanup but NOT NexChatPanel unmount cleanup)
+- tests/tools/test-phase-18-stage4.ts (232 lines — verifies GAP-7 source routing)
+- tests/tools/test-phase-18-orb-state-enforcement.ts (489 lines — verifies safeOrbTransition behavior)
+- tests/tools/test-phase-18-orb-state-flows.ts (340 lines — verifies all documented production flows produce valid transitions)
+
+═══════════════════════════════════════════════════════════════════════════════
+1. voice-conversation-state IPC
+═══════════════════════════════════════════════════════════════════════════════
+
+1.1 SENDERS (src/main/) — exactly 2 (no hidden senders)
+
+  SENDER A — conversation.onStateChange — CONFIRMED INVARIANT
+    File:line: src/main/main.ts:1875
+    Payload shape: { state, prev, color: CONVERSATION_ORB_COLOR[state], source: 'conversation' }
+    State values: 'idle' | 'listening' | 'thinking' | 'speaking' | 'interrupted' (ConversationState, nex-voice-conversation.ts:62)
+    Source field: ALWAYS 'conversation' (hardcoded)
+    Color field: derived from CONVERSATION_ORB_COLOR (nex-voice-conversation.ts:72-79) — always present
+    prev field: previous ConversationState — always present
+    Reachability: conversation.setState() called at nex-voice-conversation.ts L219/235/349/395/502/512/528/559/666/727/734/745/790/881 → all 5 state values reachable (idle, listening, thinking, speaking, interrupted)
+
+  SENDER B — engine.onStateChange — CONFIRMED INVARIANT
+    File:line: src/main/main.ts:1945
+    Payload shape: { state, source: 'engine' }
+    State values: 'idle' | 'listening' | 'thinking' | 'speaking' (VoiceEngineState, local-voice-engine.ts:148 — type also allows 'error' and 'offline' but neither is ever set via setState)
+    Source field: ALWAYS 'engine' (hardcoded)
+    Color field: NOT included in engine payload (only conversation sender includes color)
+    prev field: NOT included in engine payload
+    Reachability: engine.setState() called at local-voice-engine.ts L311/327/339/361/364/367/427/514/520/522 → only 4 state values reachable (idle, listening, thinking, speaking). 'error' and 'offline' NEVER emitted.
+
+  HIDDEN/LEGACY SENDERS: NONE. grep for `voice-conversation-state` across entire codebase (src/, tests/) returns only the 2 senders above + the 1 listener registration in preload.ts + comment references. NO other code path emits this channel.
+
+1.2 LISTENERS — exactly 4 in renderer (1 is dead code)
+
+  LISTENER A — preload.ts:191-198 — CONFIRMED INVARIANT
+    Registers ipcRenderer.on('voice-conversation-state', listener); returns () => ipcRenderer.removeListener('voice-conversation-state', listener).
+    Console.log at L193 uses default `ev?.source || 'conversation'` for diagnostic only.
+    Forwards raw ev to the callback provided by the caller.
+
+  LISTENER B — AppShell.tsx:294-355 — CONFIRMED INVARIANT (Phase 18 Stage 4 routing)
+    Reads ev.state, ev.source.
+    Default source: `ev?.source || 'engine'` (line 300) — backward-compat default (unreachable — both senders always include source).
+    Routes to conditionKey = source === 'conversation' ? 'conversation' : 'engine' (line 333).
+    Maps state to orbState via orbStateMap (line 305-318).
+    Calls voiceController.setCondition(conditionKey, state) for active states (listening/thinking/speaking/working/error).
+    Calls voiceController.clearCondition(conditionKey) for terminal/idle states (idle/ready/success/cancelled/initializing) — see §2.1 for which state values are actually reachable.
+    Cleanup at L400-407: calls off(), clears engineClearTimer.
+
+  LISTENER C — VoiceManagerPanel.tsx:75-78 — BUG (payload field name mismatch)
+    Reads ev.state (works — both senders include state).
+    Reads ev.orbColor (line 77) — BUG: conversation sender sends `color` field, NOT `orbColor`. Engine sender sends NEITHER color nor orbColor. So `ev.orbColor` is ALWAYS undefined → `if (ev.orbColor)` is false → setOrbColor is NEVER called from this listener. orbColor stays at initial value '#3b82f6' (line 49) forever.
+    The orbColor display at line 335 is effectively a static color, not reflecting the actual conversation state.
+    Cleanup at L80-83: calls offState() — proper cleanup.
+
+  LISTENER D — VoiceCenterPanel.tsx:101-103 — DEAD CODE
+    Just calls refresh() — doesn't read the payload at all.
+    VoiceCenterPanel is NOT imported anywhere (grep `import.*VoiceCenterPanel` returns only its own definition L76 + comment references in AppShell.tsx:389 and voice-controller.ts:143). Dead listener.
+    Cleanup at L104: returns unsub — proper cleanup (but the listener itself is dead).
+
+1.3 SOURCE FIELD INVARIANTS — CONFIRMED INVARIANT
+  - SENDER A (conversation): always includes source='conversation' (hardcoded literal at main.ts:1875).
+  - SENDER B (engine): always includes source='engine' (hardcoded literal at main.ts:1945).
+  - NO sender omits source in production. The `ev?.source || 'engine'` default in AppShell:300 and `ev?.source || 'conversation'` default in preload:193 are both unreachable in production.
+  - The two defaults DISAGREE (preload says 'conversation', AppShell says 'engine') — INCONSISTENCY but only affects diagnostic console.log output; routing in AppShell uses its own default which is the correct backward-compat behavior (engine was the pre-Stage-4 behavior).
+
+1.4 PAYLOAD TYPING — COVERAGE GAP
+  - electron.d.ts:173 — onVoiceConversationState: (callback: (ev: any) => void) => () => void — payload typed as `any`.
+  - NO type safety for: missing source field, wrong field name (color vs orbColor), wrong state value, etc. The VoiceManagerPanel:77 `ev.orbColor` bug above is exactly the kind of error that `any` typing fails to catch.
+  - Same `any` typing applies to ALL 16+ IPC event listeners (onVoiceConversationError, onVoiceConversationUser, onVoiceConversationNex, onVoiceConversationInterrupted, onVoiceConversationCommand, onVoiceConversationWake, onVoiceTTSAudio, onAgentEvent, onPermissionRequest, onFsChange, onAIReady, onOpenFileInEditor, onNewTerminal, onKillTerminal, onOpenSettings, onTaskQueueEvent, etc.).
+
+═══════════════════════════════════════════════════════════════════════════════
+2. ORB CONDITION ARCHITECTURE
+═════════════════════════════════════════════════════════════════════════════
+
+2.1 CONDITION KEYS — 6 total (all in renderer)
+
+  KEY 'queue' — AppShell.tsx:236, 246, 248, 252, 255
+    Used by: onTaskQueueEvent listener (L241-259)
+    States set: working (L246), success (L248), error (L252), cancelled (L255)
+    When clears: via scheduleQueueClear 1500ms timer (L228-239) for success/error/cancelled; explicit clearCondition('queue') NOT used (queue tasks always end in a terminal flash state that auto-clears).
+
+  KEY 'engine' — AppShell.tsx:289 (auto-clear timer), 350 (clear via conditionKey), 395 (error flash)
+    Used by: onVoiceConversationState listener (via conditionKey when source='engine') + onVoiceConversationError listener (L392-398, ALWAYS uses 'engine' regardless of error origin)
+    States set: listening (L338), thinking (L340), speaking (L342), working (L344), error (L346 — DEAD CODE, no sender emits 'error' via this channel; L395 — voice-conversation-error)
+    When clears: clearCondition('engine') in else branch (L350) when state is idle/ready/success/cancelled/initializing; via scheduleEngineClear 1500ms timer (L283-292) after error flash
+
+  KEY 'conversation' — AppShell.tsx:338, 340, 342, 344, 346, 350 (all via conditionKey)
+    Used by: onVoiceConversationState listener ONLY when source='conversation'
+    States set: listening (L338), thinking (L340), speaking (L342), working (L344), error (L346 — DEAD CODE, conversation FSM never emits 'error' through voice-conversation-state)
+    When clears: clearCondition('conversation') in else branch (L350) when state is idle/ready/success/cancelled/initializing — conversation FSM emits 'idle' on most terminal transitions (nex-voice-conversation.ts L219/235/512/528/559/734/745/790/881) and 'interrupted' on barge-in (L666/727)
+    NEVER set to 'error' — confirmed by grep `setCondition\('conversation'` returns NO matches. The 'conversation' condition key has no error path at all.
+
+  KEY 'agent' — NexChatPanel.tsx:452, 458, 467, 524, 543, 605, 636, 656
+    Used by: onAgentEvent listener (L440-679)
+    States set: thinking (L452, L524), working (L458, L467, L543), success (L605), error (L636), cancelled (L656)
+    When clears: via scheduleConditionClear('agent', agentClearTimerRef) 1500ms timer (L607, L638, L658) for success/error/cancelled
+
+  KEY 'chat' — NexChatPanel.tsx:1012, 1056, 1079; voice-controller.ts:147, 148
+    Used by: voiceController.setThinking(isGenerating) (NexChatPanel L408) + chat error setCondition (NexChatPanel L1012/1056/1079)
+    States set: thinking (via setThinking true → voiceService.setCondition('chat', 'thinking')), error (direct setCondition)
+    When clears: via setThinking(false) → voiceService.clearCondition('chat') (immediate, on isGenerating=false); via scheduleConditionClear('chat', chatClearTimerRef) 1500ms timer (L1014/1058/1081) — but this timer's visible effect is defeated by the setThinking(false) race (see §3.2)
+    NOTE: TWO independent pathways clear this key — the setThinking(false) cleanup (immediate) and the scheduleConditionClear timer (1500ms). They race against each other (see §3.2 RACE).
+
+  KEY 'mic' — voice-service.ts:361, 367, 374, 534
+    Used by: voiceService internal STT lifecycle (enableMicrophone, startListening, stopListening)
+    States set: listening (L367, L534), error (L361)
+    When clears: clearCondition('mic') (L374) on stopListening
+
+  NO OTHER CONDITION KEYS in renderer — confirmed by grep `setCondition\(|clearCondition\(` across src/renderer/ returns only the keys above.
+
+2.2 'conversation' KEY USAGE — CONFIRMED INVARIANT
+  'conversation' condition key is used ONLY in AppShell.tsx (via the conditionKey variable) for the conversation FSM routing. Verified by grep `setCondition\('conversation'|setCondition\("conversation"` returns NO direct matches (only the conditionKey-indirect calls in AppShell.tsx). NO other component sets or clears the 'conversation' condition key.
+
+2.3 'engine' KEY USAGE — CONFIRMED INVARIANT (with minor COVERAGE GAP)
+  'engine' is used for BOTH:
+    (a) engine FSM state changes via onVoiceConversationState (when source='engine') — AppShell.tsx:338-350 (via conditionKey)
+    (b) voice-conversation-error flash — AppShell.tsx:395 (direct, ALWAYS 'engine' regardless of error origin)
+  NOT used for conversation FSM state (conversation FSM uses 'conversation' key per Stage 4 fix).
+  COVERAGE GAP: voice-conversation-error (L395) sets 'engine' condition even when the error originates from the conversation FSM (via conversation.onError at main.ts:1916-1918). The IPC payload `{ message }` doesn't carry a source field. Visual outcome is correct because the priority system resolves to 'error' anyway (priority 8 > speaking 6 > thinking 4), but the semantic attribution is wrong — conversation errors should ideally set 'conversation' condition, not 'engine'. Pre-Stage 4 this was the only path; Stage 4 separated the state channels but did NOT separate the error channel.
+
+2.4 ORB STATE MACHINE — CONFIRMED INVARIANT (exactly ONE)
+  safeOrbTransition is defined in src/renderer/components/orb/orb-state.ts:117-121.
+  Enforced at TWO layers (defense-in-depth):
+    LAYER 1 — voiceService.recomputeState — voice-service.ts:482
+      `const validated = safeOrbTransition(this._state as NexOrbState, newState as NexOrbState) as VoiceState;`
+      Only updates this._state if validated !== this._state (line 483-486).
+      Only fires onStateChange if state actually changed (line 485).
+    LAYER 2 — voiceController.handleStateChange — voice-controller.ts:195
+      `const validated = safeOrbTransition(this.orbStateRef.current, orbState);`
+      Only updates orbStateRef.current if validated !== orbStateRef.current (line 196-200).
+      Only fires orbStateCallbacks if state actually changed (line 198).
+  In normal operation, LAYER 1 already validated, so LAYER 2 is a no-op. LAYER 2 catches the case where a caller directly mutates voiceService._state OR if handleStateChange is called directly (defensive).
+  The VALID_TRANSITIONS graph (orb-state.ts:75-89) is RELAXED for flash states (success/error/cancelled can transition to all active states) — this matches the Phase 16/17 auto-clear UX pattern. Verified by tests/tools/test-phase-18-orb-state-enforcement.ts (120/120 PASS) and tests/tools/test-phase-18-orb-state-flows.ts (38/38 PASS).
+
+2.5 DIRECT MUTATIONS OF ORB STATE (bypass safeOrbTransition) — CONFIRMED INVARIANT (no production override)
+  Grep `orbStateRef\.current\s*=|_state\s*=|this\._state\s*=` in src/renderer/ returns exactly 4 matches:
+    1. voice-service.ts:454 — `this._state = 'idle';` in dispose() — INTENTIONAL lifecycle cleanup, NOT a state machine override (dispose is only called on app shutdown via AppShell L196).
+    2. voice-service.ts:484 — `this._state = validated;` in recomputeState — USES safeOrbTransition (validated).
+    3. voice-controller.ts:171 — `this.orbStateRef.current = 'idle';` in dispose() — INTENTIONAL lifecycle cleanup.
+    4. voice-controller.ts:197 — `this.orbStateRef.current = validated;` in handleStateChange — USES safeOrbTransition (validated).
+  NO OTHER direct mutations. NO parallel state machine. NO component-level orbState override.
+  AppShell.tsx:148 `setOrbState(state)` is React state — only set via the subscribeOrbState callback (which receives validated state from voiceController). NOT a bypass.
+  NexOrb.tsx receives `state` as a prop (line 26) — does NOT have its own state machine. Verified by grep `setState|useState<NexOrbState` in src/renderer/components/orb/ returns only orb-state.ts type declarations.
+
+═══════════════════════════════════════════════════════════════════════════════
+3. TIMER LIFECYCLE
+═══════════════════════════════════════════════════════════════════════════════
+
+3.1 setTimeout CALLS FOR setCondition/clearCondition — exactly 3 (all captured)
+
+  TIMER A — AppShell.tsx:235-238 — queueClearTimer — CONFIRMED INVARIANT (captured + cleared)
+    `queueClearTimer = setTimeout(() => { voiceController.clearCondition('queue'); queueClearTimer = null; }, 1500);`
+    Condition key: 'queue'
+    Timer ID captured: YES (queueClearTimer local variable, L227)
+    Cleared before scheduling new: YES (scheduleQueueClear L228-239 clears previous)
+    Cleared on unmount: YES (L264: `if (queueClearTimer !== null) clearTimeout(queueClearTimer);`)
+
+  TIMER B — AppShell.tsx:288-291 — engineClearTimer — CONFIRMED INVARIANT (captured + cleared)
+    `engineClearTimer = setTimeout(() => { voiceController.clearCondition('engine'); engineClearTimer = null; }, 1500);`
+    Condition key: 'engine'
+    Timer ID captured: YES (engineClearTimer local variable, L282)
+    Cleared before scheduling new: YES (scheduleEngineClear L283-292 clears previous)
+    Cleared on unmount: YES (L406: `if (engineClearTimer !== null) clearTimeout(engineClearTimer);`)
+
+  TIMER C — NexChatPanel.tsx:375-378 — timerRef.current (agent OR chat) — COVERAGE GAP (captured, cleared on new schedule, NOT cleared on unmount)
+    `timerRef.current = setTimeout(() => { voiceController.clearCondition(key); timerRef.current = null; }, 1500);`
+    Condition keys: 'agent' (agentClearTimerRef) and 'chat' (chatClearTimerRef) — both via the same scheduleConditionClear helper (L365-381)
+    Timer ID captured: YES (timerRef.current useRef, L360-361)
+    Cleared before scheduling new: YES (scheduleConditionClear L370-373 clears previous)
+    Cleared on unmount: NO — NexChatPanel's unmount useEffects (L200-217 save-on-unmount, L407-410 setThinking cleanup, L680 offAgentEvent cleanup) do NOT clearTimeout(agentClearTimerRef) or clearTimeout(chatClearTimerRef).
+    Impact: functionally HARMLESS because voiceController is a singleton and AppShell calls voiceController.dispose() on unmount (L196) which clears all conditions via voiceService._stateConditions.clear() (voice-service.ts:453). Any late-firing timer (within 1500ms) calls clearCondition on a singleton whose conditions map is already empty → no-op. BUT the timer reference is held in memory for up to 1500ms after unmount — minor resource leak pattern, not a functional bug.
+    Test coverage gap: tests/tools/test-phase-18-stale-timers.ts L256-267 (Section 7) verifies AppShell's queueClearTimer + engineClearTimer unmount cleanup but does NOT verify NexChatPanel's agentClearTimerRef/chatClearTimerRef unmount cleanup.
+
+3.2 ANONYMOUS setTimeout clearCondition — CONFIRMED INVARIANT (NONE remaining)
+  Grep `setTimeout\(\(\) =>.*clearCondition|setTimeout\([^,]*clearCondition` in src/renderer/ returns exactly 3 matches — ALL captured (TIMER A/B/C above). NO remaining anonymous `setTimeout(() => voiceController.clearCondition(...), 1500)` pattern. Phase 18 Stage 2 (P2-1) successfully converted all anonymous timers to captured refs.
+
+3.3 CHAT 'error' FLASH RACE CONDITION — RACE CONDITION / BUG
+  NexChatPanel's chat 'error' setCondition (L1012/1056/1079) + scheduleConditionClear (L1014/1058/1081) is INTERRUPTED by setThinking(false) when isGenerating transitions to false in the finally block (L1084).
+  Sequence:
+    1. setCondition('chat', 'error') (L1012/1056/1079) — SYNCHRONOUS, immediately updates voiceService._stateConditions
+       → voiceService.recomputeState() runs → _state changes from 'thinking' to 'error' (priority 8 > 4)
+       → voiceService.callbacks.onStateChange('error') fires synchronously
+       → voiceController.handleStateChange('error') runs → safeOrbTransition(thinking, error) = 'error' (valid per orb-state.ts:80)
+       → voiceController.orbStateRef.current = 'error' → AppShell.setOrbState('error') — Orb briefly shows RED
+    2. scheduleConditionClear('chat', chatClearTimerRef) (L1014/1058/1081) — SYNCHRONOUS, sets 1500ms timer
+    3. finally block: setIsGenerating(false) (L1084) — schedules React re-render
+    4. React re-renders → Phase 30 useEffect (L407-410) cleanup runs: `voiceController.setThinking(false)` → `voiceService.clearCondition('chat')`
+       → voiceService.recomputeState() runs → _state changes from 'error' to 'idle' (no other active conditions, or falls back to whatever else is active)
+       → Orb drops from 'error' to 'idle' (or fallback) — within ~1 React render cycle (~16ms)
+    5. 1500ms timer from step 2 fires later but 'chat' is already cleared → clearCondition('chat') is a no-op
+  Net visible duration of chat error flash: ~1 frame (~16ms), NOT 1500ms as intended by Phase 17 fix.
+  The Phase 17 comment at L1071-1076 acknowledges "chat errors left the Orb at 'thinking' (cleared by the finally block below via setThinking(false) → 'idle')" — author was AWARE setThinking(false) clears 'chat'. The Phase 17 fix added setCondition('chat', 'error') + 1500ms timer BEFORE the finally block, but did NOT account for the fact that the finally block's setIsGenerating(false) → setThinking(false) cleanup fires AFTER the setCondition but BEFORE the 1500ms timer.
+  The 1500ms timer is correctly captured (chatClearTimerRef) but its visible effect is defeated by the setThinking(false) cleanup.
+  AGENT 'error' FLASH IS NOT AFFECTED — agent uses 'agent' condition key (not 'chat'), so setThinking(false) clearing 'chat' does not interfere with the 'agent' condition's 1500ms flash. Verified: agent 'error' setCondition at L636 + scheduleConditionClear at L638 both use 'agent' key.
+
+═══════════════════════════════════════════════════════════════════════════════
+4. COMPONENT LIFECYCLE
+═══════════════════════════════════════════════════════════════════════════════
+
+4.1 AppShell mount/unmount — CONFIRMED INVARIANT (proper cleanup)
+
+  Mount (8 useEffects):
+    L94-103   nex:navigate listener — cleanup: removeEventListener ✓
+    L107-115  nex:focus-chat listener — cleanup: removeEventListener ✓
+    L118-126  nex:open-history-search listener — cleanup: removeEventListener ✓
+    L132-141  theme MutationObserver — cleanup: observer.disconnect() ✓
+    L145-192  voiceController subscriptions + setCallbacks + start — cleanup: unsubState(), unsubAudio(), voiceController.setCallbacks({}), null refs ✓
+    L195-197  voiceController.dispose() on unmount ✓
+    L215-266  onTaskQueueEvent + queueClearTimer — cleanup: off(), clearTimeout(queueClearTimer) ✓
+    L278-408  onVoiceConversationState + onVoiceConversationUser + onVoiceConversationNex + onVoiceConversationError + engineClearTimer — cleanup: off(), offUser(), offNex(), offError(), clearTimeout(engineClearTimer) ✓
+
+  All 8 useEffects return cleanup functions. All cleanups properly remove listeners / clear timers / disconnect observers / dispose singletons. NO listener leaks in AppShell.
+
+4.2 VoiceController.dispose (voice-controller.ts:165-173) — CONFIRMED INVARIANT
+  Calls voiceService.dispose() (delegates mic/audio cleanup).
+  Clears orbAudioCallbacks (Set.clear).
+  Clears orbStateCallbacks (Set.clear).
+  Clears callbacks object (Phase 116 fix).
+  Sets orbStateRef.current = 'idle' (DIRECT MUTATION, bypasses safeOrbTransition — INTENTIONAL lifecycle cleanup, not a state machine override).
+  Sets orbAudioRef.current = 0.
+  Does NOT clear any pending setTimeout timers — but VoiceController has NO setTimeout timers of its own. The pending condition-clear timers live in AppShell (engineClearTimer, queueClearTimer) and NexChatPanel (agentClearTimerRef, chatClearTimerRef), and are cleared by their respective unmount cleanups (AppShell) or NOT cleared (NexChatPanel — see §3.1 TIMER C).
+
+4.3 VoiceService.dispose (voice-service.ts:434-455) — COVERAGE GAP (incomplete state reset)
+  Cleanup performed:
+    - stopListening() (stops STT, setIPCFeedingEnabled(false), clearCondition('mic'), _shouldRestartSTT=false)
+    - stopSpeaking() (no-op — see P2-6 comment at L378-422)
+    - stopAudioLoop() (cancelAnimationFrame)
+    - disconnect _scriptProcessor
+    - stop _stream tracks
+    - close _audioContext
+    - null _analyser, _dataArray
+    - reset _smoothedLevel to 0
+    - clear _stateConditions (Map.clear)
+    - set _state to 'idle' (DIRECT MUTATION, bypasses safeOrbTransition — INTENTIONAL lifecycle cleanup)
+  NOT reset (could cause stale state if voiceService is re-initialized after dispose, e.g., after NexErrorBoundary recovery):
+    - _vadState (could be left as 'speech' if dispose was called during user speech → incorrect VAD state after re-init)
+    - _vadSilenceStart, _vadSpeechStart (could be left with old timestamps)
+    - _wakeWordDetected, _wakeWordBuffer (could carry over stale wake word detection)
+    - _micPermission (could be stale true/false from before dispose)
+    - _chunksSent, _lastChunkSize, _audioProcessEventCount, _audioLevelLogCount (just stats — harmless)
+    - _recognition (browser SR — not used in Electron, stays null)
+  Impact: minor — these are unlikely to cause real issues because voiceService is a singleton that is rarely disposed mid-session. The most likely scenario is NexErrorBoundary's "Try to Continue" button (NexErrorBoundary.tsx:58-60) which sets hasError=false and re-mounts AppShell, which would call voiceController.start() → voiceService.startListening() → enableMicrophone() (creates new AudioContext since the old one was closed). The stale _vadState could persist as 'speech' if user was speaking when the error occurred.
+
+4.4 NexVoiceConversation.reset (nex-voice-conversation.ts:868-882) — COVERAGE GAP (does not release pending TTS playback wait)
+  Reset clears:
+    - context (currentUtterance, previousUtterance, currentTopic, previousTopic, currentTask, turnCount, startedAt, lastActivityAt)
+    - turns (array cleared)
+    - interruptionDetected = false
+    - setState('idle') → fires onStateChange('idle', prev) → main.ts:1875 sends 'voice-conversation-state' {state:'idle', source:'conversation'} → AppShell clearCondition('conversation')
+  NOT cleared:
+    - ttsPlaybackResolve / ttsPlaybackRequestId / ttsPlaybackTimeout (the pending waitForTtsPlayback promise + 30s safety timer at L165, L590-597)
+    - currentTtsRequestId (the monotonic ID counter — stays at last value)
+  If reset() is called while speakResponse() is awaiting waitForTtsPlayback(requestId):
+    - The promise resolves only when:
+      (a) renderer sends voice-tts-ended (App.tsx:138) for the matching requestId → notifyTtsPlaybackEnded(requestId) → releaseTtsPlaybackWait() (nex-voice-conversation.ts:611-621)
+      (b) 30s safety timeout fires (L592-597) → releaseTtsPlaybackWait()
+      (c) a newer speakResponse or cancel bumps currentTtsRequestId → releaseTtsPlaybackWait() (via L519/660/721/782)
+    - Reset() does NOT do (a), (b), or (c). The pending speakResponse() will hang for up to 30s after reset if the renderer doesn't send voice-tts-ended (e.g., if the audio was paused by a barge-in or stop signal but never reached onended).
+  Probability: LOW — reset() is only called via the explicit `voice-conversation-reset` IPC (main.ts:1805-1812), which is triggered by the user clicking a "Reset Conversation" button. Unlikely to be called during TTS playback. But the 30s hang potential is real.
+  NexVoiceConversation has NO dispose() method at all (only reset). Confirmed by grep `dispose` in nex-voice-conversation.ts returns NO matches.
+
+4.5 LocalVoiceEngine lifecycle — COVERAGE GAP (dispose NEVER called)
+  LocalVoiceEngine.dispose() at local-voice-engine.ts:554-561 exists and properly:
+    - stops listening (stopListening)
+    - stops speaking (stopSpeaking)
+    - calls sttProvider.shutdown() (graceful)
+    - calls ttsProvider.shutdown() (graceful)
+    - resets VAD
+    - sets state to 'idle'
+  BUT this method is NEVER called from anywhere in src/main/main.ts. Confirmed by grep `getLocalVoiceEngine\(\)\.dispose|engine\.dispose\(\)|voiceEngine\.dispose` in src/main/ returns only 1 match: main.ts:3936 — but that's for getVisionEngine().dispose() (the VISION engine, not the voice engine).
+  The before-quit handler at main.ts:6491-6565 shuts down:
+    - cancelAllActiveTasks (agent tasks)
+    - shutdownTaskQueue (task queue)
+    - closeAllSessions (browser sessions)
+    - closeAllSessions (computer sessions)
+    - stopSnapshotCleanupInterval (snapshot cleanup)
+    - semanticStore.dispose() (semantic memory)
+    - shutdownLlama() (llama.cpp engine)
+    - terminalService.killAll() (terminals)
+  But does NOT call getLocalVoiceEngine().dispose() or getNexVoiceConversation().dispose() (the latter doesn't exist anyway).
+  Impact: STT/TTS providers and VAD are not shut down gracefully on app exit. The OS will reap the resources when the process exits, so this is a "graceful shutdown" gap rather than a resource leak. But:
+    - whisper/piper child processes (if spawned) may not be terminated cleanly
+    - any pending audio buffers in STT/TTS providers are not flushed
+    - the 30s ttsPlaybackTimeout in NexVoiceConversation (if pending) is not cleared — but app.exit(0) at main.ts:6562 forces immediate exit anyway
+  This is a pre-existing gap, not introduced by Phase 18.
+
+4.6 PENDING ASYNC OPERATIONS after dispose — COVERAGE GAP
+  Potential post-dispose fire paths:
+    1. NexChatPanel agentClearTimerRef / chatClearTimerRef (1500ms) — covered in §3.1 TIMER C (functionally harmless).
+    2. AppShell queueClearTimer / engineClearTimer (1500ms) — cleared on unmount (§3.1 TIMER A/B).
+    3. NexVoiceConversation ttsPlaybackTimeout (30s) — NOT cleared on reset() (§4.4).
+    4. NexVoiceConversation handleInterruption's `setTimeout(() => this.handleUserUtterance(text), 50)` at nex-voice-conversation.ts:668 — NOT captured, NOT cleared. If a barge-in fires immediately before reset() or app shutdown, this 50ms timer could fire after reset, re-entering handleUserUtterance on a "reset" conversation. The 50ms window is very short but the race exists.
+    5. NexChatPanel `setTimeout(() => saveConversation(), 100)` at L613/643/663/908/999/1088 — save-on-completion timers. NOT captured, NOT cleared. If NexChatPanel unmounts within 100ms of task completion, the timer fires after unmount and calls saveConversation. saveConversation reads messagesRef.current (useRef — persists across renders but stale value after unmount) and calls window.nexAPI.conversationSave. Functionally harmless (saves the last state) but is a post-unmount side effect.
+    6. NexChatPanel `setTimeout(() => { isResendingRef.current = false; }, 1000)` at L226/260 — NOT captured, NOT cleared. If NexChatPanel unmounts within 1s of edit/regenerate, the timer fires after unmount and sets isResendingRef.current=false. Harmless (useRef value not read after unmount).
+  The voiceController.dispose() path at AppShell:196 cleans voiceService and the controller singleton. But the NexChatPanel timers above are NOT cleaned by any unmount handler. Most are functionally harmless (no-op or best-effort saves), but they represent a leak pattern.
+
+═══════════════════════════════════════════════════════════════════════════════
+5. IPC LIFECYCLE (preload.ts)
+═══════════════════════════════════════════════════════════════════════════════
+
+5.1 LISTENER PATTERN — CONFIRMED INVARIANT (all use on + removeListener)
+  Every `ipcRenderer.on` in preload.ts is paired with a `return () => ipcRenderer.removeListener(channel, listener)` cleanup.
+  Verified for all 35 listener registrations (lines 68-69, 141-145, 153-154, 196-197, 204-205, 224-225, 229-230, 234-235, 239-240, 244-245, 249-250, 254-255, 272-273, 277-278, 282-283, 287-288, 292-293, 297-298, 302-303, 368-369, 373-374, 429-430, 444-445, 458-459, 463-464, 468-469, 630-631, 682-683, 688-689, 726-727, 731-732, 740-741, 756-757, 762-763, 767-768, 772-773, 777-778, 809-810).
+  NO `ipcRenderer.once` (which auto-removes but is one-shot — would be wrong for event subscriptions).
+  NO `ipcRenderer.removeAllListeners` (which would wipe OTHER components' listeners — Phase 115 explicitly fixed this for onAgentEvent at L722-728 with comment "Use removeListener instead of removeAllListeners to avoid wiping other components' listeners when this component re-registers").
+
+5.2 DUPLICATE LISTENER REGISTRATION — CONFIRMED INVARIANT (none)
+  Each IPC channel is registered in EXACTLY ONE nexAPI method (e.g., onVoiceConversationState at L191, onAgentEvent at L722, onTaskQueueEvent at L809). NO channel has two separate nexAPI methods.
+  Each nexAPI method is called from at most one useEffect per component (e.g., AppShell L294 calls onVoiceConversationState; VoiceManagerPanel L75 calls onVoiceConversationState; VoiceCenterPanel L101 calls onVoiceConversationState — but these are 3 DIFFERENT components, each with their own useEffect + cleanup. They share the same IPC channel but each registers its own listener instance. When one component unmounts, only its listener is removed — the others stay. This is correct behavior, NOT a duplicate registration bug).
+  No case found where the same useEffect registers the same channel twice without cleanup.
+
+5.3 LISTENER LEAKS — CONFIRMED INVARIANT (none in preload.ts; one minor gap in NexChatPanel)
+  preload.ts: every listener registration returns a cleanup function. The CALLER (e.g., AppShell, NexChatPanel) is responsible for calling the cleanup. Verified all callers in src/renderer/:
+    - AppShell.tsx — all useEffects that call onXxx listeners return the cleanup (off, offState, offUser, etc.) ✓
+    - VoiceManagerPanel.tsx L75-78, L80-83 — returns offState ✓
+    - VoiceCenterPanel.tsx L101-105, L107-112 — returns unsub ✓ (but VoiceCenterPanel is dead code anyway)
+    - NexChatPanel.tsx — all onXxx calls return cleanup (off, offUser, offNex, offError at L400-404, off at L680) ✓
+    - App.tsx — all onXxx calls return cleanup (offStart, offStop at L52-55, off at L178, off at L200, cleanup at L219, L249, L340) ✓
+  NexChatPanel minor gap: the agentClearTimerRef/chatClearTimerRef setTimeout timers are NOT cleared on unmount (§3.1 TIMER C) — this is a TIMER leak, not an IPC listener leak. The IPC listeners themselves (onChatToken L420-436, onAgentEvent L439-681) are properly cleaned up via the returned off callback at L435 and L680.
+
+5.4 PAYLOAD TYPING — COVERAGE GAP (all `any`)
+  All 16+ IPC event listener callbacks in electron.d.ts are typed as `(callback: (ev: any) => void) => () => void` or similar with `any` for the payload.
+  Specific examples:
+    onVoiceConversationState L173: (callback: (ev: any) => void) => () => void
+    onVoiceConversationError L192: (callback: (ev: any) => void) => () => void
+    onVoiceConversationUser L188: (callback: (ev: any) => void) => () => void
+    onVoiceConversationNex L189: (callback: (ev: any) => void) => () => void
+    onVoiceConversationInterrupted L190: (callback: (ev: any) => void) => () => void
+    onVoiceConversationCommand L191: (callback: (ev: any) => void) => () => void
+    onVoiceConversationWake L187: (callback: (ev: any) => void) => () => void
+    onVoiceTTSAudio L174: (callback: (audioFilePath: string, text: string, requestId: number) => void) => () => void — this one IS typed ✓
+    onAgentEvent — typed as `(callback: (event: any) => void) => () => void` — `any` payload
+    onPermissionRequest — typed as `(callback: (request: any) => void) => void` — `any` payload
+    onFsChange — typed as `(callback: (change: { event: string; path: string }) => void) => void` — typed ✓
+    onAIReady — typed as `(callback: (ev: { modelId: string; modelName: string; readyAt: number; totalLoadMs: number }) => void) => void` — typed ✓
+    onOpenFileInEditor — typed as `(callback: (ev: { path: string }) => void) => void` — typed ✓
+    onTaskQueueEvent — typed as `(callback: (event: any) => void) => void` — `any` payload
+  In total, ~10 listener payloads are typed as `any` (mostly voice-related), while ~3 are properly typed (onVoiceTTSAudio, onFsChange, onAIReady, onOpenFileInEditor).
+  The `any` typing directly enables the VoiceManagerPanel:77 `ev.orbColor` bug (§1.2 LISTENER C) — TypeScript can't catch that the field name is `color` (per main.ts:1875 sender) not `orbColor`.
+
+═══════════════════════════════════════════════════════════════════════════════
+SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+CONFIRMED INVARIANTS (8):
+  1.1   Exactly 2 senders of voice-conversation-state (conversation + engine); NO hidden/legacy senders.
+  1.1   Both senders ALWAYS include source field (hardcoded literals).
+  1.2   preload.ts:191-198 properly registers + returns removeListener cleanup.
+  1.2   AppShell.tsx:294-355 properly routes by source to 'conversation' or 'engine' condition key (Phase 18 Stage 4 fix).
+  2.2   'conversation' condition key used ONLY in AppShell (via conditionKey); no other component sets/clears it.
+  2.4   Exactly ONE Orb state machine (safeOrbTransition in orb-state.ts) enforced at TWO layers (voiceService.recomputeState + voiceController.handleStateChange). NO parallel state machine.
+  2.5   NO direct mutation of orbStateRef/_state that bypasses safeOrbTransition (only the 2 dispose() lifecycle cleanups, which are intentional).
+  3.2   NO remaining anonymous `setTimeout(() => clearCondition(...), 1500)` patterns — all 3 captured (P2-1 fix complete).
+  5.1   All 35 preload.ts ipcRenderer.on calls paired with removeListener cleanup. NO removeAllListeners (Phase 115 fix).
+  5.2   NO duplicate listener registration in preload.ts (each channel in exactly one nexAPI method).
+  5.3   NO IPC listener leaks in preload.ts (all callers in src/renderer return cleanup).
+  4.1   AppShell mount/unmount: all 8 useEffects return proper cleanup (listeners removed, timers cleared, observer disconnected, singleton disposed).
+
+BUG (2):
+  1.2 LISTENER C  VoiceManagerPanel:77 reads `ev.orbColor` but conversation sender sends `color` field (not `orbColor`); engine sender sends NEITHER. `setOrbColor` is dead — orbColor stays at initial '#3b82f6' forever. Visual orb color in VoiceManagerPanel is static, does not reflect conversation state. Caused by `any` payload typing (§5.4) failing to catch the field name mismatch.
+  3.3            NexChatPanel chat 'error' flash is interrupted by setThinking(false) when isGenerating transitions to false in the finally block. The 1500ms timer from scheduleConditionClear is correctly captured but its visible effect is defeated because clearCondition('chat') fires immediately via setThinking(false) cleanup. Net visible flash duration: ~1 frame (~16ms), not 1500ms. Phase 17 CHAT-ERROR-NO-ORB fix is partially defeated. AGENT 'error' flash is NOT affected (uses 'agent' key, not 'chat').
+
+RACE CONDITION (1):
+  3.3            (same as BUG 3.3 above — the chat 'error' flash duration race between setCondition('chat', 'error') + 1500ms timer vs. setThinking(false) immediate clearCondition('chat') in the finally block's useEffect cleanup.)
+
+COVERAGE GAP (7):
+  1.4            Payload types are `any` in electron.d.ts for ~10 voice/agent/task IPC listeners. No type safety for missing source field, wrong field name (color vs orbColor), wrong state value.
+  2.3            voice-conversation-error (AppShell:395) sets 'engine' condition even when error originates from conversation FSM (via conversation.onError at main.ts:1916-1918). IPC payload lacks source field. Visual outcome correct via priority system, but semantic attribution wrong.
+  3.1 TIMER C     NexChatPanel agentClearTimerRef/chatClearTimerRef NOT cleared on unmount. Functionally harmless (voiceController.dispose() in AppShell clears all conditions). Test coverage gap: test-phase-18-stale-timers.ts Section 7 only verifies AppShell unmount cleanup, not NexChatPanel.
+  4.3            VoiceService.dispose() does NOT reset _vadState, _vadSilenceStart, _vadSpeechStart, _wakeWordDetected, _wakeWordBuffer, _micPermission — could cause stale state if voiceService is re-initialized after dispose (e.g., after NexErrorBoundary "Try to Continue" recovery).
+  4.4            NexVoiceConversation.reset() does NOT release pending waitForTtsPlayback wait (ttsPlaybackResolve/ttsPlaybackRequestId/ttsPlaybackTimeout). If reset() is called during speakResponse's await, the promise hangs for up to 30s (safety timeout). NexVoiceConversation has NO dispose() method at all.
+  4.5            LocalVoiceEngine.dispose() (local-voice-engine.ts:554-561) is NEVER called from main.ts. before-quit handler does not shut down STT/TTS providers or VAD. Pre-existing gap (not introduced by Phase 18).
+  4.6            Pending async operations after dispose: NexVoiceConversation handleInterruption's `setTimeout(() => handleUserUtterance(text), 50)` (nex-voice-conversation.ts:668) NOT captured/cleared. NexChatPanel saveConversation timers (L613/643/663/908/999/1088, 100ms) NOT captured/cleared. isResendingRef reset timer (L226/260, 1000ms) NOT captured/cleared. All functionally harmless but represent post-unmount side effects.
+  5.4            (same as COVERAGE GAP 1.4 — `any` typing).
+
+DEAD CODE (3):
+  1.2 LISTENER D  VoiceCenterPanel.tsx:101-103 onVoiceConversationState listener — VoiceCenterPanel is NOT imported anywhere (dead component). Confirmed by grep.
+  1.2 AppShell    AppShell.tsx:345-346 (orbState === 'error' branch in onVoiceConversationState listener) — neither conversation FSM nor engine FSM ever emits 'error' through this channel. Conversation FSM has no 'error' state (ConversationState type L62); engine FSM has 'error'/'offline' in VoiceEngineState type (L148) but never sets them via setState (verified — only idle/listening/thinking/speaking are ever set). The 'error' branch is unreachable. (Note: actual error display goes through the separate voice-conversation-error IPC channel via AppShell:392-398.)
+  1.2 AppShell    AppShell.tsx orbStateMap entries 'initializing' (L307), 'ready' (L308), 'success' (L314), 'cancelled' (L315) — never emitted by either sender. (These were noted in P18-AUDIT-IPC-INTERACTIONS INCONSISTENCY #1 as "6 unreachable entries" — re-confirmed here: 4 unreachable state values + the 'error' branch + the 'interrupted' entry IS reachable via conversation FSM.)
+
+INCONSISTENCY (1):
+  1.3            preload.ts:193 default `|| 'conversation'` in console.log differs from AppShell.tsx:300 default `|| 'engine'` in routing logic. Both defaults are unreachable (both senders always include source), but the disagreement is confusing for debugging — if a sender ever omits source in the future, preload would log 'conversation' while AppShell routes to 'engine'. Recommend aligning both to 'engine' (the pre-Stage-4 behavior, which is the safer backward-compat default).
+
+═══════════════════════════════════════════════════════════════════════════════
+NEXT ACTIONS (recommended, NOT executed by this audit)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Fix BUG 1.2 LISTENER C (VoiceManagerPanel:77): change `ev.orbColor` to `ev.color` to match the conversation sender payload (main.ts:1875). Optionally also update the engine sender (main.ts:1945) to include `color: CONVERSATION_ORB_COLOR[state]` (or a separate engine color map) so VoiceManagerPanel receives the color from both senders. Add a Phase 18 Stage 5 test asserting VoiceManagerPanel reads the correct field name.
+2. Fix BUG 3.3 (chat 'error' flash race): either (a) move the chat 'error' setCondition + scheduleConditionClear to AFTER the finally block's setIsGenerating(false) — but this is awkward because the error is detected inside the try block; or (b) make setThinking(false) NOT clear 'chat' if 'chat' is currently 'error' (i.e., setThinking(false) only clears 'chat' if it's 'thinking'); or (c) introduce a separate 'chatError' condition key that setThinking doesn't touch. Recommended: option (b) — modify voiceController.setThinking to only clear 'chat' if it was 'thinking' (not 'error'). Add a Phase 18 Stage 5 test asserting chat 'error' flash lasts ≥1500ms even when isGenerating transitions to false immediately.
+3. Fix COVERAGE GAP 3.1 TIMER C (NexChatPanel unmount timer cleanup): add a useEffect that clears agentClearTimerRef and chatClearTimerRef on unmount. Mirror AppShell's pattern at L264, L406. Add a test in test-phase-18-stale-timers.ts Section 7 verifying NexChatPanel's unmount cleanup.
+4. Fix COVERAGE GAP 4.4 (NexVoiceConversation.reset pending TTS wait): have reset() call releaseTtsPlaybackWait() to immediately resolve any pending waitForTtsPlayback. Also add a dispose() method to NexVoiceConversation that calls reset() + clears currentTtsRequestId. Optionally call conversation.dispose() in main.ts before-quit handler.
+5. Fix COVERAGE GAP 4.5 (LocalVoiceEngine.dispose never called): add `getLocalVoiceEngine().dispose().catch(() => {})` to the before-quit handler at main.ts:6512-6564 (after the other cleanups, before shutdownLlama). The dispose is async but should be awaited (or fire-and-forget with a short timeout).
+6. Fix COVERAGE GAP 1.4 + 5.4 (payload typing): type the voice/agent/task IPC event payloads in electron.d.ts. Define interfaces for VoiceConversationStateEvent, VoiceConversationErrorEvent, AgentEvent, TaskQueueEvent, etc. This would have caught BUG 1.2 LISTENER C at compile time.
+7. Fix COVERAGE GAP 2.3 (voice-conversation-error attribution): add a `source: 'conversation' | 'engine'` field to the voice-conversation-error IPC payload (main.ts:1917 and L1975). AppShell:395 should route to the source-specific condition key (matching the Stage 4 pattern for state events).
+8. Fix INCONSISTENCY 1.3 (preload vs AppShell default): align preload.ts:193 default to `|| 'engine'` to match AppShell.tsx:300.
+9. Cleanup DEAD CODE 1.2 LISTENER D: remove VoiceCenterPanel.tsx (not imported anywhere — confirmed dead component).
+10. Cleanup DEAD CODE 1.2 AppShell orbStateMap: remove unreachable entries 'initializing', 'ready', 'success', 'cancelled' from the orbStateMap (AppShell:307-315). Keep 'idle', 'listening', 'thinking', 'speaking', 'interrupted', 'working', 'active', 'error' (the 'error' branch is dead but its setCondition('error') is harmless defensive code for future senders). OR document the map as "covers all 13 NexOrbState values for forward-compat" and leave as-is.
+11. Fix COVERAGE GAP 4.3 (VoiceService.dispose incomplete state reset): add _vadState='silence', _vadSilenceStart=0, _vadSpeechStart=0, _wakeWordDetected=false, _wakeWordBuffer='', _micPermission=null to dispose(). Low priority — only matters for NexErrorBoundary recovery scenario.
+12. (Optional) Fix COVERAGE GAP 4.6 (pending async after dispose): capture and clear the `setTimeout(() => handleUserUtterance(text), 50)` in handleInterruption (nex-voice-conversation.ts:668), the saveConversation timers in NexChatPanel (L613/643/663/908/999/1088), and the isResendingRef timer (L226/260). Most are functionally harmless but represent a leak pattern.
+
+═══════════════════════════════════════════════════════════════════════════════
+END OF AUDIT
+═══════════════════════════════════════════════════════════════════════════════
+
+
+---
+Task ID: P18-FINAL-AUDIT-BARGEIN-TTS
+Agent: Explore (barge-in/TTS/state graph)
+Task: READ-ONLY final architecture audit of barge-in + TTS + Orb state graph at commit f0830ed (post-Phase 18 Stage 4). No files modified, no commits.
+
+Scope: trace complete active barge-in path, TTS lifecycle, TTS playback owner, and state-transition graph; classify every finding as CONFIRMED INVARIANT / RACE CONDITION / DEAD CODE / BUG / COVERAGE GAP with exact file:line references.
+
+═════════════════════════════════════════════════════════════════════════════
+1. BARGE-IN COMPLETE PATH — traced end-to-end
+═════════════════════════════════════════════════════════════════════════════
+
+Production call chain (file:line):
+
+  (1) Renderer mic capture → voice-service.ts:248 `voiceFeedAudioLevel(level)` IPC
+      → preload.ts:120 `voice-feed-audio-level` send
+      → main.ts voice-feed-audio-level handler → engine.feedAudioLevel(level)
+      → local-voice-engine.ts:274-277 feedAudioLevel → callbacks.onAudioLevel + vad.feed(level)
+
+  (2) local-voice-engine.ts:91-123 VoiceActivityDetector.feed(level)
+      → smoothedLevel update + threshold check (silenceThreshold=0.02 default)
+      → speechDurationMs (300ms) gate before emitting 'speech' state
+      → emit('speech') at line 105 → callbacks.forEach(cb(event))
+
+  (3) local-voice-engine.ts:211-239 VAD onEvent (registered in constructor):
+        if (event.state === 'speech' && this.ttsActive) {
+          const bargeInThreshold = (this.vad.config.silenceThreshold || 0.02) * 2;
+          if (event.audioLevel >= bargeInThreshold) {
+            this.callbacks.onBargeIn?.();
+          }
+        }
+      → fires ONLY when (a) VAD is in 'speech' state, (b) engine.ttsActive is true
+        (true throughout synthesis + playback), (c) smoothed audio level ≥ 2× silence threshold
+
+  (4) main.ts:1966-1972 onBargeIn callback in engine.setCallbacks:
+        onBargeIn: () => { conversation.handleBargeIn(); }
+
+  (5) nex-voice-conversation.ts:708-736 handleBargeIn():
+        Line 712: if (this.state !== 'speaking') return;  // IDEMPOTENT GUARD
+        Line 718: this.interruptionDetected = true;
+        Line 719: this.callbacks.onInterruption?.();
+        Line 721: this.currentTtsRequestId++;              // invalidate in-flight
+        Line 722: this.releaseTtsPlaybackWait();           // release wait promise
+        Line 723-726: engine.stopSpeaking();                // ttsActive=false, _currentTtsRequestId++, setState('idle')
+        Line 727: this.setState('interrupted');            // conversation FSM
+        Line 731-735: if (this.active) enterListening(); else setState('idle');
+
+  (6) main.ts:1901-1912 onInterruption callback broadcasts:
+        mainWindow.webContents.send('voice-conversation-interrupted', {});  // ORPHAN — see finding #1
+        mainWindow.webContents.send('voice-tts-stop-playback', {});          // App.tsx pauses <audio>
+
+  (7) App.tsx:189-201 onVoiceTtsStopPlayback listener:
+        if (currentAudioRef.current) { currentAudioRef.current.pause(); }
+        currentAudioRef.current = null;
+        currentAudioRequestIdRef.current = null;
+
+  (8) enterListening (nex-voice-conversation.ts:347-358):
+        this.setState('listening');                          // conversation FSM
+        await engine.startListening();                       // engine setState('listening')
+
+  (9) speakResponse GUARD 3 (nex-voice-conversation.ts:548-551):
+        if (this.currentTtsRequestId !== requestId) return;  // skip enterListening (barge-in already did)
+
+  (10) Orb state transitions (all allowed per orb-state.ts:75-89 VALID_TRANSITIONS):
+         speaking → working (via 'interrupted' → 'active' → setCondition('working') in AppShell.tsx:316,343)
+         working  → listening (via enterListening → setCondition('listening') in AppShell.tsx:338)
+         Both transitions present in VALID_TRANSITIONS:
+           speaking line 81: [...'working', 'thinking', 'success']
+           working  line 83: [...'thinking', 'speaking', 'listening']
+
+Race / idempotency analysis (rapid repeated barge-in):
+  • First barge-in: engine.stopSpeaking() sets ttsActive=false at local-voice-engine.ts:509
+  • Subsequent VAD 'speech' events fail the `this.ttsActive` check at line 232 → onBargeIn not fired again
+  • Even if a second onBargeIn slipped through (e.g., queued callback), handleBargeIn's line 712 guard
+    `if (this.state !== 'speaking') return` catches it (state is now 'interrupted' or 'listening')
+  • CONFIRMED INVARIANT: rapid barge-in is idempotent
+
+Edge cases — all analyzed:
+
+  (A) Barge-in DURING synthesis (before onTTSAudioReady):
+    handleBargeIn runs synchronously: bumps currentTtsRequestId (N→N+1), engine.stopSpeaking
+    sets engine.ttsActive=false and engine._currentTtsRequestId=N+1.
+    When piper synthesize resolves later, the stale guard at local-voice-engine.ts:446-449 fires:
+      if (!this.ttsActive || this._currentTtsRequestId !== requestId) return false;
+    Both clauses true → onTTSAudioReady NOT fired → no voice-tts-audio IPC sent → renderer never plays.
+    speakResponse resumes (the await engine.speak resolved with false): GUARD 1 at line 519-522
+    (currentTtsRequestId !== requestId) triggers → return (no enterListening — barge-in already did).
+    CONFIRMED INVARIANT: barge-in during synthesis is fully cancelled, no stale audio.
+
+  (B) Barge-in DURING playback (after onTTSAudioReady, before onended):
+    handleBargeIn: same as (A), plus onInterruption broadcasts voice-tts-stop-playback →
+    App.tsx:189-201 pauses currentAudioRef immediately. Audio.onended does NOT fire on a
+    paused element (only 'onpause' fires), so voiceTtsEnded IPC is NOT sent for this requestId.
+    releaseTtsPlaybackWait at line 722 already released the wait → speakResponse resumes →
+    GUARD 3 (requestId mismatch) → return. enterListening was already called by handleBargeIn.
+    CONFIRMED INVARIANT: barge-in during playback stops audio + restarts listening correctly.
+
+  (C) Playback ends naturally AT THE SAME TIME as barge-in (race):
+    Both IPCs (voice-tts-ended and the voice-feed-audio-level that triggers barge-in) are queued
+    on the main process event loop. Main processes them in arrival order. Two subcases converge:
+
+    (a) voice-tts-ended processed first:
+        notifyTtsPlaybackEnded(N) → releaseTtsPlaybackWait → speakResponse resumes →
+        GUARD 3 passes → enterListening → setState('listening').
+        Then voice-feed-audio-level arrives → VAD → 'speech' event, BUT engine.ttsActive is now
+        false (set by engine.onTtsPlaybackEnded at main.ts:1750 calling local-voice-engine.ts:500-505)
+        → onBargeIn NOT fired. User's speech is processed normally by handleSpeechEnd.
+
+    (b) voice-feed-audio-level processed first (barge-in fires):
+        handleBargeIn → currentTtsRequestId++ (N→N+1), releaseTtsPlaybackWait →
+        speakResponse resumes → GUARD 3 fails (requestId mismatch) → return.
+        Then voice-tts-ended arrives → notifyTtsPlaybackEnded(N) → ttsPlaybackRequestId is now
+        null (cleared by releaseTtsPlaybackWait) → ignored as stale (line 611-620 'else' branch).
+        engine.onTtsPlaybackEnded → no-op (ttsActive already false from stopSpeaking).
+
+    Both subcases converge to Orb 'listening'. CONFIRMED INVARIANT: no double-listen, no hang.
+
+Duplicate TTS prevention across the barge-in boundary:
+  • Engine stale guard (local-voice-engine.ts:446-449): discards any in-flight synthesis
+    whose requestId ≠ _currentTtsRequestId OR whose ttsActive is false.
+  • Renderer stale guard (App.tsx:101-103): if currentAudioRequestIdRef.current !== null
+    AND requestId < currentAudioRequestIdRef.current → discard (don't play).
+  • Renderer overlap guard (App.tsx:108-113): pauses any existing audio before creating new.
+  • CONFIRMED INVARIANT: no two audio elements play simultaneously.
+
+Stale callback protection:
+  • notifyTtsPlaybackEnded (nex-voice-conversation.ts:611-621): only releases the wait
+    if ttsPlaybackRequestId === requestId; otherwise ignored with 'stale' log.
+  • speakResponse GUARD 3 (line 548-551): prevents stale speakResponse from calling
+    enterListening after a newer request or Stop superseded it.
+  • CONFIRMED INVARIANT: stale callbacks cannot change Orb state.
+
+═════════════════════════════════════════════════════════════════════════════
+2. TTS LIFECYCLE — traced end-to-end
+═════════════════════════════════════════════════════════════════════════════
+
+Production call chain:
+
+  (1) NexChatPanel.tsx:391-404 speakResponseIfVoice(responseText):
+        Guards: wasVoiceInputRef.current && !ttsCancelledRef.current && text.trim()
+        Line 401: window.nexAPI.voiceConversationSpeak(text)
+
+  (2) main.ts:1634-1641 voice-conversation-speak IPC handler:
+        await getNexVoiceConversation().speakResponse(text)
+
+  (3) nex-voice-conversation.ts:488-561 speakResponse(text):
+        Line 494: this.currentTtsRequestId++        // fresh requestId
+        Line 502: this.setState('speaking')          // conversation FSM
+        Line 509: audioReady = await engine.speak(text, { requestId })
+        Line 519-522: GUARD 1 (requestId mismatch during synthesis → return)
+        Line 526-530: GUARD 2 (!audioReady → setState('idle'), return)
+        Line 542: await this.waitForTtsPlayback(requestId)
+        Line 548-551: GUARD 3 (requestId mismatch during playback → return)
+        Line 555-560: if (active && !interruptionDetected) enterListening(); else setState('idle')
+
+  (4) local-voice-engine.ts:409-490 speak(text, opts):
+        Line 419: this.ttsActive = true
+        Line 424-425: requestId = opts?.requestId ?? (++_currentTtsRequestId); _currentTtsRequestId = requestId
+        Line 427: this.setState('speaking')             // engine FSM
+        Line 432: result = await this.ttsProvider.synthesize(text, opts)
+        Line 446-449: STALE GUARD:
+            if (!this.ttsActive || this._currentTtsRequestId !== requestId) return false;
+          NOTE (line 440-445 comment): does NOT set ttsActive=false on discard — prevents
+          killing a newer speak's ttsActive. Either stopSpeaking (already false) or the
+          newer speak (already true) owns ttsActive.
+        Line 451-457: if (result.success && result.audioFilePath)
+            → callbacks.onTTSAudioReady(audioFilePath, text, requestId)
+        Line 467-481 comment: explicitly does NOT set ttsActive=false after synthesis;
+          ttsActive stays true through playback (between onTTSAudioReady and onended).
+
+  (5) main.ts:1948-1960 onTTSAudioReady callback:
+        mainWindow.webContents.send('voice-tts-audio', { audioFilePath, text, requestId })
+
+  (6) App.tsx:91-179 onVoiceTTSAudio listener:
+        Line 101-103: stale guard (requestId < currentAudioRequestIdRef.current → discard)
+        Line 108-113: pause existing currentAudioRef before creating new
+        Line 120: fileUrl = `file://${audioFilePath.replace(/\\/g, '/')}`
+        Line 121: const audio = new Audio(fileUrl)       // ONLY audio element creator
+        Line 122-123: currentAudioRef.current = audio; currentAudioRequestIdRef.current = requestId
+        Line 127-142: audio.onended → voiceTtsEnded IPC + clear refs
+        Line 146-157: audio.onerror → voiceTtsEnded IPC (defensive, releases wait)
+        Line 158-169: audio.play() catch → voiceTtsEnded IPC (defensive)
+
+  (7) main.ts:1741-1756 voice-tts-ended IPC handler:
+        Line 1743: getNexVoiceConversation().notifyTtsPlaybackEnded(requestId)
+        Line 1748-1751: engine.onTtsPlaybackEnded()
+
+  (8) nex-voice-conversation.ts:611-621 notifyTtsPlaybackEnded(requestId):
+        if (this.ttsPlaybackRequestId === requestId) releaseTtsPlaybackWait()
+        else → ignored (stale signal — late onended or duplicate)
+
+  (9) local-voice-engine.ts:500-505 onTtsPlaybackEnded():
+        if (this.ttsActive) this.ttsActive = false;   // idempotent
+
+  (10) speakResponse GUARD 3 passes (line 548-551) → enterListening()
+       → setState('listening') → engine.startListening() → setState('listening') engine side
+
+ttsActive lifecycle invariant (CONFIRMED):
+  • TRUE set: local-voice-engine.ts:419 (start of engine.speak)
+  • TRUE preserved: line 467-481 comment explicitly does NOT set false after synthesis (Stage 3 fix)
+  • FALSE set: local-voice-engine.ts:509 (stopSpeaking — cancel/barge-in/abort)
+  • FALSE set: local-voice-engine.ts:502 (onTtsPlaybackEnded — natural end, idempotent guard at 501)
+  • WINDOW: ttsActive is true from engine.speak() start through either stopSpeaking OR
+    onTtsPlaybackEnded. Covers BOTH synthesis and playback. VAD barge-in works during both.
+
+Stale guard correctness (CONFIRMED):
+  • Does NOT touch ttsActive on discard (line 440-445 comment) → newer speak's ttsActive preserved
+  • Both clauses (`!ttsActive || _currentTtsRequestId !== requestId`) → discard on either signal
+  • Rapid sequence TTS#1 → Stop → TTS#1 late → TTS#2: late TTS#1 has requestId N, engine's
+    _currentTtsRequestId is N+2 (from TTS#2's bump) → guard discards TTS#1, no onTTSAudioReady.
+
+requestId consistency (CONFIRMED):
+  • Conversation's currentTtsRequestId (nex-voice-conversation.ts:162) — incremented at line 494
+    in speakResponse, line 660 in handleInterruption, line 721 in handleBargeIn, line 782 in
+    abortCurrentTurn. This is the EXTERNAL counter.
+  • Engine's _currentTtsRequestId (local-voice-engine.ts:197) — set to opts.requestId at line 425
+    (when caller provides one), or auto-incremented at line 424 (legacy callers without opts).
+    Bumped by stopSpeaking at line 513. This is the INTERNAL counter.
+  • For conversation-driven TTS, both are synchronized: speakResponse passes its counter as
+    opts.requestId, so engine uses the same value. stopSpeaking bumps both (conversation: via
+    releaseTtsPlaybackWait or currentTtsRequestId++; engine: via _currentTtsRequestId++ at 513).
+  • DIVERGENCE (BUG, see finding #3 below): InteractionLoopManager.speakText (interaction-loop.ts:280)
+    calls engine.speak(text) WITHOUT opts.requestId → engine auto-increments its own counter.
+    Conversation counter unchanged. If both paths run concurrently, requestIds collide.
+
+═════════════════════════════════════════════════════════════════════════════
+3. TTS PLAYBACK OWNER — verification
+═════════════════════════════════════════════════════════════════════════════
+
+ACTUAL playback owner (file:line):
+  • App.tsx:88     `const currentAudioRef = useRef<HTMLAudioElement | null>(null);`
+  • App.tsx:89     `const currentAudioRequestIdRef = useRef<number | null>(null);`
+  • App.tsx:121    `const audio = new Audio(fileUrl);`  — ONLY Audio element creator in src/
+
+Verified by grep `new Audio\(` across src/ — exactly one match at App.tsx:121.
+
+No dead renderer TTS API reintroduced:
+  • voiceController.speak — REMOVED (voice-controller.ts:129-136 documents removal). Grep
+    finds the symbol ONLY in comments (no method declaration, no caller).
+  • voiceService.speak — REMOVED (voice-service.ts:378-401 documents removal). Grep finds
+    the symbol ONLY in comments. Phase 15 test asserts the removal invariant.
+  • _ttsActive in voice-service.ts — REMOVED (voice-service.ts:93-102 documents removal).
+    Grep finds the symbol ONLY in comments. Phase 18 Stage 3 test 12.5 asserts removal.
+  • _bargeInEnabled in voice-service.ts — REMOVED (voice-service.ts:111-112 documents removal).
+  • isSpeaking getter in voice-service.ts — REMOVED (voice-service.ts:134-136 documents removal).
+  • voiceController.stopSpeaking — REMOVED (voice-controller.ts:138-143 documents removal).
+  • voiceService.stopSpeaking — KEPT as no-op (voice-service.ts:420-422) because dispose()
+    calls it. No external live caller. Comment documents the no-op rationale.
+
+CONFIRMED INVARIANT: App.tsx currentAudioRef is the only audio element creator; the renderer
+dead TTS path documented in P2-6 was NOT reintroduced.
+
+═════════════════════════════════════════════════════════════════════════════
+4. STATE-TRANSITION GRAPH — VALID_TRANSITIONS vs production flows
+═════════════════════════════════════════════════════════════════════════════
+
+VALID_TRANSITIONS (orb-state.ts:75-89) — copied verbatim:
+  idle:          ['initializing', 'ready', 'listening', 'thinking', 'working', 'error', 'cancelled', 'offline']
+  initializing:  ['ready', 'error', 'idle', 'listening', 'thinking', 'working']
+  ready:         ['listening', 'thinking', 'working', 'idle', 'offline', 'error', 'cancelled']
+  listening:     ['thinking', 'speaking', 'idle', 'ready', 'error', 'cancelled', 'working']
+  thinking:      ['speaking', 'working', 'idle', 'ready', 'error', 'cancelled', 'listening']
+  speaking:      ['ready', 'listening', 'idle', 'error', 'cancelled', 'working', 'thinking', 'success']
+  active:        ['ready', 'idle', 'error', 'success', 'cancelled', 'listening', 'thinking', 'speaking']
+  working:       ['ready', 'idle', 'error', 'success', 'cancelled', 'thinking', 'speaking', 'listening']
+  success:       ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'error', 'cancelled']
+  error:         ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'cancelled']
+  cancelled:     ['idle', 'ready', 'listening', 'thinking', 'speaking', 'working', 'error']
+  offline:       ['idle', 'initializing']
+  installing:    ['ready', 'idle', 'error']
+
+Enforcement layers (both call safeOrbTransition from orb-state.ts:117-121):
+  • voice-service.ts:482 recomputeState — first enforcement layer (when condition is set)
+  • voice-controller.ts:195 handleStateChange — second enforcement layer (defensive; catches
+    direct mutation of voiceService._state or future code paths)
+  • Diagnostic on block: `[ORB_STATE] Invalid transition blocked: <from> → <to>` (orb-state.ts:119)
+
+Production setCondition / clearCondition call sites (enumerated):
+  AppShell.tsx:236   clearCondition('queue')                       // 1500ms auto-clear after task terminal
+  AppShell.tsx:246   setCondition('queue', 'working')              // task_started / task_progress
+  AppShell.tsx:248   setCondition('queue', 'success')              // task_completed
+  AppShell.tsx:252   setCondition('queue', 'error')                // task_failed / task_recovered
+  AppShell.tsx:255   setCondition('queue', 'cancelled')            // task_cancelled
+  AppShell.tsx:289   clearCondition('engine')                      // 1500ms auto-clear after voice error
+  AppShell.tsx:338   setCondition(conditionKey, 'listening')       // engine or conversation source
+  AppShell.tsx:340   setCondition(conditionKey, 'thinking')
+  AppShell.tsx:342   setCondition(conditionKey, 'speaking')
+  AppShell.tsx:344   setCondition(conditionKey, 'working')          // includes 'active' branch
+  AppShell.tsx:346   setCondition(conditionKey, 'error')
+  AppShell.tsx:350   clearCondition(conditionKey)                  // idle/ready/success/cancelled/initializing
+  AppShell.tsx:395   setCondition('engine', 'error')              // voice-conversation-error
+  NexChatPanel.tsx:376 clearCondition(key)                         // 'agent' or 'chat' 1500ms auto-clear
+  NexChatPanel.tsx:452 setCondition('agent', 'thinking')           // planning_started
+  NexChatPanel.tsx:458 setCondition('agent', 'working')            // planning_completed / plan_created
+  NexChatPanel.tsx:467 setCondition('agent', 'working')            // step_started / tool_call
+  NexChatPanel.tsx:524 setCondition('agent', 'thinking')           // replan
+  NexChatPanel.tsx:543 setCondition('agent', 'working')            // step resumed
+  NexChatPanel.tsx:605 setCondition('agent', 'success')            // task_completed
+  NexChatPanel.tsx:636 setCondition('agent', 'error')              // task_failed
+  NexChatPanel.tsx:656 setCondition('agent', 'cancelled')         // task_cancelled
+  NexChatPanel.tsx:1012 setCondition('chat', 'error')              // chat stream error
+  NexChatPanel.tsx:1056 setCondition('chat', 'error')              // brain route error
+  NexChatPanel.tsx:1079 setCondition('chat', 'error')              // chat generation error
+  voice-controller.ts:147 setCondition('chat', 'thinking')         // setThinking(true) when isGenerating
+  voice-controller.ts:148 clearCondition('chat')                  // setThinking(false)
+
+Production transitions actually happening (each verified against VALID_TRANSITIONS):
+
+  Voice flow: idle → listening → thinking → speaking → listening → idle
+    idle→listening (allowed), listening→thinking (allowed), thinking→speaking (allowed),
+    speaking→listening (allowed), listening→idle (allowed). ✓ All ALLOWED.
+
+  Chat flow: idle → thinking → listening → idle (with voice mic on)
+    idle→thinking (allowed in idle's list, line 76), thinking→listening (allowed, line 80),
+    listening→idle (allowed, line 79). ✓ All ALLOWED.
+
+  Agent flow: idle → thinking → working → success → idle
+    idle→thinking, thinking→working (allowed), working→success (allowed, line 83),
+    success→idle (allowed, line 84). ✓ All ALLOWED.
+
+  Voice-agent flow: idle → listening → thinking → working → success → speaking → listening
+    Plus flash recovery: success→speaking (allowed in success's list, line 84). ✓ All ALLOWED.
+
+  Barge-in flow (active): speaking → working → listening
+    speaking→working (allowed, line 81), working→listening (allowed, line 83). ✓ All ALLOWED.
+
+  Barge-in flow (legacy handleInterruption): speaking → interrupted→working → (50ms timer) → thinking
+    Same as above + working→thinking (allowed, line 83). ✓ All ALLOWED.
+
+  Error flash: idle → thinking → error → idle (auto-clear 1500ms)
+    idle→thinking, thinking→error (allowed, line 80), error→idle (allowed, line 85). ✓ All ALLOWED.
+
+  Cancel flash: idle → thinking → working → cancelled → idle (auto-clear 1500ms)
+    idle→thinking, thinking→working, working→cancelled (allowed, line 83),
+    cancelled→idle (allowed, line 86). ✓ All ALLOWED.
+
+  Flash recovery (mid-flash new task): success/error/cancelled → listening/thinking/working/speaking
+    success→* (all 8 in line 84), error→* (7 in line 85, missing 'success'), cancelled→* (7 in line 86,
+    missing 'success'). All ALLOWED for production's actual transitions.
+
+Transitions BLOCKED by safeOrbTransition (would log "[ORB_STATE] Invalid transition blocked"):
+  • Terminal states: offline → anything except idle/initializing (BLOCKED, line 87)
+                    installing → anything except ready/idle/error (BLOCKED, line 88)
+  • idle → speaking (NOT in idle's list — line 76) — BLOCKED in principle but no production path
+    reaches this; speakResponse always precedes setState('speaking') with setState('thinking')
+    (line 395 handleUserUtterance) or 'repeat' command from 'listening' state
+  • idle → active (active is legacy alias, not in idle's list — confirmed by test-phase-18-orb-state-enforcement.ts:318)
+  • idle → installing (not in idle's list — confirmed by test-phase-18-orb-state-enforcement.ts:316)
+  • * → 'success' from 'error' / 'cancelled' (BLOCKED — error and cancelled lists omit 'success')
+    No production path needs these (success is only set after working).
+  • * → 'active' from any state (BLOCKED — 'active' is dead, never set as a condition state;
+    AppShell.tsx:316 routes 'interrupted' through 'active' as a transient mapping key, but the
+    actual setCondition call uses 'working' at line 344)
+
+In normal production flows, NO transitions are blocked. The blocks are defensive guards
+against terminal-state leakage and the legacy 'active' alias. No production code path
+triggers a blocked transition.
+
+Transitions in VALID_TRANSITIONS that NEVER happen in production (unnecessarily permissive):
+  • active row (orb-state.ts:82) — 'active' state is never set as a condition. All entries
+    are unreachable. (Listed for completeness; not a bug — just dead spec.)
+  • 'offline' transitions except offline→idle: the 'offline' state is only reachable from
+    idle (line 76) and ready (line 78), and only returns to idle or initializing. No production
+    code currently sets 'offline' (would require an explicit setCondition('?', 'offline')
+    call which doesn't exist in the enumerated sites). The entire 'offline' row is
+    unreachable in current production.
+  • 'installing' transitions: same — no production setCondition('?', 'installing') call.
+    'installing' state is unreachable in current production.
+  • 'initializing' transitions: no production setCondition('?', 'initializing') call.
+    Unreachable.
+  • 'ready' transitions: no production setCondition('?', 'ready') call. Unreachable.
+  • speaking → success (line 81): no production path transitions directly from speaking
+    to success. (Success is only set after working via task_completed; if TTS plays during
+    the success flash window, the conversation setState('speaking') fires after
+    setCondition('agent', 'success') — the Orb transition would be success → speaking,
+    which IS in the list at line 84. The reverse speaking → success is not produced.)
+  • idle → cancelled (line 76): no production path transitions idle → cancelled directly.
+    Cancelled is always set after working (task_cancelled while working).
+  • ready → cancelled (line 78), ready → error (line 78): unreachable because 'ready' is unreachable.
+
+These permissive-but-unused entries are NOT a bug — they document possible future flows
+and provide forward compatibility. The graph is intentionally a superset of current
+production transitions. P18-AUDIT-ORBSTATED already documented the unreachable 'active',
+'offline', 'installing', 'initializing', 'ready' states.
+
+═════════════════════════════════════════════════════════════════════════════
+FINDINGS SUMMARY (classified)
+═════════════════════════════════════════════════════════════════════════════
+
+CONFIRMED INVARIANT — Barge-in path complete and idempotent:
+  • All 10 links traced (renderer mic → main VAD → onBargeIn → handleBargeIn → broadcast →
+    App.tsx pause → conversation setState('interrupted') → enterListening → Orb).
+  • No missing link. State guard at nex-voice-conversation.ts:712 makes rapid barge-in
+    idempotent. Engine ttsActive=false at local-voice-engine.ts:509 stops further onBargeIn.
+
+CONFIRMED INVARIANT — Barge-in edge cases handled:
+  • (A) during synthesis: stale guard at local-voice-engine.ts:446-449 discards synthesis,
+    GUARD 1 at nex-voice-conversation.ts:519-522 prevents duplicate enterListening.
+  • (B) during playback: voice-tts-stop-playback pauses renderer audio; audio.onended
+    does not fire on paused element (only 'onpause' does); GUARD 3 at line 548-551
+    prevents duplicate enterListening.
+  • (C) natural end + barge-in race: both IPC queue orderings converge to Orb 'listening'.
+
+CONFIRMED INVARIANT — TTS lifecycle complete and race-safe:
+  • ttsActive covers synthesis + playback (Stage 3 fix at local-voice-engine.ts:467-481).
+  • onTtsPlaybackEnded is idempotent (line 500-505).
+  • Stale guard at line 446-449 does NOT kill newer speak's ttsActive (Stage 3 fix).
+  • requestId is consistent through the conversation-driven pipeline.
+  • No duplicate audio (renderer overlap guard at App.tsx:108-113).
+  • No stale TTS after Stop/Cancel (engine stale guard + renderer stale guard).
+
+CONFIRMED INVARIANT — TTS playback owner single point:
+  • App.tsx:121 is the ONLY `new Audio()` in src/. currentAudioRef (line 88) is the only ref.
+  • No dead renderer TTS API reintroduced (voiceController.speak / voiceService.speak /
+    _ttsActive / _bargeInEnabled / isSpeaking / voiceController.stopSpeaking all removed
+    or no-op'd; voiceService.stopSpeaking kept as no-op for dispose compat).
+
+CONFIRMED INVARIANT — State-transition graph covers all production flows:
+  • All enumerated production transitions (voice, chat, agent, voice-agent, barge-in,
+    flash recovery, error flash, cancel flash) are ALLOWED by VALID_TRANSITIONS.
+  • No transition blocked by safeOrbTransition in normal production flows.
+  • Defensive blocks (terminal states, idle→speaking, idle→active, idle→installing)
+    are correct guards; production code paths never trigger them.
+
+DEAD CODE — voice-conversation-interrupted IPC is ORPHAN:
+  • main.ts:1902 broadcasts `voice-conversation-interrupted` (in onInterruption callback).
+  • preload.ts:242-245 registers the listener for it.
+  • electron.d.ts:190 declares the type.
+  • NO renderer component subscribes (grep across src/renderer — only the type declaration
+    in electron.d.ts; no onVoiceConversationInterrupted call site).
+  • The Orb state change on barge-in is driven by `voice-conversation-state` IPC
+    (conversation.setState('interrupted') → onStateChange → main.ts:1875 broadcast →
+    AppShell:294-355 receive → setCondition('conversation', 'working')). The
+    `voice-conversation-interrupted` IPC was likely intended for UI feedback but never
+    wired. Harmless (extra broadcast to /dev/null). Could be removed for clarity.
+  • Already documented in worklog (Phase 17 audit, line 7205).
+
+RACE CONDITION (LATENT, LOW SEVERITY) — Parallel TTS path via InteractionLoopManager:
+  • interaction-loop.ts:280 `await engine.speak(text);` is called WITHOUT opts.requestId.
+  • Engine auto-increments its _currentTtsRequestId at local-voice-engine.ts:424.
+  • Conversation's currentTtsRequestId (nex-voice-conversation.ts:162) is NOT incremented.
+  • Trigger: BasicInteractionPanel.tsx:76 `interactionSpeak` IPC (live, reachable via
+    AppShell 'interact' view at AppShell.tsx:423 — `<BasicInteractionPanel />`).
+  • If user triggers Basic Interaction TTS concurrently with a voice-conversation TTS:
+    - Engine's _currentTtsRequestId may collide with conversation's currentTtsRequestId
+      (both incrementing independently).
+    - Two onTTSAudioReady events may fire for the same requestId → two voice-tts-audio
+      IPCs → renderer creates two Audio elements, the second pauses the first.
+      Whichever synthesis finishes last wins audibly.
+    - waitForTtsPlayback may release prematurely or stale-guard may misfire.
+  • Likelihood: very low (requires user to actively use both Basic Interaction AND voice
+    conversation simultaneously). Already documented in worklog as P18-AUDIT-IPC-
+    INTERACTIONS DUPLICATE #2 "TTS requestId duplicate counters".
+  • Classification: RACE CONDITION (latent, parallel TTS pipelines, low severity).
+
+COVERAGE GAP (LATENT, LOW SEVERITY) — Engine FSM stuck on 'speaking' if STT init fails
+  after natural TTS playback end:
+  • After natural playback ends, engine.onTtsPlaybackEnded (local-voice-engine.ts:500-505)
+    only sets ttsActive=false — does NOT call setState. Engine.state stays 'speaking'.
+  • enterListening (nex-voice-conversation.ts:347-358) calls engine.startListening().
+  • engine.startListening (local-voice-engine.ts:295-313) setState('listening') at line 311
+    is only reached if startStream succeeds OR throws-and-continues. If init() fails
+    (line 300 catch → return) OR no sttProvider (line 297 → return), setState('listening')
+    is NOT called. Engine stays in 'speaking' state.
+  • At this moment: 'conversation' condition = 'listening' (priority 3, set by
+    conversation.setState('listening') at enterListening line 349), 'engine' condition
+    = 'speaking' (priority 6, never cleared because engine.setState('idle') was never
+    called). Orb recomputeState → 'speaking' wins (priority 6 > 3). Orb stuck on
+    'speaking' even though TTS is no longer playing and conversation is 'listening'.
+  • Visual symptom: Orb shows 'speaking' (red, animated) while NEX is actually listening.
+  • Recovery: any subsequent setState in either FSM (next speak, stop, etc.) clears it.
+  • Severity: low (requires STT init failure during natural TTS completion; rare in
+    practice once STT is initialized). Not a hang. Visual desync only.
+  • Suggested fix (not implemented, READ-ONLY audit): engine.startListening should
+    call setState('idle') or setState('error') in the early-return branches so the
+    engine FSM does not stay 'speaking' after TTS playback ended.
+  • Classification: COVERAGE GAP (latent visual desync, low severity, recoverable).
+
+COVERAGE GAP (MINOR) — Brief visual latency between conversation 'listening' and
+  engine 'listening' after natural TTS playback:
+  • enterListening (nex-voice-conversation.ts:347-358) calls conversation.setState('listening')
+    FIRST (line 349, sync), then awaits engine.startListening() (line 353, async —
+    involves startStream).
+  • During the await, the Orb's 'engine' condition still has 'speaking' (priority 6),
+    so the Orb stays 'speaking' visually until engine.setState('listening') fires.
+  • Window duration: time for sttProvider.startStream() to resolve (typically milliseconds).
+  • Not a bug — functionally correct, the Orb does transition to 'listening' once engine
+    transitions. This is the GAP-7 separation working as designed (each FSM transitions
+    independently; the priority system resolves the visible state).
+  • Classification: COVERAGE GAP (minor visual latency, by design, harmless).
+
+═════════════════════════════════════════════════════════════════════════════
+REGRESSION VERIFICATION (READ-ONLY)
+═════════════════════════════════════════════════════════════════════════════
+
+Ran 4 Phase 18 test suites (no modifications):
+  • tests/tools/test-phase-18-stage3.ts       68/68 passed (0 failed)
+  • tests/tools/test-phase-18-stage4.ts       28/28 passed (0 failed)
+  • tests/tools/test-phase-18-orb-state-enforcement.ts  120/120 passed (0 failed)
+  • tests/tools/test-phase-18-orb-state-flows.ts  38/38 passed (0 failed)
+
+All tests pass at commit f0830ed. The barge-in path, TTS lifecycle, GAP-7 separation,
+and Orb state machine enforcement are all verified by the regression suite.
+
+═════════════════════════════════════════════════════════════════════════════
+OVERALL VERDICT
+═════════════════════════════════════════════════════════════════════════════
+
+The barge-in + TTS + Orb state graph architecture post-Phase 18 Stage 4 is SOUND:
+  ✓ Complete barge-in path (VAD → onBargeIn → handleBargeIn → Orb), no missing links.
+  ✓ Idempotent under rapid barge-in (state guard + ttsActive gate).
+  ✓ Duplicate TTS prevented at 3 layers (engine stale guard, renderer stale guard,
+    renderer overlap guard).
+  ✓ Stale callbacks cannot change Orb state (notifyTtsPlaybackEnded idempotent match,
+    speakResponse GUARD 3).
+  ✓ All 3 edge cases (during synthesis, during playback, race with natural end) handled.
+  ✓ TTS playback owner is a single point (App.tsx:121).
+  ✓ No dead renderer TTS API reintroduced.
+  ✓ All production transitions allowed by VALID_TRANSITIONS; no production code path
+    triggers a blocked transition.
+
+OPEN ITEMS (low severity, not blocking):
+  1. voice-conversation-interrupted IPC is orphan (DEAD CODE, harmless, removable).
+  2. InteractionLoopManager.speakText bypasses conversation requestId coordination
+     (RACE CONDITION, latent, low severity — already documented as P18-AUDIT-IPC-
+     INTERACTIONS DUPLICATE #2).
+  3. Engine FSM can stay 'speaking' after natural TTS end if STT init fails (COVERAGE
+     GAP, latent, low severity, recoverable).
+  4. Brief visual latency after natural TTS end before engine transitions to
+     'listening' (COVERAGE GAP, by design, harmless).
+
+No P1 / P0 issues found. The architecture is production-ready.
+
+Audit complete. No files modified. No commits made.
+
+
+---
+Task ID: PHASE18-FINAL-AUDIT
+Agent: main (Z.ai Code orchestrator)
+Task: READ-ONLY final architecture audit of the entire Phase 18 voice/orb system. Consolidated findings from 3 parallel Explore agents (P18-FINAL-AUDIT-IPC-ORB, P18-FINAL-AUDIT-BARGEIN-TTS, P18-FINAL-AUDIT-PERM-TESTS).
+
+Work Log:
+- Dispatched 3 parallel Explore agents to audit: (1) IPC + Orb condition + lifecycle, (2) barge-in + TTS + state graph, (3) permissions + test coverage + dead code
+- Verified the Phase 56 test crash (P0 bug: setPermissionVoiceCapture removed but test still calls it)
+- Verified the VoiceManagerPanel color field mismatch (P2 bug: ev.orbColor vs ev.color)
+- Verified the dead onCaptureVoiceConfirmation callback in ConversationCallbacks interface
+- Consolidated all findings into the final report
+
+Stage Summary:
+- 3 parallel audits complete, 0 source files modified, 0 commits made
+- 1 P0 bug found (broken Phase 56 test)
+- 2 P2 bugs found (VoiceManagerPanel color mismatch, chat error flash race)
+- Multiple P3 coverage gaps identified
+- Architecture is sound and production-ready for all 10 audited areas EXCEPT the broken Phase 56 test
+- Recommendation: fix the broken Phase 56 test, then Phase 18 is GREEN
