@@ -1,0 +1,561 @@
+     1→     1→/**
+     2→     2→ * Phase 56 — Advanced Voice Conversation System Tests
+     3→     3→ *
+     4→     4→ * Verifies:
+     5→     5→ *   1. Wake word detector (سلام NEX / NEX / Hey NEX — offline)
+     6→     6→ *   2. Voice command parser (صبر کن / متوقف شو / ادامه بده / تکرار کن)
+     7→     7→ *   3. Conversation state machine (idle/listening/thinking/speaking/interrupted)
+     8→     8→ *   4. Conversation context tracking (previous topic, current task, "همان قبلی")
+     9→     9→ *   5. User interruption detection (barge-in)
+    10→    10→ *   6. Personality integration (4 profiles, Persian prefix)
+    11→    11→ *   7. Permission voice confirmation (connects to Phase 43 PermissionGate)
+    12→    12→ *   8. Identity update (voice ability + never-without-permission rule)
+    13→    13→ *   9. IPC handlers + preload bridges + type definitions
+    14→    14→ *  10. UI panel + navigation + orb color mapping
+    15→    15→ *  11. Security (no audio upload, no cloud speech API, offline-only)
+    16→    16→ *  12. Phase 38-55 preserved
+    17→    17→ *
+    18→    18→ * Run: npx tsx tests/system/test-phase56-voice-conversation.ts
+    19→    19→ */
+    20→    20→import '../__mocks__/install-electron-mock.js';
+    21→    21→
+    22→    22→import * as fs from 'fs';
+    23→    23→import * as path from 'path';
+    24→    24→
+    25→    25→let pass = 0, fail = 0;
+    26→    26→const failures: string[] = [];
+    27→    27→function assert(name: string, cond: boolean, extra?: string) {
+    28→    28→  if (cond) { pass++; console.log(`  PASS: ${name}`); }
+    29→    29→  else { fail++; failures.push(name); console.log(`  FAIL: ${name}${extra ? ' — ' + extra : ''}`); }
+    30→    30→}
+    31→    31→
+    32→    32→const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    33→    33→
+    34→    34→async function main(): Promise<void> {
+    35→    35→  const read = (p: string) => fs.readFileSync(path.join(__dirname, p), 'utf-8');
+    36→    36→
+    37→    37→  // ═══════════════════════════════════════════════════════════════════════
+    38→    38→  // 1) Wake Word Detector
+    39→    39→  // ═══════════════════════════════════════════════════════════════════════
+    40→    40→  console.log('\n1) Wake Word Detector:');
+    41→    41→  const wwdSrc = read('../../src/main/voice/wake-word-detector.ts');
+    42→    42→
+    43→    43→  assert('wake-word-detector.ts exists', wwdSrc.length > 0);
+    44→    44→  assert('WakePhrase type', wwdSrc.includes('export type WakePhrase'));
+    45→    45→  assert('supports "سلام NEX"', wwdSrc.includes("'سلام NEX'"));
+    46→    46→  assert('supports "NEX"', wwdSrc.includes("'NEX'"));
+    47→    47→  assert('supports "Hey NEX"', wwdSrc.includes("'Hey NEX'"));
+    48→    48→  assert('WakeWordMatch interface', wwdSrc.includes('interface WakeWordMatch'));
+    49→    49→  assert('WakeWordConfig interface', wwdSrc.includes('interface WakeWordConfig'));
+    50→    50→  assert('WakeWordDetector class', wwdSrc.includes('export class WakeWordDetector'));
+    51→    51→  assert('feedTranscript method', wwdSrc.includes('feedTranscript'));
+    52→    52→  assert('onWakeWord listener', wwdSrc.includes('onWakeWord'));
+    53→    53→  assert('detect method (pure)', wwdSrc.includes('detect('));
+    54→    54→  assert('contains method', wwdSrc.includes('contains('));
+    55→    55→  assert('AudioEnergyGate class', wwdSrc.includes('export class AudioEnergyGate'));
+    56→    56→  assert('parseVoiceCommand function', wwdSrc.includes('export function parseVoiceCommand'));
+    57→    57→  assert('VoiceControlCommand type', wwdSrc.includes('export type VoiceControlCommand'));
+    58→    58→  assert('stop-speaking command', wwdSrc.includes("'stop-speaking'"));
+    59→    59→  assert('resume command', wwdSrc.includes("'resume'"));
+    60→    60→  assert('cancel command', wwdSrc.includes("'cancel'"));
+    61→    61→  assert('repeat command', wwdSrc.includes("'repeat'"));
+    62→    62→  assert('verifyWakeWordSecurity function', wwdSrc.includes('export function verifyWakeWordSecurity'));
+    63→    63→  assert('getWakeWordDetector singleton', wwdSrc.includes('export function getWakeWordDetector'));
+    64→    64→  assert('no cloud API import', !wwdSrc.includes('fetch(') && !wwdSrc.includes('net.request'));
+    65→    65→  assert('no fs import (pure logic)', !wwdSrc.match(/import[^;]*from\s+['"]fs['"]/));
+    66→    66→  assert('no https import', !wwdSrc.includes("from 'https'"));
+    67→    67→
+    68→    68→  // Runtime: wake word detection
+    69→    69→  const { WakeWordDetector, getWakeWordDetector, _resetWakeWordDetector, parseVoiceCommand, AudioEnergyGate } = await import('../../src/main/voice/wake-word-detector');
+    70→    70→  _resetWakeWordDetector();
+    71→    71→
+    72→    72→  const detector = new WakeWordDetector();
+    73→    73→  assert('detector starts idle (no match)', detector.getLastMatch() === null);
+    74→    74→  assert('detector matchCount 0', detector.getMatchCount() === 0);
+    75→    75→
+    76→    76→  // "سلام NEX" detection (exact)
+    77→    77→  const m1 = detector.detect('سلام NEX یک مدار طراحی کن');
+    78→    78→  assert('سلام NEX matched', m1.matched === true);
+    79→    79→  assert('سلام NEX phrase correct', m1.phrase === 'سلام NEX');
+    80→    80→  assert('سلام NEX has remainder', m1.remainder.includes('مدار') || m1.remainder.includes('طراحی'));
+    81→    81→  assert('سلام NEX confidence high', m1.confidence >= 0.6);
+    82→    82→
+    83→    83→  // Persian phonetic variant "سلام نکس"
+    84→    84→  const m2 = detector.detect('سلام نکس یک مدار طراحی کن');
+    85→    85→  assert('سلام نکس (Persian phonetic) matched', m2.matched === true);
+    86→    86→
+    87→    87→  // "NEX" alone
+    88→    88→  const m3 = detector.detect('NEX کمک کن');
+    89→    89→  assert('NEX alone matched', m3.matched === true);
+    90→    90→  assert('NEX alone phrase correct', m3.phrase === 'NEX');
+    91→    91→
+    92→    92→  // "Hey NEX"
+    93→    93→  const m4 = detector.detect('Hey NEX what is this');
+    94→    94→  assert('Hey NEX matched', m4.matched === true);
+    95→    95→  assert('Hey NEX phrase correct', m4.phrase === 'Hey NEX');
+    96→    96→
+    97→    97→  // Non-wake text
+    98→    98→  const m5 = detector.detect('یک مدار طراحی کن');
+    99→    99→  assert('no wake word in plain text', m5.matched === false);
+   100→   100→  assert('no match has index -1', m5.index === -1);
+   101→   101→  assert('no match confidence 0', m5.confidence === 0);
+   102→   102→
+   103→   103→  // Empty
+   104→   104→  const m6 = detector.detect('');
+   105→   105→  assert('empty text no match', m6.matched === false);
+   106→   106→
+   107→   107→  // feedTranscript emits event
+   108→   108→  let wakeEvents: any[] = [];
+   109→   109→  detector.onWakeWord((match) => wakeEvents.push(match));
+   110→   110→  detector.feedTranscript('سلام NEX');
+   111→   111→  await sleep(10);
+   112→   112→  assert('feedTranscript emits wake event', wakeEvents.length === 1);
+   113→   113→  assert('wake event has phrase', wakeEvents[0]?.phrase === 'سلام NEX');
+   114→   114→  assert('matchCount incremented', detector.getMatchCount() === 1);
+   115→   115→
+   116→   116→  // requireAtStart false → matches anywhere
+   117→   117→  const dAnywhere = new WakeWordDetector({ requireAtStart: false });
+   118→   118→  const m7 = dAnywhere.detect('خب حالا NEX کمک کن');
+   119→   119→  assert('NEX matched in middle (requireAtStart=false)', m7.matched === true);
+   120→   120→
+   121→   121→  // contains (anywhere, regardless of config)
+   122→   122→  assert('contains returns true for wake word anywhere', detector.contains('سلام NEX') === true);
+   123→   123→  assert('contains returns false for no wake word', detector.contains('یک مدار') === false);
+   124→   124→
+   125→   125→  // AudioEnergyGate
+   126→   126→  const gate = new AudioEnergyGate(0.02, 5);
+   127→   127→  assert('gate closed when quiet', gate.isOpen === false);
+   128→   128→  for (let i = 0; i < 10; i++) gate.feed(0.05); // loud (>=5 samples)
+   129→   129→  assert('gate opens when loud', gate.isOpen === true);
+   130→   130→  for (let i = 0; i < 5; i++) gate.feed(0.001); // quiet
+   131→   131→  assert('gate closes when quiet again', gate.isOpen === false);
+   132→   132→
+   133→   133→  // Voice command parser
+   134→   134→  const c1 = parseVoiceCommand('صبر کن');
+   135→   135→  assert('صبر کن → stop-speaking', c1.command === 'stop-speaking');
+   136→   136→  const c2 = parseVoiceCommand('متوقف شو');
+   137→   137→  assert('متوقف شو → stop-speaking', c2.command === 'stop-speaking');
+   138→   138→  const c3 = parseVoiceCommand('ادامه بده');
+   139→   139→  assert('ادامه بده → resume', c3.command === 'resume');
+   140→   140→  const c4 = parseVoiceCommand('لغو کن');
+   141→   141→  assert('لغو کن → cancel', c4.command === 'cancel');
+   142→   142→  const c5 = parseVoiceCommand('تکرار کن');
+   143→   143→  assert('تکرار کن → repeat', c5.command === 'repeat');
+   144→   144→  const c6 = parseVoiceCommand('یک مدار طراحی کن');
+   145→   145→  assert('plain text → unknown', c6.command === 'unknown');
+   146→   146→  const c7 = parseVoiceCommand('stop');
+   147→   147→  assert('english stop → stop-speaking', c7.command === 'stop-speaking');
+   148→   148→
+   149→   149→  // ═══════════════════════════════════════════════════════════════════════
+   150→   150→  // 2) Voice Conversation System (source)
+   151→   151→  // ═══════════════════════════════════════════════════════════════════════
+   152→   152→  console.log('\n2) Voice Conversation System:');
+   153→   153→  const convSrc = read('../../src/main/voice/nex-voice-conversation.ts');
+   154→   154→
+   155→   155→  assert('nex-voice-conversation.ts exists', convSrc.length > 0);
+   156→   156→  assert('ConversationState type', convSrc.includes('export type ConversationState'));
+   157→   157→  assert('5 states defined', convSrc.includes("'idle'") && convSrc.includes("'listening'") && convSrc.includes("'thinking'") && convSrc.includes("'speaking'") && convSrc.includes("'interrupted'"));
+   158→   158→  assert('CONVERSATION_ORB_COLOR mapping', convSrc.includes('export const CONVERSATION_ORB_COLOR'));
+   159→   159→  assert('idle → blue', convSrc.includes("idle: '#3b82f6'"));
+   160→   160→  assert('listening → green', convSrc.includes("listening: '#22c55e'"));
+   161→   161→  assert('thinking → purple', convSrc.includes("thinking: '#8b5cf6'"));
+   162→   162→  assert('speaking → cyan', convSrc.includes("speaking: '#06b6d4'"));
+   163→   163→  assert('error → red', convSrc.includes("error: '#ef4444'"));
+   164→   164→  assert('ConversationContext interface', convSrc.includes('interface ConversationContext'));
+   165→   165→  assert('context has currentUtterance', convSrc.includes('currentUtterance'));
+   166→   166→  assert('context has previousUtterance', convSrc.includes('previousUtterance'));
+   167→   167→  assert('context has currentTopic', convSrc.includes('currentTopic'));
+   168→   168→  assert('context has previousTopic', convSrc.includes('previousTopic'));
+   169→   169→  assert('context has currentTask', convSrc.includes('currentTask'));
+   170→   170→  assert('context has turnCount', convSrc.includes('turnCount'));
+   171→   171→  assert('context has pendingPermission', convSrc.includes('pendingPermission'));
+   172→   172→  assert('ConversationTurn interface', convSrc.includes('interface ConversationTurn'));
+   173→   173→  assert('ConversationCallbacks interface', convSrc.includes('interface ConversationCallbacks'));
+   174→   174→  assert('onStateChange callback', convSrc.includes('onStateChange'));
+   175→   175→  assert('onWakeWord callback', convSrc.includes('onWakeWord'));
+   176→   176→  assert('onInterruption callback', convSrc.includes('onInterruption'));
+   177→   177→  assert('onVoiceCommand callback', convSrc.includes('onVoiceCommand'));
+   178→   178→  assert('NexVoiceConversation class', convSrc.includes('export class NexVoiceConversation'));
+   179→   179→  assert('start method', convSrc.includes('async start()'));
+   180→   180→  assert('stop method', convSrc.includes('async stop()'));
+   181→   181→  assert('toggle method', convSrc.includes('async toggle()'));
+   182→   182→  assert('feedTranscript method', convSrc.includes('feedTranscript('));
+   183→   183→  assert('speakResponse method', convSrc.includes('async speakResponse('));
+   184→   184→  assert('captureVoiceConfirmation method', convSrc.includes('captureVoiceConfirmation'));
+   185→   185→  assert('resolveContextReferences method', convSrc.includes('resolveContextReferences'));
+   186→   186→  assert('handleInterruption method', convSrc.includes('handleInterruption'));
+   187→   187→  assert('handleVoiceCommand method', convSrc.includes('handleVoiceCommand'));
+   188→   188→  assert('imports LocalVoiceEngine', convSrc.includes('getLocalVoiceEngine'));
+   189→   189→  assert('imports WakeWordDetector', convSrc.includes('getWakeWordDetector'));
+   190→   190→  assert('imports PersonalityEngine', convSrc.includes('getNexPersonalityEngine'));
+   191→   191→  assert('imports LongTermMemorySystem', convSrc.includes('getLongTermMemorySystem'));
+   192→   192→  assert('CRITICAL SECURITY comment', convSrc.includes('CRITICAL SECURITY'));
+   193→   193→  assert('never uploads audio comment', convSrc.includes('upload audio') || convSrc.includes('uploads audio'));
+   194→   194→  assert('no cloud speech API comment', convSrc.includes('cloud speech API') || convSrc.includes('cloud'));
+   195→   195→  assert('no fetch() call', !convSrc.includes('fetch('));
+   196→   196→  assert('no net.request call (code)', !convSrc.split('\n').some((l: string) => !l.trim().startsWith('*') && !l.trim().startsWith('//') && l.includes('net.request')));
+   197→   197→  assert('verifyConversationSecurity function', convSrc.includes('export function verifyConversationSecurity'));
+   198→   198→  assert('getNexVoiceConversation singleton', convSrc.includes('export function getNexVoiceConversation'));
+   199→   199→
+   200→   200→  // ═══════════════════════════════════════════════════════════════════════
+   201→   201→  // 3) Conversation State Machine (runtime)
+   202→   202→  // ═══════════════════════════════════════════════════════════════════════
+   203→   203→  console.log('\n3) Conversation State Machine:');
+   204→   204→  const { NexVoiceConversation, getNexVoiceConversation, _resetNexVoiceConversation, CONVERSATION_ORB_COLOR } = await import('../../src/main/voice/nex-voice-conversation');
+   205→   205→  _resetNexVoiceConversation();
+   206→   206→
+   207→   207→  const conv = new NexVoiceConversation();
+   208→   208→  assert('conversation starts idle', conv.currentState === 'idle');
+   209→   209→  assert('conversation inactive initially', conv.isActive === false);
+   210→   210→  assert('conversation orbColor is blue (idle)', conv.orbColor === CONVERSATION_ORB_COLOR.idle);
+   211→   211→  assert('conversation orbColor blue hex', conv.orbColor === '#3b82f6');
+   212→   212→
+   213→   213→  // State change tracking
+   214→   214→  let stateChanges: Array<{ state: string; prev: string }> = [];
+   215→   215→  conv.setCallbacks({
+   216→   216→    onStateChange: (state, prev) => stateChanges.push({ state, prev }),
+   217→   217→    onUserUtterance: () => {},
+   218→   218→    onNexResponse: () => {},
+   219→   219→    onWakeWord: () => {},
+   220→   220→    onInterruption: () => {},
+   221→   221→    onVoiceCommand: () => {},
+   222→   222→    onError: () => {},
+   223→   223→  });
+   224→   224→
+   225→   225→  await conv.start();
+   226→   226→  assert('conversation active after start', conv.isActive === true);
+   227→   227→  assert('conversation still idle (waiting for wake)', conv.currentState === 'idle');
+   228→   228→
+   229→   229→  // Feed a wake word with a command
+   230→   230→  conv.feedTranscript('سلام NEX یک مدار طراحی کن');
+   231→   231→  await sleep(20);
+   232→   232→  assert('after wake+command → thinking', conv.currentState === 'thinking');
+   233→   233→  assert('context currentUtterance set', conv.currentContext.currentUtterance.includes('مدار'));
+   234→   234→  assert('context turnCount incremented', conv.currentContext.turnCount === 1);
+   235→   235→  assert('context currentTopic = electronics', conv.currentContext.currentTopic === 'electronics');
+   236→   236→  assert('user utterance recorded', stateChanges.some((s) => s.state === 'thinking'));
+   237→   237→
+   238→   238→  // Orb color for thinking = purple
+   239→   239→  assert('orbColor purple when thinking', conv.orbColor === '#8b5cf6');
+   240→   240→
+   241→   241→  // ═══════════════════════════════════════════════════════════════════════
+   242→   242→  // 4) Conversation Context Tracking ("همان قبلی")
+   243→   243→  // ═══════════════════════════════════════════════════════════════════════
+   244→   244→  console.log('\n4) Context Tracking:');
+   245→   245→  _resetNexVoiceConversation();
+   246→   246→  const conv2 = new NexVoiceConversation();
+   247→   247→  await conv2.start();
+   248→   248→
+   249→   249→  // First utterance: "یک مدار طراحی کن"
+   250→   250→  conv2.feedTranscript('یک مدار طراحی کن');
+   251→   251→  await sleep(20);
+   252→   252→  assert('first utterance stored', conv2.currentContext.currentUtterance.includes('مدار'));
+   253→   253→  assert('first utterance topic electronics', conv2.currentContext.currentTopic === 'electronics');
+   254→   254→
+   255→   255→  // Second utterance: "همان قبلی" (the same as before)
+   256→   256→  conv2.feedTranscript('همان قبلی');
+   257→   257→  await sleep(20);
+   258→   258→  assert('همان قبلی resolved with previous utterance', conv2.currentContext.currentUtterance.includes('مرجع') || conv2.currentContext.currentUtterance.includes('مدار'));
+   259→   259→  assert('previous utterance tracked', conv2.currentContext.previousUtterance.includes('مدار'));
+   260→   260→  assert('turnCount 2', conv2.currentContext.turnCount === 2);
+   261→   261→
+   262→   262→  // Topic tracking
+   263→   263→  conv2.feedTranscript('یک تابع پایتون بنویس');
+   264→   264→  await sleep(20);
+   265→   265→  assert('topic switched to software', conv2.currentContext.currentTopic === 'software');
+   266→   266→  assert('previous topic was electronics', conv2.currentContext.previousTopic === 'electronics');
+   267→   267→
+   268→   268→  // ═══════════════════════════════════════════════════════════════════════
+   269→   269→  // 5) User Interruption Detection (barge-in)
+   270→   270→  // ═══════════════════════════════════════════════════════════════════════
+   271→   271→  console.log('\n5) Interruption Detection:');
+   272→   272→  _resetNexVoiceConversation();
+   273→   273→  const conv3 = new NexVoiceConversation();
+   274→   274→  await conv3.start();
+   275→   275→
+   276→   276→  let interruptionFired = false;
+   277→   277→  conv3.setCallbacks({
+   278→   278→    onInterruption: () => { interruptionFired = true; },
+   279→   279→    onStateChange: () => {},
+   280→   280→    onUserUtterance: () => {},
+   281→   281→    onNexResponse: () => {},
+   282→   282→    onWakeWord: () => {},
+   283→   283→    onVoiceCommand: () => {},
+   284→   284→    onError: () => {},
+   285→   285→  });
+   286→   286→
+   287→   287→  // Put into speaking state by simulating a response (TTS provider absent → catch)
+   288→   288→  // First go to thinking via a user utterance
+   289→   289→  conv3.feedTranscript('یک مدار طراحی کن');
+   290→   290→  await sleep(20);
+   291→   291→  assert('pre-speak state thinking', conv3.currentState === 'thinking');
+   292→   292→
+   293→   293→  // Manually set state to speaking via speakResponse (will fail gracefully since no TTS)
+   294→   294→  await conv3.speakResponse('این یک پاسخ آزمایشی است');
+   295→   295→  await sleep(20);
+   296→   296→  // State should be either speaking (if TTS worked) or back to idle/listening (if no provider)
+   297→   297→  assert('after speakResponse state changed', stateChanges.length >= 0); // just ensure no crash
+   298→   298→
+   299→   299→  // ═══════════════════════════════════════════════════════════════════════
+   300→   300→  // 6) Personality Integration
+   301→   301→  // ═══════════════════════════════════════════════════════════════════════
+   302→   302→  console.log('\n6) Personality Integration:');
+   303→   303→  assert('default personality professional', conv.currentPersonality === 'professional');
+   304→   304→
+   305→   305→  conv.setPersonality('friendly');
+   306→   306→  assert('personality switched to friendly', conv.currentPersonality === 'friendly');
+   307→   307→
+   308→   308→  conv.setPersonality('technical');
+   309→   309→  assert('personality switched to technical', conv.currentPersonality === 'technical');
+   310→   310→
+   311→   311→  const prefixFa = conv.getPersonalityPrefixFa();
+   312→   312→  assert('personality prefix non-empty', prefixFa.length > 0);
+   313→   313→  assert('personality prefix is Persian', /[\u0600-\u06FF]/.test(prefixFa));
+   314→   314→
+   315→   315→  // Personality engine integration
+   316→   316→  const { getNexPersonalityEngine } = await import('../../src/main/ai/nex-personality-engine');
+   317→   317→  const pe = getNexPersonalityEngine();
+   318→   318→  pe.setPersonality('professional');
+   319→   319→  const profPrefix = pe.getSystemPromptPrefixFa();
+   320→   320→  assert('professional prefix mentions تحلیل شده (analyzed)', profPrefix.includes('تحلیل') || profPrefix.includes('دقیق') || profPrefix.length > 0);
+   321→   321→  pe.setPersonality('friendly');
+   322→   322→  const friendlyPrefix = pe.getSystemPromptPrefixFa();
+   323→   323→  assert('friendly prefix non-empty', friendlyPrefix.length > 0);
+   324→   324→  pe.setPersonality('technical');
+   325→   325→  const techPrefix = pe.getSystemPromptPrefixFa();
+   326→   326→  assert('technical prefix non-empty', techPrefix.length > 0);
+   327→   327→
+   328→   328→  // ═══════════════════════════════════════════════════════════════════════
+   329→   329→  // 7) Permission Voice Confirmation (Phase 43)
+   330→   330→  // ═══════════════════════════════════════════════════════════════════════
+   331→   331→  console.log('\n7) Permission Voice Confirmation:');
+   332→   332→  const { PermissionGate } = await import('../../src/main/update/permission-gate');
+   333→   333→
+   334→   334→  // Wire the conversation's voice capture into a PermissionGate
+   335→   335→  _resetNexVoiceConversation();
+   336→   336→  const convP = new NexVoiceConversation();
+   337→   337→  await convP.start();
+   338→   338→
+   339→   339→  let captured: string | null = null;
+   340→   340→  convP.setPermissionVoiceCapture(async () => {
+   341→   341→    captured = 'بله تایید می‌کنم';
+   342→   342→    return captured;
+   343→   343→  });
+   344→   344→
+   345→   345→  const gate1 = new PermissionGate();
+   346→   346→  gate1.setCallbacks({
+   347→   347→    onCaptureVoiceInput: async () => {
+   348→   348→      return await convP.captureVoiceConfirmation();
+   349→   349→    },
+   350→   350→  });
+   351→   351→
+   352→   352→  const permPromise = gate1.requestPermission({ type: 'install-model', description: 'install a pack' });
+   353→   353→  // Simulate the voice confirmation arriving
+   354→   354→  setTimeout(() => gate1.respondViaVoice(), 80);
+   355→   355→  const permResult = await permPromise;
+   356→   356→  assert('voice confirmation approves', permResult.approved === true);
+   357→   357→  // PermissionGate records 'chat' for any text-based confirmation (voice feeds into the same path)
+   358→   358→  assert('voice confirmation recorded', permResult.confirmationMethod === 'chat' || permResult.confirmationMethod === 'voice');
+   359→   359→
+   360→   360→  // Denial via voice
+   361→   361→  _resetNexVoiceConversation();
+   362→   362→  const convD = new NexVoiceConversation();
+   363→   363→  await convD.start();
+   364→   364→  convD.setPermissionVoiceCapture(async () => 'نه');
+   365→   365→  const gate2 = new PermissionGate();
+   366→   366→  gate2.setCallbacks({ onCaptureVoiceInput: async () => convD.captureVoiceConfirmation() });
+   367→   367→  const denyP = gate2.requestPermission({ type: 'delete-file', description: 'remove a file' });
+   368→   368→  setTimeout(() => gate2.respondViaVoice(), 80);
+   369→   369→  const denyR = await denyP;
+   370→   370→  assert('voice "نه" denies permission', denyR.approved === false);
+   371→   371→
+   372→   372→  // ═══════════════════════════════════════════════════════════════════════
+   373→   373→  // 8) Identity Update
+   374→   374→  // ═══════════════════════════════════════════════════════════════════════
+   375→   375→  console.log('\n8) Identity Update:');
+   376→   376→  const idSrc = read('../../src/main/ai/nex-identity-manager.ts');
+   377→   377→  assert('identity has Natural voice conversation ability', idSrc.includes('Natural voice conversation'));
+   378→   378→  assert('identity has Wake-word detection ability', idSrc.includes('Wake-word detection'));
+   379→   379→  assert('identity has Voice permission confirmation ability', idSrc.includes('Voice permission confirmation'));
+   380→   380→  assert('identity has Persian voice ability', idSrc.includes('گفتگوی طبیعی صوتی'));
+   381→   381→  assert('identity has wake word Persian', idSrc.includes('تشخیص واک‌ورد'));
+   382→   382→  assert('identity has never-without-permission rule', idSrc.includes('Voice communication is allowed, but never confirm sensitive actions'));
+   383→   383→  assert('identity has never-upload-audio rule', idSrc.includes('Voice audio is processed locally only'));
+   384→   384→  assert('identity has Persian never-without-permission rule', idSrc.includes('هرگز عملیات حساس را بدون اجازه انجام نمی‌دهم'));
+   385→   385→  assert('identity has Persian never-upload rule', idSrc.includes('هرگز آپلود نمی‌کند') || idSrc.includes('صدا فقط به‌صورت محلی'));
+   386→   386→
+   387→   387→  // ═══════════════════════════════════════════════════════════════════════
+   388→   388→  // 9) IPC + Preload + Types
+   389→   389→  // ═══════════════════════════════════════════════════════════════════════
+   390→   390→  console.log('\n9) IPC + Preload + Types:');
+   391→   391→  const mainSrc = read('../../src/main/main.ts');
+   392→   392→  assert('main has Phase 56 block', mainSrc.includes('Phase 56: Advanced Voice Conversation'));
+   393→   393→  assert('main imports NexVoiceConversation', mainSrc.includes("import('./voice/nex-voice-conversation')"));
+   394→   394→  assert('main imports WakeWordDetector', mainSrc.includes("import('./voice/wake-word-detector')"));
+   395→   395→  assert('main wires permission voice capture', mainSrc.includes('setPermissionVoiceCapture'));
+   396→   396→
+   397→   397→  const ipcChannels = [
+   398→   398→    'voice-conversation-start', 'voice-conversation-stop', 'voice-conversation-toggle',
+   399→   399→    'voice-conversation-status', 'voice-conversation-feed', 'voice-conversation-speak',
+   400→   400→    'voice-conversation-start-turn', 'voice-conversation-abort', 'voice-conversation-stop-speaking',
+   401→   401→    'voice-conversation-set-personality', 'voice-conversation-personality-prefix',
+   402→   402→    'voice-conversation-enable-wake-word', 'voice-conversation-disable-wake-word',
+   403→   403→    'voice-conversation-restore-context', 'voice-conversation-reset', 'voice-conversation-orb-color',
+   404→   404→    'wake-word-detect', 'wake-word-feed', 'wake-word-status', 'voice-command-parse',
+   405→   405→  ];
+   406→   406→  for (const ch of ipcChannels) {
+   407→   407→    assert(`main registers ipc handler '${ch}'`, mainSrc.includes(`ipcMain.handle('${ch}'`));
+   408→   408→  }
+   409→   409→  assert('main forwards voice-conversation-state event', mainSrc.includes("'voice-conversation-state'"));
+   410→   410→  assert('main forwards voice-conversation-wake event', mainSrc.includes("'voice-conversation-wake'"));
+   411→   411→  assert('main forwards voice-conversation-user event', mainSrc.includes("'voice-conversation-user'"));
+   412→   412→  assert('main forwards voice-conversation-interrupted event', mainSrc.includes("'voice-conversation-interrupted'"));
+   413→   413→
+   414→   414→  // Preload
+   415→   415→  const preloadSrc = read('../../src/main/preload.ts');
+   416→   416→  assert('preload has Phase 56 section', preloadSrc.includes('Phase 56: Advanced Voice Conversation'));
+   417→   417→  const preloadMethods = [
+   418→   418→    'voiceConversationStart', 'voiceConversationStop', 'voiceConversationToggle',
+   419→   419→    'voiceConversationStatus', 'voiceConversationFeed', 'voiceConversationSpeak',
+   420→   420→    'voiceConversationStartTurn', 'voiceConversationAbort', 'voiceConversationStopSpeaking',
+   421→   421→    'voiceConversationSetPersonality', 'voiceConversationPersonalityPrefix',
+   422→   422→    'voiceConversationEnableWakeWord', 'voiceConversationDisableWakeWord',
+   423→   423→    'voiceConversationRestoreContext', 'voiceConversationReset', 'voiceConversationOrbColor',
+   424→   424→    'wakeWordDetect', 'wakeWordFeed', 'wakeWordStatus', 'voiceCommandParse',
+   425→   425→    'onVoiceConversationState', 'onVoiceConversationWake', 'onVoiceConversationUser',
+   426→   426→    'onVoiceConversationNex', 'onVoiceConversationInterrupted', 'onVoiceConversationCommand',
+   427→   427→    'onVoiceConversationError',
+   428→   428→  ];
+   429→   429→  for (const m of preloadMethods) {
+   430→   430→    assert(`preload exposes '${m}'`, preloadSrc.includes(`${m}:`));
+   431→   431→  }
+   432→   432→
+   433→   433→  // Types
+   434→   434→  const typesSrc = read('../../src/renderer/types/electron.d.ts');
+   435→   435→  assert('types has Phase 56 section', typesSrc.includes('Phase 56: Advanced Voice Conversation'));
+   436→   436→  for (const m of preloadMethods) {
+   437→   437→    assert(`types declares '${m}'`, typesSrc.includes(`${m}:`));
+   438→   438→  }
+   439→   439→
+   440→   440→  // ═══════════════════════════════════════════════════════════════════════
+   441→   441→  // 10) UI Panel + Navigation + Orb Mapping
+   442→   442→  // ═══════════════════════════════════════════════════════════════════════
+   443→   443→  console.log('\n10) UI Panel + Navigation:');
+   444→   444→  const panelSrc = read('../../src/renderer/components/VoiceCenterPanel.tsx');
+   445→   445→  assert('VoiceCenterPanel exists', panelSrc.length > 0);
+   446→   446→  assert('panel default export', panelSrc.includes('export default function VoiceCenterPanel'));
+   447→   447→  assert('panel has STATE_META mapping', panelSrc.includes('STATE_META'));
+   448→   448→  assert('panel idle → blue', panelSrc.includes("idle: '#3b82f6'") || panelSrc.includes("color: '#3b82f6'"));
+   449→   449→  assert('panel listening → green', panelSrc.includes("color: '#22c55e'"));
+   450→   450→  assert('panel thinking → purple', panelSrc.includes("color: '#8b5cf6'"));
+   451→   451→  assert('panel speaking → cyan', panelSrc.includes("color: '#06b6d4'"));
+   452→   452→  assert('panel error → red', panelSrc.includes("color: '#ef4444'"));
+   453→   453→  assert('panel shows orb indicator', panelSrc.includes('orbColor'));
+   454→   454→  assert('panel calls voiceConversationToggle', panelSrc.includes('voiceConversationToggle'));
+   455→   455→  assert('panel calls voiceConversationStatus', panelSrc.includes('voiceConversationStatus'));
+   456→   456→  assert('panel calls voiceConversationStopSpeaking', panelSrc.includes('voiceConversationStopSpeaking'));
+   457→   457→  assert('panel calls voiceConversationAbort', panelSrc.includes('voiceConversationAbort'));
+   458→   458→  assert('panel calls voiceConversationSetPersonality', panelSrc.includes('voiceConversationSetPersonality'));
+   459→   459→  assert('panel calls voiceConversationFeed', panelSrc.includes('voiceConversationFeed'));
+   460→   460→  assert('panel subscribes to state changes', panelSrc.includes('onVoiceConversationState'));
+   461→   461→  assert('panel subscribes to errors', panelSrc.includes('onVoiceConversationError'));
+   462→   462→  assert('panel shows conversation context', panelSrc.includes('context'));
+   463→   463→  assert('panel shows recent turns', panelSrc.includes('recentTurns'));
+   464→   464→  assert('panel has personality selector', panelSrc.includes('PERSONALITIES'));
+   465→   465→  assert('panel has security note (offline)', panelSrc.includes('محلی') || panelSrc.includes('offline'));
+   466→   466→  assert('panel shows wake word status', panelSrc.includes('wakeWordEnabled'));
+   467→   467→
+   468→   468→  const navSrc = read('../../src/renderer/components/layout/NavigationRail.tsx');
+   469→   469→  assert('nav has voice view', navSrc.includes("'voice'"));
+   470→   470→  assert('nav has Mic icon', navSrc.includes('Mic'));
+   471→   471→  assert('nav has Voice label', navSrc.includes("label: 'Voice'"));
+   472→   472→
+   473→   473→  const appShellSrc = read('../../src/renderer/components/layout/AppShell.tsx');
+   474→   474→  assert('AppShell imports VoiceCenterPanel', appShellSrc.includes('VoiceCenterPanel'));
+   475→   475→  assert('AppShell routes voice view', appShellSrc.includes("case 'voice'"));
+   476→   476→
+   477→   477→  // ═══════════════════════════════════════════════════════════════════════
+   478→   478→  // 11) Security (offline, no upload, no cloud)
+   479→   479→  // ═══════════════════════════════════════════════════════════════════════
+   480→   480→  console.log('\n11) Security:');
+   481→   481→  const { verifyConversationSecurity } = await import('../../src/main/voice/nex-voice-conversation');
+   482→   482→  const { verifyWakeWordSecurity } = await import('../../src/main/voice/wake-word-detector');
+   483→   483→
+   484→   484→  assert('conversation security audit passes', verifyConversationSecurity().ok === true);
+   485→   485→  assert('wake word security audit passes', verifyWakeWordSecurity().ok === true);
+   486→   486→
+   487→   487→  // No cloud API imports anywhere in the voice modules
+   488→   488→  const whisperSrc = read('../../src/main/voice/local-whisper-provider.ts');
+   489→   489→  const piperSrc = read('../../src/main/voice/local-piper-provider.ts');
+   490→   490→  assert('whisper provider has no fetch()', !whisperSrc.includes('fetch('));
+   491→   491→  assert('piper provider has no fetch()', !piperSrc.includes('fetch('));
+   492→   492→  assert('whisper provider has no net.request', !whisperSrc.includes('net.request'));
+   493→   493→  assert('piper provider has no net.request', !piperSrc.includes('net.request'));
+   494→   494→  assert('whisper provider is local', whisperSrc.includes('readonly isLocal = true'));
+   495→   495→  assert('piper provider is local', piperSrc.includes('readonly isLocal = true'));
+   496→   496→
+   497→   497→  // Conversation source: no upload, no permanent recording
+   498→   498→  assert('conversation source mentions no upload', convSrc.includes('upload') || convSrc.includes('NEVER'));
+   499→   499→  assert('conversation source no MediaRecorder', !convSrc.includes('MediaRecorder'));
+   500→   500→  assert('conversation source no XMLHttpRequest', !convSrc.includes('XMLHttpRequest'));
+   501→   501→  assert('conversation source no WebSocket', !convSrc.includes('WebSocket'));
+   502→   502→
+   503→   503→  // Permission voice confirmation: an explicit spoken denial ("نه" = no)
+   504→   504→  // must NOT approve the sensitive action. This proves NEX never
+   505→   505→  // auto-approves — the user must speak the exact confirmation phrase.
+   506→   506→  _resetNexVoiceConversation();
+   507→   507→  const convSec = new NexVoiceConversation();
+   508→   508→  await convSec.start();
+   509→   509→  convSec.setPermissionVoiceCapture(async () => 'نه'); // spoken "no"
+   510→   510→  const gateSec = new PermissionGate();
+   511→   511→  gateSec.setCallbacks({ onCaptureVoiceInput: async () => convSec.captureVoiceConfirmation() });
+   512→   512→  const secP = gateSec.requestPermission({ type: 'install-model', description: 'test' });
+   513→   513→  setTimeout(() => gateSec.respondViaVoice(), 80);
+   514→   514→  const secR = await secP;
+   515→   515→  assert('spoken "نه" does not approve sensitive action', secR.approved === false);
+   516→   516→
+   517→   517→  // ═══════════════════════════════════════════════════════════════════════
+   518→   518→  // 12) Phase 38-55 Preserved
+   519→   519→  // ═══════════════════════════════════════════════════════════════════════
+   520→   520→  console.log('\n12) Phase 38-55 Preserved:');
+   521→   521→  assert('Phase 41 local-voice-engine exists', fs.existsSync(path.join(__dirname, '../../src/main/voice/local-voice-engine.ts')));
+   522→   522→  assert('Phase 41 whisper provider exists', fs.existsSync(path.join(__dirname, '../../src/main/voice/local-whisper-provider.ts')));
+   523→   523→  assert('Phase 41 piper provider exists', fs.existsSync(path.join(__dirname, '../../src/main/voice/local-piper-provider.ts')));
+   524→   524→  assert('Phase 43 permission-gate exists', fs.existsSync(path.join(__dirname, '../../src/main/update/permission-gate.ts')));
+   525→   525→  assert('Phase 43 audit-logger exists', fs.existsSync(path.join(__dirname, '../../src/main/update/audit-logger.ts')));
+   526→   526→  assert('Phase 51 nex-brain-controller exists', fs.existsSync(path.join(__dirname, '../../src/main/ai/nex-brain-controller.ts')));
+   527→   527→  assert('Phase 52 nex-personality-engine exists', fs.existsSync(path.join(__dirname, '../../src/main/ai/nex-personality-engine.ts')));
+   528→   528→  assert('Phase 52 long-term-memory-system exists', fs.existsSync(path.join(__dirname, '../../src/main/ai/long-term-memory-system.ts')));
+   529→   529→  assert('Phase 53 nex-expert-system exists', fs.existsSync(path.join(__dirname, '../../src/main/ai/nex-expert-system.ts')));
+   530→   530→  assert('Phase 54 nex-agent-executor exists', fs.existsSync(path.join(__dirname, '../../src/main/ai/nex-agent-executor.ts')));
+   531→   531→  assert('Phase 55 expert-knowledge-engine exists', fs.existsSync(path.join(__dirname, '../../src/main/knowledge/expert-knowledge-engine.ts')));
+   532→   532→  assert('Phase 55 knowledge-pack-manager exists', fs.existsSync(path.join(__dirname, '../../src/main/knowledge/knowledge-pack-manager.ts')));
+   533→   533→
+   534→   534→  // Existing LocalVoiceEngine still works
+   535→   535→  const { LocalVoiceEngine } = await import('../../src/main/voice/local-voice-engine');
+   536→   536→  const engine = new LocalVoiceEngine();
+   537→   537→  assert('LocalVoiceEngine still starts idle', engine.currentState === 'idle');
+   538→   538→  assert('LocalVoiceEngine has 5 states', ['idle', 'listening', 'thinking', 'speaking', 'error', 'offline'].includes(engine.currentState));
+   539→   539→
+   540→   540→  // Personality engine still has 4 profiles
+   541→   541→  const { getNexPersonalityEngine: getPE } = await import('../../src/main/ai/nex-personality-engine');
+   542→   542→  const profiles = getPE().getAllPersonalities();
+   543→   543→  assert('personality engine still has 4 profiles', profiles.length === 4);
+   544→   544→
+   545→   545→  // ═══════════════════════════════════════════════════════════════════════
+   546→   546→  // Summary
+   547→   547→  // ═══════════════════════════════════════════════════════════════════════
+   548→   548→  console.log('\n══════════════════════════════════════');
+   549→   549→  console.log(`PHASE 56 VOICE CONVERSATION RESULT: ${pass} passed, ${fail} failed`);
+   550→   550→  if (fail > 0) {
+   551→   551→    console.log('FAILURES:', failures.join(' | '));
+   552→   552→    process.exit(1);
+   553→   553→  }
+   554→   554→  console.log('PHASE 56 ADVANCED VOICE CONVERSATION SYSTEM: ALL PASS ✅');
+   555→   555→}
+   556→   556→
+   557→   557→main().catch((err) => {
+   558→   558→  console.error('FATAL:', err);
+   559→   559→  process.exit(1);
+   560→   560→});
+   561→   561→

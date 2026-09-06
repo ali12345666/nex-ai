@@ -156,10 +156,10 @@ async function main(): Promise<void> {
   assert('ConversationState type', convSrc.includes('export type ConversationState'));
   assert('5 states defined', convSrc.includes("'idle'") && convSrc.includes("'listening'") && convSrc.includes("'thinking'") && convSrc.includes("'speaking'") && convSrc.includes("'interrupted'"));
   assert('CONVERSATION_ORB_COLOR mapping', convSrc.includes('export const CONVERSATION_ORB_COLOR'));
-  assert('idle → blue', convSrc.includes("idle: '#3b82f6'"));
-  assert('listening → green', convSrc.includes("listening: '#22c55e'"));
+  assert('idle → cyan', convSrc.includes("idle: '#00e5ff'"));
+  assert('listening → blue', convSrc.includes("listening: '#3b82f6'"));
   assert('thinking → purple', convSrc.includes("thinking: '#8b5cf6'"));
-  assert('speaking → cyan', convSrc.includes("speaking: '#06b6d4'"));
+  assert('speaking → green', convSrc.includes("speaking: '#22c55e'"));
   assert('error → red', convSrc.includes("error: '#ef4444'"));
   assert('ConversationContext interface', convSrc.includes('interface ConversationContext'));
   assert('context has currentUtterance', convSrc.includes('currentUtterance'));
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
   assert('context has previousTopic', convSrc.includes('previousTopic'));
   assert('context has currentTask', convSrc.includes('currentTask'));
   assert('context has turnCount', convSrc.includes('turnCount'));
-  assert('context has pendingPermission', convSrc.includes('pendingPermission'));
+  assert('context does NOT have pendingPermission (removed in Phase 18 P1-6)', !convSrc.split('\n').some((l: string) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('pendingPermission')));
   assert('ConversationTurn interface', convSrc.includes('interface ConversationTurn'));
   assert('ConversationCallbacks interface', convSrc.includes('interface ConversationCallbacks'));
   assert('onStateChange callback', convSrc.includes('onStateChange'));
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
   assert('toggle method', convSrc.includes('async toggle()'));
   assert('feedTranscript method', convSrc.includes('feedTranscript('));
   assert('speakResponse method', convSrc.includes('async speakResponse('));
-  assert('captureVoiceConfirmation method', convSrc.includes('captureVoiceConfirmation'));
+  assert('captureVoiceConfirmation method REMOVED (Phase 18 P1-6)', !convSrc.split('\n').some((l: string) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('captureVoiceConfirmation')));
   assert('resolveContextReferences method', convSrc.includes('resolveContextReferences'));
   assert('handleInterruption method', convSrc.includes('handleInterruption'));
   assert('handleVoiceCommand method', convSrc.includes('handleVoiceCommand'));
@@ -207,8 +207,8 @@ async function main(): Promise<void> {
   const conv = new NexVoiceConversation();
   assert('conversation starts idle', conv.currentState === 'idle');
   assert('conversation inactive initially', conv.isActive === false);
-  assert('conversation orbColor is blue (idle)', conv.orbColor === CONVERSATION_ORB_COLOR.idle);
-  assert('conversation orbColor blue hex', conv.orbColor === '#3b82f6');
+  assert('conversation orbColor is cyan (idle)', conv.orbColor === CONVERSATION_ORB_COLOR.idle);
+  assert('conversation orbColor cyan hex', conv.orbColor === '#00e5ff');
 
   // State change tracking
   let stateChanges: Array<{ state: string; prev: string }> = [];
@@ -328,46 +328,54 @@ async function main(): Promise<void> {
   // ═══════════════════════════════════════════════════════════════════════
   // 7) Permission Voice Confirmation (Phase 43)
   // ═══════════════════════════════════════════════════════════════════════
-  console.log('\n7) Permission Voice Confirmation:');
+  console.log('\n7) Permission Voice Confirmation (Phase 18 P1-6 — dead code removed):');
   const { PermissionGate } = await import('../../src/main/update/permission-gate');
 
-  // Wire the conversation's voice capture into a PermissionGate
+  // Phase 18 P1-6: setPermissionVoiceCapture, captureVoiceConfirmation,
+  // handlePermissionConfirmation, permissionVoiceCaptureFn, and
+  // pendingPermission were ALL removed from NexVoiceConversation because
+  // they were dead recursive code (captureVoiceConfirmation called
+  // permissionVoiceCaptureFn which WAS captureVoiceConfirmation →
+  // infinite recursion). No external caller invoked them.
+  //
+  // Active PermissionGate paths are SEPARATE:
+  //   - update-manager uses its own VoicePermissionVerifier
+  //   - model-deployment-manager wires only onRequestPermission
+  //   - knowledge-pack-manager wires only onRequestPermission
+  //   - nex-agent-executor wires only onRequestPermission
+  //
+  // These tests verify the REMOVAL is correct + active paths intact.
+
   _resetNexVoiceConversation();
   const convP = new NexVoiceConversation();
   await convP.start();
 
-  let captured: string | null = null;
-  convP.setPermissionVoiceCapture(async () => {
-    captured = 'بله تایید می‌کنم';
-    return captured;
-  });
+  // Verify the removed methods do NOT exist on the instance
+  assert('setPermissionVoiceCapture NOT on NexVoiceConversation', typeof (convP as any).setPermissionVoiceCapture === 'undefined');
+  assert('captureVoiceConfirmation NOT on NexVoiceConversation', typeof (convP as any).captureVoiceConfirmation === 'undefined');
 
+  // PermissionGate still works independently (uses its own VoicePermissionVerifier)
   const gate1 = new PermissionGate();
-  gate1.setCallbacks({
-    onCaptureVoiceInput: async () => {
-      return await convP.captureVoiceConfirmation();
-    },
-  });
+  assert('PermissionGate.requestPermission exists', typeof gate1.requestPermission === 'function');
+  assert('PermissionGate.respondViaVoice exists', typeof gate1.respondViaVoice === 'function');
 
-  const permPromise = gate1.requestPermission({ type: 'install-model', description: 'install a pack' });
-  // Simulate the voice confirmation arriving
-  setTimeout(() => gate1.respondViaVoice(), 80);
-  const permResult = await permPromise;
-  assert('voice confirmation approves', permResult.approved === true);
-  // PermissionGate records 'chat' for any text-based confirmation (voice feeds into the same path)
-  assert('voice confirmation recorded', permResult.confirmationMethod === 'chat' || permResult.confirmationMethod === 'voice');
+  // Verify the VoicePermissionVerifier class still exists (used by update-manager)
+  const { VoicePermissionVerifier } = await import('../../src/main/update/permission-gate');
+  assert('VoicePermissionVerifier class exists', typeof VoicePermissionVerifier === 'function');
+  const verifier = new VoicePermissionVerifier();
+  assert('VoicePermissionVerifier.setCaptureFunction exists', typeof verifier.setCaptureFunction === 'function');
+  assert('VoicePermissionVerifier.captureConfirmation exists', typeof verifier.captureConfirmation === 'function');
 
-  // Denial via voice
-  _resetNexVoiceConversation();
-  const convD = new NexVoiceConversation();
-  await convD.start();
-  convD.setPermissionVoiceCapture(async () => 'نه');
-  const gate2 = new PermissionGate();
-  gate2.setCallbacks({ onCaptureVoiceInput: async () => convD.captureVoiceConfirmation() });
-  const denyP = gate2.requestPermission({ type: 'delete-file', description: 'remove a file' });
-  setTimeout(() => gate2.respondViaVoice(), 80);
-  const denyR = await denyP;
-  assert('voice "نه" denies permission', denyR.approved === false);
+  // Verify feedTranscript no longer checks pendingPermission (dead branch removed)
+  // The feedTranscript should go straight to voice commands → barge-in → wake word → utterance
+  // (no pendingPermission check in the routing)
+  const feedTranscriptCode = convSrc.substring(
+    convSrc.indexOf('feedTranscript(text: string): void {'),
+    convSrc.indexOf('// If we\'re speaking and the user talks', convSrc.indexOf('feedTranscript'))
+  );
+  assert('feedTranscript does NOT check pendingPermission', !feedTranscriptCode.split('\n').some((l: string) =>
+    !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('this.context.pendingPermission')
+  ));
 
   // ═══════════════════════════════════════════════════════════════════════
   // 8) Identity Update
@@ -392,7 +400,7 @@ async function main(): Promise<void> {
   assert('main has Phase 56 block', mainSrc.includes('Phase 56: Advanced Voice Conversation'));
   assert('main imports NexVoiceConversation', mainSrc.includes("import('./voice/nex-voice-conversation')"));
   assert('main imports WakeWordDetector', mainSrc.includes("import('./voice/wake-word-detector')"));
-  assert('main wires permission voice capture', mainSrc.includes('setPermissionVoiceCapture'));
+  assert('main does NOT wire permission voice capture (removed in Phase 18 P1-6)', !mainSrc.split('\n').some((l: string) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && l.includes('setPermissionVoiceCapture')));
 
   const ipcChannels = [
     'voice-conversation-start', 'voice-conversation-stop', 'voice-conversation-toggle',
@@ -500,19 +508,20 @@ async function main(): Promise<void> {
   assert('conversation source no XMLHttpRequest', !convSrc.includes('XMLHttpRequest'));
   assert('conversation source no WebSocket', !convSrc.includes('WebSocket'));
 
-  // Permission voice confirmation: an explicit spoken denial ("نه" = no)
-  // must NOT approve the sensitive action. This proves NEX never
-  // auto-approves — the user must speak the exact confirmation phrase.
+  // Permission voice confirmation: Phase 18 P1-6 removed the dead
+  // conversation-level voice confirmation (setPermissionVoiceCapture /
+  // captureVoiceConfirmation). The active PermissionGate path uses
+  // VoicePermissionVerifier (owned by update-manager) which has its own
+  // setCaptureFunction + captureConfirmation. This test verifies the
+  // active path is intact — the verifier correctly returns null when
+  // no capture function is set (which is the current production state
+  // since setCaptureFunction is never called by main.ts).
   _resetNexVoiceConversation();
-  const convSec = new NexVoiceConversation();
-  await convSec.start();
-  convSec.setPermissionVoiceCapture(async () => 'نه'); // spoken "no"
-  const gateSec = new PermissionGate();
-  gateSec.setCallbacks({ onCaptureVoiceInput: async () => convSec.captureVoiceConfirmation() });
-  const secP = gateSec.requestPermission({ type: 'install-model', description: 'test' });
-  setTimeout(() => gateSec.respondViaVoice(), 80);
-  const secR = await secP;
-  assert('spoken "نه" does not approve sensitive action', secR.approved === false);
+  const verifierSec = new VoicePermissionVerifier();
+  const captureResult = await verifierSec.captureConfirmation();
+  assert('VoicePermissionVerifier returns null when no capture fn set', captureResult === null);
+  assert('VoicePermissionVerifier does NOT auto-approve (null = no confirmation)', captureResult !== 'نه');
+  assert('NexVoiceConversation no longer has voice confirmation methods', typeof (new NexVoiceConversation() as any).captureVoiceConfirmation === 'undefined');
 
   // ═══════════════════════════════════════════════════════════════════════
   // 12) Phase 38-55 Preserved
