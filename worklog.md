@@ -6447,3 +6447,23 @@ Stage Summary:
 - Regression: Phase 6-16 = 1131/1131, Phase 116 = 326/326. All green.
 - No commits made. No pushes made. Awaiting user approval.
 - Remaining items NOT fixed (deferred to future phases): BUG-21 (barge-in half-wired — would need a deeper voice-service.ts refactor), AUDIO-NO-MUTE-TTS (renderer VAD triggers on TTS bleed — needs audio level gating during TTS), BUG-37 (safeOrbTransition never called — would need wiring into VoiceController.setCondition + voice-service.recomputeState), GAP-7 (voice-conversation-state IPC overloaded by conversation AND engine — would need splitting into two channels), 9 routing decision points consolidation (P2-1 — would require unifying 3 model-router modules), 3 parallel memory systems (P2 11-1 — would require consolidating semantic-memory-store + long-term-memory-system + memory/index.ts), contextSize hardcoded in 8+ places (P0 10-1 — would require a getEffectiveContextSize helper + propagation; deferred because changing the planner's contextSize from 4096 to model.contextSize risks breaking the chat↔agent reuse idempotency).
+
+
+---
+Task ID: PHASE17-COMMIT-PUSH
+Agent: main (Z.ai Code orchestrator)
+Task: Commit Phase 17 on main with user-provided commit message, push to origin.
+
+Work Log:
+- Discovered working tree was already auto-committed as db59271 with placeholder UUID message
+- Amended commit to use the user's exact requested message: "fix(runtime): Phase 17 — Runtime & Core Integration"
+- New commit SHA: 105737d
+- Pushed to origin/main successfully: 8e5ff6d..105737d main -> main
+- Verified local main HEAD and origin/main HEAD both at 105737d
+- Working tree clean after push
+
+Stage Summary:
+- Commit: 105737d on main
+- 24 files changed, 3701 insertions(+), 8389 deletions(-)
+- Pushed to https://github.com/ali12345666/nex-ai.git main branch
+- Phase 17 Runtime & Core Integration complete and committed
