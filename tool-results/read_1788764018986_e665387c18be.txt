@@ -1,0 +1,2002 @@
+     1→/**
+     2→ * NEX AI — Agent Core
+     3→ *
+     4→ * The main agent loop. Executes a planned task step-by-step, calling tools,
+     5→ * observing results, verifying success, and retrying on failure.
+     6→ *
+     7→ * Flow per step:
+     8→ *   1. Get next pending step from plan
+     9→ *   2. If step has a tool:
+    10→ *      a. Prepare tool call (validate params)
+    11→ *      b. Request permission from PermissionManager
+    12→ *      c. Execute tool (with cancellation token)
+    13→ *      d. Observe result (extract signals, modified files)
+    14→ *      e. Verify result (if step has verification criteria)
+    15→ *   3. If step modifies files (write/edit):
+    16→ *      a. Compute before/after diff
+    17→ *      b. Propose change (DiffManager)
+    18→ *      c. Wait for user approval
+    19→ *      d. Apply or reject
+    20→ *   4. On failure:
+    21→ *      a. Classify error
+    22→ *      b. Retry (if retries remaining)
+    23→ *      c. Or mark task as failed
+    24→ *   5. Repeat until plan complete or limit hit
+    25→ *
+    26→ * The agent uses AIRuntime (NOT LlamaCppRuntime directly), so it works with
+    27→ * any future AI runtime (ONNX, MLC, etc.) without modification.
+    28→ *
+    29→ * The agent is LOCAL-FIRST. It does NOT require any external API.
+    30→ */
+    31→
+    32→import * as crypto from 'crypto';
+    33→import type { AIRuntime, ChatMessage } from '../ai/runtime';
+    34→import type { LocalModelInfo } from '../ai/model-registry';
+    35→import {
+    36→  executeToolWithPermission,
+    37→  listToolDefinitions,
+    38→  getToolSchemasForLLM,
+    39→} from '../ai/tool-registry';
+    40→import {
+    41→  requestPermissionAndWait,
+    42→  setPermissionRequestHandler,
+    43→  type PermissionContext,
+    44→} from '../permissions';
+    45→import { selectChatModel, selectCodingModel } from './model-selector';
+    46→// Phase 8 / P8-B: multi-backend routing (local GGUF vs online provider).
+    47→// NOTE: model-router is provider-blind — online details are injected.
+    48→import { routeModel, estimateComplexity, type OnlineEnvironment } from './model-router';
+    49→// Phase 9 / P9-S4: knowledge retrieval PORT (injected; agent/ never
+    50→// imports the knowledge/ subsystem directly — architecture rule)
+    51→import type { KnowledgePort, KnowledgeHit } from './knowledge-port';
+    52→import { hitsToContextItems } from './knowledge-port';
+    53→import { generatePlan } from './planner';
+    54→// Phase 8 / P8-E-1: throttled token streaming (pure module, injected emit)
+    55→import { createTokenStreamer } from './stream-emit';
+    56→import { redactSecrets } from './logger';
+    57→import { prepareToolCall } from './tool-selector';
+    58→import { verifyToolResult, verifyStepOutcome, verifyTaskCompletion } from './verification';
+    59→// Phase 38: ReAct closed-loop — re-planner that feeds observations back to the LLM
+    60→import { rePlanAfterObservation, shouldInvokeRePlanner } from './react-loop';
+    61→// Phase 14: trust levels + classified retries
+    62→import { assessTrust, corroborate, decideRetry, sleep } from './trust-retry';
+    63→// Phase 7: LLM Error Recovery — 10-class classifier + 5-action recovery engine
+    64→import { classifyError } from './error-classifier';
+    65→import {
+    66→  decideRecovery,
+    67→  type RecoveryAction,
+    68→  type RecoveryContext,
+    69→  type RecoveryDecision,
+    70→} from './recovery-engine';
+    71→import { buildContext } from './context-manager';
+    72→import { proposeChange, acceptChange, rejectChange, listPendingChanges } from './diff-manager';
+    73→import { AgentLogger, emitEvent } from './logger';
+    74→import { transitionTaskStatus, recoverInterruptedTask, isTerminalStatus } from './state-machine';
+    75→import {
+    76→  createCancellationToken,
+    77→  DEFAULT_AGENT_LIMITS,
+    78→  type AgentTask,
+    79→  type AgentStep,
+    80→  type AgentEvent,
+    81→  type AgentEventListener,
+    82→  type AgentLimits,
+    83→  type CancellationToken,
+    84→  type Observation,
+    85→  type ToolCallRecord,
+    86→  type AgentError,
+    87→  type PermissionGrantRecord,
+    88→  type VerificationResult,
+    89→  type AgentTaskStatus,
+    90→  type ReActDecision,
+    91→} from './types';
+    92→import * as fs from 'fs';
+    93→
+    94→// ─── Agent Registry ─────────────────────────────────────────────────────────
+    95→
+    96→const _activeTasks = new Map<string, AgentTask>();
+    97→const _cancellationTokens = new Map<string, CancellationToken>();
+    98→const _eventListeners = new Set<AgentEventListener>();
+    99→
+   100→export function onAgentEvent(listener: AgentEventListener): () => void {
+   101→  _eventListeners.add(listener);
+   102→  return () => _eventListeners.delete(listener);
+   103→}
+   104→
+   105→function emit(event: Omit<AgentEvent, 'timestamp'>): void {
+   106→  emitEvent(event);
+   107→  // Also fire local listeners (in addition to logger's global ones)
+   108→  const fullEvent: AgentEvent = { ...event, timestamp: Date.now() };
+   109→  for (const listener of _eventListeners) {
+   110→    try { listener(fullEvent); } catch {}
+   111→  }
+   112→}
+   113→
+   114→// ─── Task Creation ──────────────────────────────────────────────────────────
+   115→
+   116→export interface CreateTaskRequest {
+   117→  userRequest: string;
+   118→  intent?: string;
+   119→  projectPath?: string;
+   120→  activeFile?: string;
+   121→  recentConversation?: ChatMessage[];
+   122→  limits?: Partial<AgentLimits>;
+   123→  // Force a specific model (e.g. for testing)
+   124→  modelId?: string;
+   125→  // Phase 8 / P8-B: backend selection. 'auto' routes by complexity
+   126→  // (complex coding → online GLM-class model, simple → local GGUF).
+   127→  backend?: 'auto' | 'local' | 'online';
+   128→  /** Injected by main.ts wiring from settings+secrets. NEVER imported here. */
+   129→  onlineEnvironment?: OnlineEnvironment;
+   130→  /** Phase 9 / P9-S4: injected knowledge retrieval port (project RAG). */
+   131→  knowledgePort?: KnowledgePort;
+   132→  /** Phase 9: how many knowledge chunks to inject (default 3). */
+   133→  knowledgeLimit?: number;
+   134→  /**
+   135→   * Phase 9 / P9-S5: opaque extras merged into every ToolContext.metadata
+   136→   * by the composition root (e.g. { knowledgeService }) — keeps agent core
+   137→   * ignorant of concrete services (DI at the wiring layer).
+   138→   */
+   139→  toolContextExtras?: Record<string, unknown>;
+   140→  /** Phase 8: Context Propagation — chat conversation ID (for correlation). */
+   141→  conversationId?: string;
+   142→  /** Phase 8: Context Propagation — UI session ID (for permission scope). */
+   143→  sessionId?: string;
+   144→  /** Phase 8: Context Propagation — detected language (en/fa/...) for i18n-aware prompts. */
+   145→  language?: string;
+   146→}
+   147→
+   148→/**
+   149→ * Create a new agent task. Does NOT execute it — call runTask() to start.
+   150→ */
+   151→export async function createTask(request: CreateTaskRequest): Promise<AgentTask> {
+   152→  const taskId = crypto.randomUUID();
+   153→  const limits = { ...DEFAULT_AGENT_LIMITS, ...request.limits };
+   154→
+   155→  // Pre-load model so we know it's available
+   156→  let model: LocalModelInfo | null = null;
+   157→  let backend: 'local' | 'online' = 'local';
+   158→  let onlineModelName: string | undefined;
+   159→  let routingReason: string | undefined; // Phase 8 / P8-E-2: surfaced in task_created event
+   160→
+   161→  if (request.modelId) {
+   162→    const { getModel } = await import('../ai/model-registry');
+   163→    model = getModel(request.modelId);
+   164→    routingReason = `Explicit model: ${model?.name || request.modelId}`;
+   165→  } else {
+   166→    // Phase 8 / P8-B: route by complexity through the provider-blind router.
+   167→    const onlineEnv: OnlineEnvironment = request.onlineEnvironment || { available: false };
+   168→    const routing = routeModel(
+   169→      {
+   170→        intent: request.intent,
+   171→        textLength: request.userRequest.length,
+   172→      },
+   173→      onlineEnv,
+   174→      undefined,
+   175→      { preference: request.backend === 'auto' || !request.backend ? 'auto' : `${request.backend}-first` }
+   176→    );
+   177→    backend = routing.backend;
+   178→    model = routing.localModel;
+   179→    onlineModelName = routing.onlineModel?.name;
+   180→    routingReason = routing.reason;
+   181→    AgentLogger.info(`Routing decision: ${routing.reason}`, { taskId });
+   182→  }
+   183→
+   184→  if (!model && backend === 'local') {
+   185→    throw new Error('No local model available. Add a .gguf file in Models panel.');
+   186→  }
+   187→  if (backend === 'online' && !onlineModelName) {
+   188→    throw new Error('Online backend requested but no online provider is configured. Add an API key in Settings > Online AI.');
+   189→  }
+   190→
+   191→  const task: AgentTask = {
+   192→    id: taskId,
+   193→    userRequest: request.userRequest,
+   194→    status: 'pending',
+   195→    intent: request.intent,
+   196→    backend,
+   197→    onlineModelName,
+   198→    plan: [],
+   199→    currentStepIndex: 0,
+   200→    context: {
+   201→      projectPath: request.projectPath,
+   202→      activeFile: request.activeFile,
+   203→      relevantFiles: [],
+   204→      relevantMemory: [],
+   205→      relevantKnowledge: [],
+   206→      recentConversation: request.recentConversation || [],
+   207→      maxContextTokens: (backend === 'online' ? 32768 : model?.contextSize) || 2048,
+   208→      estimatedTokensUsed: 0,
+   209→    },
+   210→    toolCalls: [],
+   211→    observations: [],
+   212→    errors: [],
+   213→    verification: [],
+   214→    permissions: [],
+   215→    maxSteps: limits.maxSteps,
+   216→    maxToolCalls: limits.maxToolCalls,
+   217→    maxRetries: limits.maxRetries,
+   218→    maxExecutionTimeMs: limits.maxExecutionTimeMs,
+   219→    createdAt: Date.now(),
+   220→    cancelled: false,
+   221→    // Phase 9 / P9-S5: wiring-layer services for tool contexts (opaque)
+   222→    toolContextExtras: request.toolContextExtras,
+   223→    // Phase 8: Context Propagation — optional correlation + i18n fields.
+   224→    // All additive: undefined if the caller doesn't provide them.
+   225→    conversationId: request.conversationId,
+   226→    sessionId: request.sessionId,
+   227→    language: request.language,
+   228→  };
+   229→
+   230→  _activeTasks.set(taskId, task);
+   231→  const token = createCancellationToken();
+   232→  _cancellationTokens.set(taskId, token);
+   233→
+   234→  // ── Phase 9 / P9-S4: knowledge retrieval (injected port, optional) ──
+   235→  // Fills task.context.relevantKnowledge BEFORE planning so the planner's
+   236→  // context includes cited, injection-framed document excerpts.
+   237→  if (request.knowledgePort?.available?.(request.projectPath)) {
+   238→    try {
+   239→      const hits: KnowledgeHit[] = await request.knowledgePort.retrieve(
+   240→        request.userRequest,
+   241→        request.projectPath,
+   242→        request.knowledgeLimit ?? 3
+   243→      );
+   244→      task.context.relevantKnowledge = hitsToContextItems(hits);
+   245→      if (hits.length > 0) {
+   246→        emit({
+   247→          type: 'log',
+   248→          taskId,
+   249→          message: `Knowledge: ${hits.length} chunks retrieved (${hits.map((h) => h.documentTitle).slice(0, 3).join(', ')})`,
+   250→          data: { knowledgeHits: hits.map((h) => ({ doc: h.documentTitle, score: Number(h.score.toFixed(3)), source: h.source, startLine: h.startLine })) },
+   251→        });
+   252→      }
+   253→    } catch (err: any) {
+   254→      // Knowledge retrieval is an ENRICHMENT — never fail the task on it.
+   255→      AgentLogger.warn(`Knowledge retrieval failed (continuing without): ${err.message}`, { taskId });
+   256→    }
+   257→  }
+   258→
+   259→  emit({
+   260→    type: 'task_created',
+   261→    taskId,
+   262→    message: `Task created: "${request.userRequest.slice(0, 80)}${request.userRequest.length > 80 ? '...' : ''}"`,
+   263→    data: {
+   264→      intent: request.intent,
+   265→      modelId: model?.id,
+   266→      modelName: backend === 'online' ? onlineModelName : model?.name,
+   267→      backend,
+   268→      // Phase 8 / P8-E-2: routing transparency for the UI badge tooltip
+   269→      routingReason,
+   270→    },
+   271→  });
+   272→
+   273→  return task;
+   274→}
+   275→
+   276→/**
+   277→ * Get the current state of a task.
+   278→ */
+   279→export function getTask(taskId: string): AgentTask | null {
+   280→  return _activeTasks.get(taskId) || null;
+   281→}
+   282→
+   283→/**
+   284→ * List all active tasks.
+   285→ */
+   286→export function listTasks(): AgentTask[] {
+   287→  return Array.from(_activeTasks.values());
+   288→}
+   289→
+   290→// ─── Task Execution ──────────────────────────────────────────────────────────
+   291→
+   292→/**
+   293→ * Run a task to completion. Returns the final task state.
+   294→ * Throws if cancelled or if a fatal error occurs.
+   295→ */
+   296→export async function runTask(taskId: string): Promise<AgentTask> {
+   297→  const task = _activeTasks.get(taskId);
+   298→  if (!task) throw new Error(`Task not found: ${taskId}`);
+   299→  const token = _cancellationTokens.get(taskId);
+   300→  if (!token) throw new Error(`No cancellation token for task: ${taskId}`);
+   301→
+   302→  const startTime = Date.now();
+   303→
+   304→  // Phase 111: Global task timeout — prevents agent from running forever
+   305→  // if the LLM hangs or tools never complete.
+   306→  // Default: 5 minutes (300,000 ms). Can be overridden via task.timeoutMs.
+   307→  const TASK_TIMEOUT_MS = task.timeoutMs || 300_000;
+   308→  let timeoutFired = false;
+   309→  const timeoutTimer = setTimeout(() => {
+   310→    if (!timeoutFired && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled' && !task.cancelled) {
+   311→      timeoutFired = true;
+   312→      console.warn(`[AGENT] Task ${taskId} timed out after ${TASK_TIMEOUT_MS}ms`);
+   313→      cancelTask(taskId, `Global timeout (${TASK_TIMEOUT_MS}ms)`);
+   314→    }
+   315→  }, TASK_TIMEOUT_MS);
+   316→  if (timeoutTimer.unref) timeoutTimer.unref();
+   317→
+   318→  try {
+   319→    // ── Phase 1: Planning ──
+   320→    token.throwIfCancelled();
+   321→    task.status = 'planning';
+   322→    emit({
+   323→      type: 'planning_started',
+   324→      taskId,
+   325→      message: `Planning task${task.backend === 'online' ? ` (model: ${task.onlineModelName})` : ''}...`,
+   326→    });
+   327→
+   328→    // Phase 8 / P8-B: pick the runtime by task backend — still 100% AIRuntime.
+   329→    const runtime = await getRuntime(task.backend);
+   330→    let model = await getModelForTask(task);
+   331→    if (!model) {
+   332→      throw new Error('No model available for task');
+   333→    }
+   334→
+   335→    // Ensure the model is loaded into the runtime before planning.
+   336→    // For the online backend `model` is a synthetic descriptor (no GGUF).
+   337→    //
+   338→    // Phase 116 FIX: The Agent was calling runtime.loadModel() with
+   339→    // contextSize=4096 even when the model was ALREADY loaded from the
+   340→    // chat path. The idempotency check in inference.ts SHOULD reuse the
+   341→    // existing model — but if the context was disposed (e.g. by a prior
+   342→    // chatStream that errored), the reload would fail with
+   343→    // "context size of 256 is too large for the available VRAM"
+   344→    // because the old model was still occupying VRAM but the context
+   345→    // was gone.
+   346→    //
+   347→    // FIX: Use the SAME context size as the chat path (4096) and the
+   348→    // SAME gpuLayers (-1, auto). This maximizes the chance the
+   349→    // idempotency check succeeds (same context size → reuse, no reload).
+   350→    // If the model IS disposed, inference.ts will reload it with proper
+   351→    // VRAM-aware fallback (auto-fit context + flash attention).
+   352→    //
+   353→    // CRITICAL: Do NOT set a different contextSize than the chat path.
+   354→    // If chat uses 4096 and agent uses 2048, the idempotency check
+   355→    // (4096 >= 2048) still passes → reuse. But if agent uses 8192,
+   356→    // (4096 >= 8192) fails → reload → VRAM error.
+   357→    const agentContextSize = 4096;  // MUST match chat path + preload
+   358→    const agentGpuLayers = -1;      // auto (same as chat path + preload)
+   359→
+   360→    console.log('[AGENT_MODEL]', {
+   361→      id: model.id,
+   362→      name: model.name,
+   363→      path: model.path,
+   364→      backend: task.backend,
+   365→      contextSize: agentContextSize,
+   366→      gpuLayers: agentGpuLayers,
+   367→      modelContextSize: model.contextSize,
+   368→    });
+   369→
+   370→    await runtime.loadModel(model, {
+   371→      contextSize: agentContextSize,
+   372→      threads: 4,
+   373→      gpuLayers: agentGpuLayers,
+   374→      temperature: 0.3,  // Low temperature for structured JSON output
+   375→      maxTokens: 2048,   // Enough for a detailed plan with multiple steps
+   376→    });
+   377→
+   378→    // Log VRAM state after model load for diagnosis
+   379→    try {
+   380→      const { getGpuBackend, getGpuRuntimeDiagnostics } = await import('../ai/inference');
+   381→      const backend = getGpuBackend();
+   382→      const diag = getGpuRuntimeDiagnostics();
+   383→      console.log('[AGENT_VRAM]', {
+   384→        gpuBackend: backend,
+   385→        vramBeforeModelLoad: diag?.vramBeforeModelLoad,
+   386→        vramAfterModelLoad: diag?.vramAfterModelLoad,
+   387→        llamaMemoryUsage: diag?.llamaMemoryUsage,
+   388→        supportsGpuOffloading: diag?.supportsGpuOffloading,
+   389→        gpuDeviceNames: diag?.gpuDeviceNames,
+   390→      });
+   391→    } catch { /* non-blocking */ }
+   392→
+   393→    const tools = listToolDefinitions();
+   394→
+   395→    // Phase 8 / P8-E-1: stream planner tokens to the renderer (throttled).
+   396→    // Content is model output — logged ASSEMBLED and REDACTED, never raw-key risk.
+   397→    const streamer = createTokenStreamer(taskId, undefined, 'planning',
+   398→      (payload) => {
+   399→        emit({
+   400→          type: 'agent_token',
+   401→          taskId,
+   402→          message: 'token',
+   403→          data: payload,
+   404→        });
+   405→      },
+   406→      {
+   407→        logAssembled: (redacted) => {
+   408→          AgentLogger.plan(`Plan stream (${redacted.length} chars)`, redacted.slice(0, 500), { taskId } as any);
+   409→        },
+   410→        redact: (s) => redactSecrets(s).redacted,
+   411→      }
+   412→    );
+   413→
+   414→    // ── Phase 40: Memory Retrieval BEFORE planning ──
+   415→    // Retrieve semantically relevant memories so the planner has context
+   416→    // about past experiences, user preferences, and project facts.
+   417→    let relevantMemories: Array<{ store: string; key: string; content: string; score: number; importance: number }> = [];
+   418→    try {
+   419→      const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+   420→      const engine = getMemoryRetrievalEngine();
+   421→      if (engine) {
+   422→        const memResult = await engine.retrieve({
+   423→          query: task.userRequest,
+   424→          projectId: task.context.projectPath,
+   425→          limit: 10,
+   426→        });
+   427→        relevantMemories = memResult.memories.map((m) => ({
+   428→          store: m.store,
+   429→          key: m.key,
+   430→          content: m.content,
+   431→          score: m.score,
+   432→          importance: m.importance,
+   433→        }));
+   434→        if (relevantMemories.length > 0) {
+   435→          emit({
+   436→            type: 'log',
+   437→            taskId,
+   438→            message: `Memory retrieval: ${relevantMemories.length} relevant memories found (semantic: ${memResult.usedSemantic}, scanned: ${memResult.totalScanned})`,
+   439→            data: { count: relevantMemories.length, usedSemantic: memResult.usedSemantic },
+   440→          });
+   441→        }
+   442→      }
+   443→    } catch (memErr: any) {
+   444→      AgentLogger.warn(`Memory retrieval failed (non-blocking): ${memErr.message}`, { taskId });
+   445→    }
+   446→
+   447→    const plan = await generatePlan(runtime, model, {
+   448→      userRequest: task.userRequest,
+   449→      intent: task.intent,
+   450→      tools,
+   451→      recentConversation: task.context.recentConversation,
+   452→      projectPath: task.context.projectPath,
+   453→      activeFile: task.context.activeFile,
+   454→      // Phase 9 / P9-S4: cited knowledge chunks (already injection-framed
+   455→      // by the context manager's UNTRUSTED-DATA layer)
+   456→      relevantKnowledge: task.context.relevantKnowledge,
+   457→      // Phase 40: semantically retrieved memories
+   458→      relevantMemories,
+   459→      onToken: (chunk) => streamer.push(chunk),
+   460→    });
+   461→    streamer.end();
+   462→
+   463→    task.plan = plan.steps;
+   464→    // Phase 8 / P8-E-2: track token usage for context budget display
+   465→    if (plan.usage?.tokensGenerated) {
+   466→      task.context.estimatedTokensUsed += plan.usage.tokensGenerated;
+   467→    }
+   468→    emit({
+   469→      type: 'planning_completed',
+   470→      taskId,
+   471→      message: `Plan generated: ${plan.steps.length} steps (confidence: ${plan.confidence.toFixed(2)})`,
+   472→      data: {
+   473→        stepCount: plan.steps.length,
+   474→        confidence: plan.confidence,
+   475→        reasoning: plan.reasoning,
+   476→        warnings: plan.warnings,
+   477→        // Phase 8 / P8-E-2: usage + backend/model visibility
+   478→        usage: plan.usage,
+   479→        backend: task.backend,
+   480→        model: task.backend === 'online' ? task.onlineModelName : model.name,
+   481→      },
+   482→    });
+   483→    if (plan.warnings.length > 0) {
+   484→      AgentLogger.warn(`Plan warnings: ${plan.warnings.join('; ')}`, { taskId });
+   485→    }
+   486→
+   487→    // ── Phase 2: Execute each step ──
+   488→    while (task.currentStepIndex < task.plan.length) {
+   489→      // Cancellation checkpoint 1: before starting each step
+   490→      token.throwIfCancelled();
+   491→      if (task.cancelled) {
+   492→        task.status = 'cancelled';
+   493→        task.completedAt = Date.now();
+   494→        emit({
+   495→          type: 'task_cancelled',
+   496→          taskId,
+   497→          message: `Task cancelled before step ${task.currentStepIndex + 1}`,
+   498→        });
+   499→        return task;
+   500→      }
+   501→
+   502→      // Check time limit
+   503→      if (Date.now() - startTime > task.maxExecutionTimeMs) {
+   504→        const error: AgentError = {
+   505→          id: `err-${Date.now()}`,
+   506→          type: 'timeout',
+   507→          message: `Task exceeded max execution time (${task.maxExecutionTimeMs}ms)`,
+   508→          timestamp: Date.now(),
+   509→        };
+   510→        task.errors.push(error);
+   511→        task.status = 'failed';
+   512→        emit({ type: 'task_failed', taskId, message: error.message, data: { error } });
+   513→        break;
+   514→      }
+   515→
+   516→      // Check step count limit
+   517→      if (task.currentStepIndex >= task.maxSteps) {
+   518→        const error: AgentError = {
+   519→          id: `err-${Date.now()}`,
+   520→          type: 'max_steps',
+   521→          message: `Task exceeded max steps (${task.maxSteps})`,
+   522→          timestamp: Date.now(),
+   523→        };
+   524→        task.errors.push(error);
+   525→        task.status = 'failed';
+   526→        emit({ type: 'task_failed', taskId, message: error.message, data: { error } });
+   527→        break;
+   528→      }
+   529→
+   530→      // Check tool call limit
+   531→      if (task.toolCalls.length >= task.maxToolCalls) {
+   532→        const error: AgentError = {
+   533→          id: `err-${Date.now()}`,
+   534→          type: 'max_tool_calls',
+   535→          message: `Task exceeded max tool calls (${task.maxToolCalls})`,
+   536→          timestamp: Date.now(),
+   537→        };
+   538→        task.errors.push(error);
+   539→        task.status = 'failed';
+   540→        emit({ type: 'task_failed', taskId, message: error.message, data: { error } });
+   541→        break;
+   542→      }
+   543→
+   544→      const step = task.plan[task.currentStepIndex];
+   545→      await executeStep(task, step, token, runtime, model);
+   546→      task.currentStepIndex++;
+   547→    }
+   548→
+   549→    // ── Phase 3: Finalize ──
+   550→    if (task.status !== 'failed' && task.cancelled === false) {
+   551→      // Phase 116: Don't mark as "completed" if 0 tool calls were executed.
+   552→      // If the user requested an operational task (create file, run command, etc.)
+   553→      // but the agent executed 0 tools, that's a FAILURE — not a success.
+   554→      // Previously this showed "✅ Task completed. 0 tool call(s)" which was
+   555→      // misleading. Now we emit a proper failure with the real reason.
+   556→      //
+   557→      // CRITICAL: We check task.toolCalls.length === 0 unconditionally —
+   558→      // not just when firstStep.toolName exists. The planner's fallback plan
+   559→      // creates a step WITHOUT a toolName, so the old check (which required
+   560→      // firstStep.toolName) would skip this failure path — letting the task
+   561→      // falsely succeed with 0 tools.
+   562→      if (task.toolCalls.length === 0) {
+   563→        task.status = 'failed';
+   564→        task.completedAt = Date.now();
+   565→        const errorMsg = 'Agent executed 0 tool calls. The planner may have produced an invalid or empty response. Check [PLANNER_DEBUG] logs for the raw model output.';
+   566→        task.errors.push({
+   567→          id: `err-${Date.now()}`,
+   568→          type: 'invalid_state',
+   569→          message: errorMsg,
+   570→          timestamp: Date.now(),
+   571→        });
+   572→        emit({
+   573→          type: 'task_failed',
+   574→          taskId,
+   575→          message: errorMsg,
+   576→          data: { error: { message: errorMsg } },
+   577→        });
+   578→        emit({
+   579→          type: 'agent_token',
+   580→          taskId,
+   581→          message: 'Failure explanation',
+   582→          data: {
+   583→            content: `❌ Agent could not execute the requested operation.\n\nReason: ${errorMsg}\n\nThe planner may have produced an invalid response. Check the console logs for [PLANNER_DEBUG] entries to see what the model actually returned.`,
+   584→            phase: 'failure-explanation',
+   585→          },
+   586→        });
+   587→        return task;
+   588→      }
+   589→
+   590→      // ════════════════════════════════════════════════════════════════════════
+   591→      // Phase 9: Task Completion Gate (Level 5 verification)
+   592→      //
+   593→      // Before emitting task_completed, we run verifyTaskCompletion() which
+   594→      // checks:
+   595→      //   - All steps in terminal state (NOT pending/in_progress)
+   596→      //   - No failed steps (hard failures that weren't recovered via SKIP)
+   597→      //   - No unresolved errors (errors with recovered=false that are
+   598→      //     tool_error/permission_denied/invalid_state/timeout/max_steps/etc.)
+   599→      //   - At least one tool call executed (existing Phase 116 check)
+   600→      //
+   601→      // If the gate fails, we emit task_failed instead of task_completed.
+   602→      // This is the LAST line of defense against false-success: even if
+   603→      // every step reported success, if any step is still pending or has
+   604→      // unresolved errors, the task is NOT complete.
+   605→      // ════════════════════════════════════════════════════════════════════════
+   606→      const completionGate = verifyTaskCompletion(task);
+   607→      if (!completionGate.passed) {
+   608→        task.status = 'failed';
+   609→        task.completedAt = Date.now();
+   610→        const gateError: AgentError = {
+   611→          id: `err-gate-${Date.now()}`,
+   612→          type: 'invalid_state',
+   613→          message: `Task completion gate failed: ${completionGate.reason}`,
+   614→          timestamp: Date.now(),
+   615→          details: {
+   616→            unresolvedSteps: completionGate.unresolvedSteps.map((s) => s.index + 1),
+   617→            unresolvedErrors: completionGate.unresolvedErrors.map((e) => e.type),
+   618→          },
+   619→        };
+   620→        task.errors.push(gateError);
+   621→        emit({
+   622→          type: 'task_failed',
+   623→          taskId,
+   624→          message: `Task completion gate failed: ${completionGate.reason}`,
+   625→          data: {
+   626→            error: { message: gateError.message },
+   627→            unresolvedSteps: completionGate.unresolvedSteps.length,
+   628→            unresolvedErrors: completionGate.unresolvedErrors.length,
+   629→          },
+   630→        });
+   631→        AgentLogger.warn(`Task ${taskId} completion gate FAILED: ${completionGate.reason}`, { taskId });
+   632→        return task;
+   633→      }
+   634→
+   635→      task.status = 'completed';
+   636→      task.completedAt = Date.now();
+   637→
+   638→      // Phase 116: Generate a structured artifact summary so the user (and
+   639→      // subsequent turns) can reference the files/folders the agent created.
+   640→      // Previously, task_completed only emitted "✅ Task completed." — the
+   641→      // actual file paths were in task.observations/toolCalls but NEVER
+   642→      // reached the conversation history. So when the user asked "where is
+   643→      // it?" in the next turn, the model had no context and said "I don't
+   644→      // have access to files."
+   645→      //
+   646→      // Now we emit a final agent_token with a summary of all files/folders
+   647→      // created/modified, including their absolute paths. This becomes the
+   648→      // assistant message content — persisted in conversation history and
+   649→      // sent to the model in the next turn.
+   650→      const artifactSummary = buildArtifactSummary(task);
+   651→      if (artifactSummary) {
+   652→        emit({
+   653→          type: 'agent_token',
+   654→          taskId,
+   655→          message: 'Final artifact summary',
+   656→          data: { content: artifactSummary, phase: 'artifact-summary' },
+   657→        });
+   658→      }
+   659→
+   660→      emit({
+   661→        type: 'task_completed',
+   662→        taskId,
+   663→        message: `Task completed in ${task.completedAt - task.createdAt}ms (${task.toolCalls.length} tool calls, ${task.observations.length} observations)`,
+   664→        data: {
+   665→          durationMs: task.completedAt - task.createdAt,
+   666→          toolCalls: task.toolCalls.length,
+   667→          observations: task.observations.length,
+   668→          verifications: task.verification.length,
+   669→          // Phase 9: include completion gate confidence in the event
+   670→          completionConfidence: completionGate.confidence,
+   671→        },
+   672→      });
+   673→
+   674→    // ── Phase 13 / P13-A: memory consolidation (WRITE path) ──
+   675→    // Distills the finished task into the 5-store memory architecture.
+   676→    // Best-effort: failures are logged, never surfaced into the task result.
+   677→    try {
+   678→      const memory = await import('../memory');
+   679→      const { consolidateTaskMemory } = await import('./memory-consolidator');
+   680→      const filesTouched = [
+   681→        ...new Set(
+   682→          task.toolCalls
+   683→            .flatMap((tc) => (tc.afterState?.files || []).map((f) => f.path))
+   684→        ),
+   685→      ];
+   686→
+   687→      // Phase 107: Get the SemanticMemoryStore so memories are embedded
+   688→      // (not just stored as JSON). This is the critical fix that activates
+   689→      // semantic retrieval — previously .upsert() was never called.
+   690→      let semanticStore: any = null;
+   691→      try {
+   692→        const { getMemoryRetrievalEngine } = await import('../memory/memory-retrieval-engine');
+   693→        const engine = getMemoryRetrievalEngine();
+   694→        // Access the semantic store from the engine (it was injected at startup)
+   695→        semanticStore = (engine as any).semanticStore || null;
+   696→      } catch { /* non-blocking */ }
+   697→
+   698→      const consolidation = consolidateTaskMemory(
+   699→        {
+   700→          taskId: task.id,
+   701→          projectId: task.context.projectPath,
+   702→          userRequest: task.userRequest,
+   703→          intent: task.intent,
+   704→          success: true,
+   705→          stepsCompleted: task.plan.filter((st) => st.status === 'completed').length,
+   706→          toolsUsed: task.toolCalls.map((tc) => tc.toolName),
+   707→          filesTouched,
+   708→          lessonsLearned: extractLessonsFromTask(task),
+   709→          userCorrections: task.errors
+   710→            .filter((e) => e.type === 'permission_denied')
+   711→            .slice(0, 3)
+   712→            .map((e) => `User denied a ${e.type} action${e.stepId ? ` at step ${e.stepId}` : ''}: ${e.message.slice(0, 160)}`),
+   713→        },
+   714→        {
+   715→          set: (store, key, value, o) => memory.setMemory(store as any, key, value, o as any),
+   716→          get: (store, key, projectId) => memory.getMemory(store as any, key, projectId) as any,
+   717→          list: (store, projectId) => memory.listMemory(store as any, projectId) as any,
+   718→        },
+   719→        { semanticStore: semanticStore || undefined }
+   720→      );
+   721→      if (consolidation.written.length > 0 || consolidation.errors.length > 0) {
+   722→        AgentLogger.debug(`Memory consolidated: ${consolidation.written.length} written, ${consolidation.skippedDuplicates} dup, ${consolidation.errors.length} err`, { taskId });
+   723→      }
+   724→    } catch (memErr: any) {
+   725→      AgentLogger.warn(`Memory consolidation skipped: ${memErr.message}`, { taskId });
+   726→    }
+   727→    }
+   728→
+   729→    return task;
+   730→  } catch (err: any) {
+   731→    // Phase 17: also detect AbortError (from cancelTask → abortInference).
+   732→    // Previously only AGENT_CANCELLED + task.cancelled were caught here —
+   733→    // a raw AbortError from the planner/ReAct throw chain would fall
+   734→    // through to the generic task_failed branch, marking the task as
+   735→    // 'failed' instead of 'cancelled' even though the user clicked Stop.
+   736→    const isAbort = err.code === 'AGENT_CANCELLED' || err.name === 'AbortError' || err.code === 'ABORT_ERR' || /abort/i.test(err.message || '');
+   737→    if (isAbort || task.cancelled) {
+   738→      // Phase 111: Ensure single terminal state — don't override if already set
+   739→      if (task.status !== 'completed' && task.status !== 'failed') {
+   740→        task.status = timeoutFired ? 'failed' : 'cancelled';
+   741→        task.completedAt = Date.now();
+   742→      }
+   743→      emit({
+   744→        type: timeoutFired ? 'task_failed' : 'task_cancelled',
+   745→        taskId,
+   746→        message: timeoutFired
+   747→          ? `Task timed out: ${task.cancelReason || 'timeout'}`
+   748→          : `Task cancelled: ${task.cancelReason || 'no reason given'}`,
+   749→        data: { reason: task.cancelReason, timeout: timeoutFired },
+   750→      });
+   751→      return task;
+   752→    }
+   753→    const error: AgentError = {
+   754→      id: `err-${Date.now()}`,
+   755→      type: 'unknown',
+   756→      message: err.message,
+   757→      timestamp: Date.now(),
+   758→    };
+   759→    task.errors.push(error);
+   760→    // Phase 111: Ensure single terminal state
+   761→    if (task.status !== 'completed' && task.status !== 'cancelled') {
+   762→      task.status = 'failed';
+   763→      task.completedAt = Date.now();
+   764→    }
+   765→    emit({
+   766→      type: 'task_failed',
+   767→      taskId,
+   768→      message: `Task failed: ${err.message}`,
+   769→      data: { error },
+   770→    });
+   771→    AgentLogger.error(`Task ${taskId} failed: ${err.message}`, { taskId, data: { stack: err.stack } });
+   772→    return task;
+   773→  } finally {
+   774→    // Phase 111: Clear the timeout timer — no lingering timers
+   775→    clearTimeout(timeoutTimer);
+   776→    // Clean up the cancellation token (task is done)
+   777→    _cancellationTokens.delete(taskId);
+   778→    // Phase 115: Schedule auto-eviction of terminal tasks from _activeTasks.
+   779→    // Without this, completed/failed tasks (with full beforeState/afterState
+   780→    // file-content snapshots in toolCalls[]) accumulate forever → OOM.
+   781→    // We delay 5 minutes so the UI has time to fetch the final state.
+   782→    // The task's snapshots are NOT affected (they have their own 7-day retention).
+   783→    scheduleTaskEviction(taskId, 5 * 60 * 1000);
+   784→  }
+   785→}
+   786→
+   787→/**
+   788→ * Phase 115: Schedule eviction of a terminal task from _activeTasks.
+   789→ * Uses an unref'd timer so it doesn't keep the process alive.
+   790→ * Only evicts if the task is in a terminal state (safety check).
+   791→ */
+   792→function scheduleTaskEviction(taskId: string, delayMs: number): void {
+   793→  const timer = setTimeout(() => {
+   794→    const task = _activeTasks.get(taskId);
+   795→    if (task && (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled')) {
+   796→      _activeTasks.delete(taskId);
+   797→      // Note: snapshots are NOT deleted here — they have their own 7-day retention
+   798→      // via cleanupOldSnapshots() so Undo still works after the task is evicted.
+   799→    }
+   800→  }, delayMs);
+   801→  // Don't keep the process alive just for this timer
+   802→  if (timer.unref) timer.unref();
+   803→}
+   804→
+   805→// ─── Step Execution ─────────────────────────────────────────────────────────
+   806→
+   807→async function executeStep(
+   808→  task: AgentTask,
+   809→  step: AgentStep,
+   810→  token: CancellationToken,
+   811→  runtime: AIRuntime,
+   812→  model: LocalModelInfo
+   813→): Promise<void> {
+   814→  step.status = 'in_progress';
+   815→  step.startedAt = Date.now();
+   816→  emit({
+   817→    type: 'step_started',
+   818→    taskId: task.id,
+   819→    stepId: step.id,
+   820→    message: `Step ${step.index + 1}: ${step.description}`,
+   821→    // Phase 8 / P8-E-3: progress + backend visibility on every step
+   822→    data: {
+   823→      toolName: step.toolName,
+   824→      requiresPermission: step.requiresPermission,
+   825→      stepIndex: step.index,
+   826→      totalSteps: task.plan.length,
+   827→      backend: task.backend,
+   828→      model: task.backend === 'online' ? task.onlineModelName : model.name,
+   829→    },
+   830→  });
+   831→
+   832→  try {
+   833→    // Cancellation checkpoint 2: at the start of executeStep
+   834→    token.throwIfCancelled();
+   835→
+   836→    // If the step references a tool, execute it
+   837→    if (step.toolName) {
+   838→      const toolCall = prepareToolCall(step);
+   839→      if (!toolCall) {
+   840→        throw new Error(`Step references tool "${step.toolName}" but preparation failed`);
+   841→      }
+   842→      if (toolCall.validationErrors.length > 0) {
+   843→        throw new Error(`Tool "${step.toolName}" parameter validation failed: ${toolCall.validationErrors.join('; ')}`);
+   844→      }
+   845→
+   846→      // Cancellation checkpoint 3: before permission request
+   847→      token.throwIfCancelled();
+   848→
+   849→      // Permission check
+   850→      // Phase 8: Use task.sessionId (the UI session) if available, falling
+   851→      // back to task.id (self-reference). This lets session-level permission
+   852→      // grants (e.g. "Allow for this session") actually scope to the chat
+   853→      // session, not the per-task ID (which changes for every new task).
+   854→      const permContext: PermissionContext = {
+   855→        projectId: task.context.projectPath,
+   856→        sessionId: task.sessionId || task.id,
+   857→        targetPath: toolCall.params.path || toolCall.params.file || toolCall.params.cwd,
+   858→        metadata: toolCall.params,
+   859→      };
+   860→      const permissionLevel = toolCall.toolDefinition.permission;
+   861→      const description = `Tool "${step.toolName}" wants to perform "${permissionLevel}" operation\n\n${toolCall.toolDefinition.description}`;
+   862→      const detail = toolCall.toolDefinition.destructive
+   863→        ? `⚠️ DESTRUCTIVE OPERATION\n\n${toolCall.toolDefinition.description}\n\nParameters: ${JSON.stringify(toolCall.params, null, 2)}`
+   864→        : `${toolCall.toolDefinition.description}\n\nParameters: ${JSON.stringify(toolCall.params, null, 2)}`;
+   865→
+   866→      emit({
+   867→        type: 'permission_requested',
+   868→        taskId: task.id,
+   869→        stepId: step.id,
+   870→        message: `Requesting permission for "${step.toolName}" (${permissionLevel})`,
+   871→        data: { tool: step.toolName, permission: permissionLevel, params: toolCall.params },
+   872→      });
+   873→
+   874→      task.status = 'awaiting_permission';
+   875→      const permDecision = await requestPermissionAndWait(
+   876→        step.toolName,
+   877→        permissionLevel,
+   878→        description,
+   879→        permContext,
+   880→        detail,
+   881→      );
+   882→
+   883→      if (permDecision.decision !== 'allow') {
+   884→        const error: AgentError = {
+   885→          id: `err-${Date.now()}`,
+   886→          stepId: step.id,
+   887→          type: 'permission_denied',
+   888→          message: `Permission denied for "${step.toolName}": ${permDecision.reason || 'user denied'}`,
+   889→          timestamp: Date.now(),
+   890→        };
+   891→        task.errors.push(error);
+   892→        step.status = 'failed';
+   893→        step.error = error.message;
+   894→        emit({
+   895→          type: 'permission_denied',
+   896→          taskId: task.id,
+   897→          stepId: step.id,
+   898→          message: `Permission denied for "${step.toolName}"`,
+   899→          data: { reason: permDecision.reason },
+   900→        });
+   901→        // Record the permission grant (or denial) for audit
+   902→        const grant: PermissionGrantRecord = {
+   903→          id: `grant-${Date.now()}`,
+   904→          toolName: step.toolName,
+   905→          permission: permissionLevel,
+   906→          scope: 'once',
+   907→          grantedAt: Date.now(),
+   908→          reason: permDecision.reason,
+   909→          promptedViaUI: true,
+   910→        };
+   911→        task.permissions.push(grant);
+   912→        return;
+   913→      }
+   914→
+   915→      // Permission granted
+   916→      const grant: PermissionGrantRecord = {
+   917→        id: `grant-${Date.now()}`,
+   918→        toolName: step.toolName,
+   919→        permission: permissionLevel,
+   920→        scope: 'once',
+   921→        grantedAt: Date.now(),
+   922→        promptedViaUI: true,
+   923→      };
+   924→      task.permissions.push(grant);
+   925→      emit({
+   926→        type: 'permission_granted',
+   927→        taskId: task.id,
+   928→        stepId: step.id,
+   929→        message: `Permission granted for "${step.toolName}"`,
+   930→      });
+   931→
+   932→      // Snapshot before-state for diff (for write tools)
+   933→      let beforeContent: string | undefined;
+   934→      const targetPath = toolCall.params.path || toolCall.params.file;
+   935→      if (targetPath && fs.existsSync(targetPath)) {
+   936→        try {
+   937→          beforeContent = fs.readFileSync(targetPath, 'utf-8');
+   938→        } catch {}
+   939→      }
+   940→
+   941→      // Execute the tool
+   942→      // Cancellation checkpoint 4: before tool execution
+   943→      token.throwIfCancelled();
+   944→      task.status = 'executing';
+   945→      emit({
+   946→        type: 'tool_call_started',
+   947→        taskId: task.id,
+   948→        stepId: step.id,
+   949→        toolCallId: grant.id,
+   950→        message: `Executing tool "${step.toolName}"...`,
+   951→        data: { params: toolCall.params },
+   952→      });
+   953→
+   954→      const toolCallRecord: ToolCallRecord = {
+   955→        id: grant.id,
+   956→        stepId: step.id,
+   957→        toolName: step.toolName,
+   958→        toolDefinition: toolCall.toolDefinition,
+   959→        params: toolCall.params,
+   960→        permission: permissionLevel,
+   961→        permissionStatus: 'granted',
+   962→        startedAt: Date.now(),
+   963→        retryCount: step.retryCount || 0,
+   964→        beforeState: beforeContent !== undefined
+   965→          ? { files: [{ path: targetPath || '', content: beforeContent }] }
+   966→          : undefined,
+   967→      };
+   968→      task.toolCalls.push(toolCallRecord);
+   969→
+   970→      // Set up cancellation listener — if cancelled during tool execution,
+   971→      // the tool should notice and abort (tools that support cancellation
+   972→      // check context.metadata.cancellationToken.cancelled)
+   973→      const toolContext = {
+   974→        projectPath: task.context.projectPath,
+   975→        activeFile: task.context.activeFile,
+   976→        runtime,
+   977→        permission: permContext,
+   978→        metadata: {
+   979→          taskId: task.id,
+   980→          stepId: step.id,
+   981→          // Pass the cancellation token to the tool so it can poll
+   982→          cancellationToken: token,
+   983→          // Phase 9 / P9-S5: composition-root services (e.g. knowledgeService)
+   984→          // merged opaquely — agent core never imports their types.
+   985→          ...(task.toolContextExtras || {}),
+   986→        },
+   987→      };
+   988→
+   989→      const result = await executeToolWithPermission(step.toolName, toolCall.params, toolContext);
+   990→
+   991→      // Cancellation checkpoint 5: after tool execution
+   992→      token.throwIfCancelled();
+   993→
+   994→      toolCallRecord.result = result;
+   995→      toolCallRecord.completedAt = Date.now();
+   996→      toolCallRecord.durationMs = toolCallRecord.completedAt - toolCallRecord.startedAt;
+   997→      // Snapshot after-state
+   998→      if (targetPath && fs.existsSync(targetPath)) {
+   999→        try {
+  1000→          const afterContent = fs.readFileSync(targetPath, 'utf-8');
+  1001→          toolCallRecord.afterState = { files: [{ path: targetPath, content: afterContent }] };
+  1002→        } catch {}
+  1003→      }
+  1004→
+  1005→      emit({
+  1006→        type: 'tool_call_completed',
+  1007→        taskId: task.id,
+  1008→        stepId: step.id,
+  1009→        toolCallId: toolCallRecord.id,
+  1010→        message: `Tool "${step.toolName}" completed in ${toolCallRecord.durationMs}ms (success: ${result.success})`,
+  1011→        data: {
+  1012→          success: result.success,
+  1013→          durationMs: toolCallRecord.durationMs,
+  1014→          error: result.error,
+  1015→          // Phase 115: Expose snapshotId + file label for the Undo UI.
+  1016→          // Only present for file-modifying tools (write_file, edit_file).
+  1017→          // The renderer uses this to show an Undo button on the message.
+  1018→          // Security: only the snapshotId + relativePath are exposed —
+  1019→          // never the absolute filesystem path.
+  1020→          snapshotId: result.data?.snapshotId,
+  1021→          fileLabel: result.data?.relativePath,
+  1022→          toolName: step.toolName,
+  1023→        },
+  1024→      });
+  1025→
+  1026→      // ── Phase 14 / P14-A: trust-aware verification gate ──
+  1027→      // Model-generated SUCCESS claims require corroborating structured
+  1028→      // evidence before the step may count as completed.
+  1029→      if (result.success) {
+  1030→        const trust = assessTrust(step.toolName, result);
+  1031→        if (trust.requiresCorroboration) {
+  1032→          const { corroborated, evidence } = corroborate(result, trust);
+  1033→          if (!corroborated) {
+  1034→            emit({
+  1035→              type: 'observation',
+  1036→              taskId: task.id,
+  1037→              stepId: step.id,
+  1038→              toolCallId: toolCallRecord.id,
+  1039→              message: `Unverified claim: "${step.toolName}" reported success without structural evidence`,
+  1040→              data: { trustLevel: trust.level, needsEvidence: true },
+  1041→            });
+  1042→            const verificationEntry = {
+  1043→              id: `ver-trust-${Date.now()}`,
+  1044→              stepId: step.id,
+  1045→              description: `Trust gate for ${step.toolName}`,
+  1046→              verifiedBy: 'trust-gate' as const,
+  1047→              status: 'inconclusive' as const,
+  1048→              details: `${trust.reason}; no corroborating evidence (${evidence.join('; ') || 'none'})`,
+  1049→              timestamp: Date.now(),
+  1050→            };
+  1051→            task.verification.push(verificationEntry as any);
+  1052→          } else {
+  1053→            task.verification.push({
+  1054→              id: `ver-trust-${Date.now()}`,
+  1055→              stepId: step.id,
+  1056→              description: `Trust gate for ${step.toolName}`,
+  1057→              verifiedBy: 'trust-gate' as const,
+  1058→              status: 'verified' as const,
+  1059→              details: `Corroborated: ${evidence.join('; ')}`,
+  1060→              timestamp: Date.now(),
+  1061→            } as any);
+  1062→          }
+  1063→        }
+  1064→      }
+  1065→
+  1066→      // Build observation
+  1067→      const observation: Observation = {
+  1068→        id: `obs-${Date.now()}`,
+  1069→        toolCallId: toolCallRecord.id,
+  1070→        stepId: step.id,
+  1071→        rawOutput: result.output,
+  1072→        data: result.data,
+  1073→        signals: extractSignals(result),
+  1074→        modifiedFiles: result.modifiedFiles || [],
+  1075→        timestamp: Date.now(),
+  1076→      };
+  1077→      task.observations.push(observation);
+  1078→      emit({
+  1079→        type: 'observation',
+  1080→        taskId: task.id,
+  1081→        stepId: step.id,
+  1082→        toolCallId: toolCallRecord.id,
+  1083→        message: `Observed: ${observation.signals.map((s) => s.message).join('; ') || '(no signals)'}`,
+  1084→        data: { signals: observation.signals },
+  1085→      });
+  1086→
+  1087→      // ── Diff handling ──
+  1088→      // If this was a write tool and the content changed, propose a diff
+  1089→      if (step.requiresDiffApproval && targetPath && beforeContent !== undefined && toolCallRecord.afterState) {
+  1090→        const afterState = toolCallRecord.afterState as any;
+  1091→        const afterContent = afterState.files?.[0]?.content;
+  1092→        if (afterContent !== undefined && beforeContent !== afterContent) {
+  1093→          // Revert the change so the user can review before applying
+  1094→          // (The tool wrote to disk; we need to undo this for diff-approval flow)
+  1095→          // For Phase 7 we accept the change but flag it for review.
+  1096→          // Phase 8 will implement proper revert-then-approve flow.
+  1097→          const { proposeChange } = await import('./diff-manager');
+  1098→          const change = proposeChange(task.id, step.id, targetPath, beforeContent, afterContent);
+  1099→          emit({
+  1100→            type: 'diff_proposed',
+  1101→            taskId: task.id,
+  1102→            stepId: step.id,
+  1103→            message: `Proposed change to ${targetPath}`,
+  1104→            data: { changeId: change.id, lineCount: change.diff.split('\n').length },
+  1105→          });
+  1106→        }
+  1107→      }
+  1108→
+  1109→      // ── Phase 38: VERIFICATION + Phase 9: structural/content/task verification ─
+  1110→      // Level 1 (Phase 38): if step.verificationCriteria exists, run
+  1111→      //   verifyToolResult against the tool result (exit code + output patterns).
+  1112→      // Level 2/3 (Phase 9): if step.expectedOutcome exists, run
+  1113→      //   verifyStepOutcome to check actual system state (file exists, content
+  1114→      //   matches, etc.). This catches false-success where the tool reports
+  1115→      //   success but the expected outcome didn't actually happen.
+  1116→      let verificationPassed = true;
+  1117→      const verificationResults: VerificationResult[] = [];
+  1118→
+  1119→      emit({
+  1120→        type: 'verification_started',
+  1121→        taskId: task.id,
+  1122→        stepId: step.id,
+  1123→        message: `Verifying step ${step.index + 1}...`,
+  1124→      });
+  1125→
+  1126→      // ── Level 1: tool result verification (Phase 38, existing) ──
+  1127→      if (step.verificationCriteria) {
+  1128→        const verification = verifyToolResult({
+  1129→          stepId: step.id,
+  1130→          description: step.description,
+  1131→          expectedExitCode: step.verificationCriteria.expectedExitCode,
+  1132→          expectedOutputContains: step.verificationCriteria.expectedOutputContains,
+  1133→          expectedOutputRegex: step.verificationCriteria.expectedOutputRegex,
+  1134→          forbiddenOutputContains: step.verificationCriteria.forbiddenOutputContains,
+  1135→          toolResult: result,
+  1136→        });
+  1137→        verificationResults.push(verification);
+  1138→        if (verification.status !== 'verified') verificationPassed = false;
+  1139→      }
+  1140→
+  1141→      // ── Level 2/3/4: structural + content + execution verification (Phase 9) ──
+  1142→      // Run when either step.expectedOutcome exists (structural/content) OR
+  1143→      // always (to catch non-zero exit codes even without explicit criteria).
+  1144→      // The Level 4 check (non-zero exit code) is always run because it's
+  1145→      // a strong signal of failure.
+  1146→      if (step.expectedOutcome || result.data?.exitCode !== undefined) {
+  1147→        try {
+  1148→          const outcomeVerification = await verifyStepOutcome(
+  1149→            step, result, task.context.projectPath, task.id,
+  1150→          );
+  1151→          verificationResults.push(outcomeVerification);
+  1152→          if (outcomeVerification.status === 'failed') verificationPassed = false;
+  1153→          // 'inconclusive' does NOT fail the step (we can't verify — keep going)
+  1154→        } catch (err: any) {
+  1155→          // Verification itself crashed — log + mark inconclusive (don't fail step)
+  1156→          AgentLogger.warn(`verifyStepOutcome crashed: ${err.message} — treating as inconclusive`, {
+  1157→            taskId: task.id, stepId: step.id,
+  1158→          });
+  1159→        }
+  1160→      }
+  1161→
+  1162→      // ── Record verification results + emit events ──
+  1163→      for (const verification of verificationResults) {
+  1164→        task.verification.push(verification);
+  1165→      }
+  1166→      // Emit verification_completed (backward compat — carries status in data)
+  1167→      const lastVerification = verificationResults[verificationResults.length - 1];
+  1168→      if (lastVerification) {
+  1169→        emit({
+  1170→          type: 'verification_completed',
+  1171→          taskId: task.id,
+  1172→          stepId: step.id,
+  1173→          message: `Verification ${lastVerification.status}: ${lastVerification.details}`,
+  1174→          data: {
+  1175→            status: lastVerification.status,
+  1176→            details: lastVerification.details,
+  1177→            confidence: lastVerification.confidence,
+  1178→            level: lastVerification.level,
+  1179→            evidence: lastVerification.evidence,
+  1180→          },
+  1181→        });
+  1182→        // Phase 9: emit explicit verification_passed / verification_failed events
+  1183→        if (lastVerification.status === 'verified') {
+  1184→          emit({
+  1185→            type: 'verification_passed',
+  1186→            taskId: task.id,
+  1187→            stepId: step.id,
+  1188→            message: `Step ${step.index + 1} verified: ${lastVerification.details}`,
+  1189→            data: {
+  1190→              level: lastVerification.level,
+  1191→              confidence: lastVerification.confidence,
+  1192→              evidence: lastVerification.evidence,
+  1193→            },
+  1194→          });
+  1195→        } else if (lastVerification.status === 'failed') {
+  1196→          emit({
+  1197→            type: 'verification_failed',
+  1198→            taskId: task.id,
+  1199→            stepId: step.id,
+  1200→            message: `Step ${step.index + 1} verification FAILED: ${lastVerification.details}`,
+  1201→            data: {
+  1202→              level: lastVerification.level,
+  1203→              confidence: lastVerification.confidence,
+  1204→              evidence: lastVerification.evidence,
+  1205→              recommendedAction: lastVerification.recommendedAction,
+  1206→            },
+  1207→          });
+  1208→        }
+  1209→      } else if (step.verificationCriteria || step.expectedOutcome) {
+  1210→        // No verification ran but criteria were set — emit verification_completed
+  1211→        // with 'inconclusive' to maintain event flow for UI.
+  1212→        emit({
+  1213→          type: 'verification_completed',
+  1214→          taskId: task.id,
+  1215→          stepId: step.id,
+  1216→          message: `Verification inconclusive (no verification ran)`,
+  1217→          data: { status: 'inconclusive' },
+  1218→        });
+  1219→      }
+  1220→
+  1221→      // ── Phase 38: ReAct CLOSED LOOP ─────────────────────────────────────
+  1222→      // Feed the observation back to the LLM to decide: continue, replan,
+  1223→      // complete, or abort. This is the SECOND LLM call in the agent loop
+  1224→      // (the first was the planner). It closes the open-loop gap.
+  1225→      //
+  1226→      // Fast path: skip the LLM call when the step succeeded cleanly and
+  1227→      // isn't the last step (see shouldInvokeRePlanner). This keeps routine
+  1228→      // successful steps fast (no extra LLM call).
+  1229→      const isLastStep = task.currentStepIndex >= task.plan.length - 1;
+  1230→      let reactDecision: ReActDecision = {
+  1231→        action: 'continue',
+  1232→        reason: 'Fast path: step succeeded, no concerning signals',
+  1233→        confidence: 1.0,
+  1234→      };
+  1235→
+  1236→      if (shouldInvokeRePlanner(result, step, observation, isLastStep)) {
+  1237→        // Cancellation checkpoint 6: before ReAct LLM call
+  1238→        token.throwIfCancelled();
+  1239→
+  1240→        emit({
+  1241→          type: 'replan_started',
+  1242→          taskId: task.id,
+  1243→          stepId: step.id,
+  1244→          message: `ReAct: analyzing observation (tool: ${step.toolName}, success: ${result.success})...`,
+  1245→        });
+  1246→
+  1247→        // Build the remaining steps (for the re-planner to know what's left).
+  1248→        const remainingSteps = task.plan
+  1249→          .slice(task.currentStepIndex + 1)
+  1250→          .map((s) => ({ description: s.description, toolName: s.toolName }));
+  1251→
+  1252→        reactDecision = await rePlanAfterObservation(runtime, model, {
+  1253→          userRequest: task.userRequest,
+  1254→          intent: task.intent,
+  1255→          lastStepDescription: step.description,
+  1256→          lastToolName: step.toolName,
+  1257→          toolResult: result,
+  1258→          observation,
+  1259→          remainingSteps,
+  1260→          stepsExecuted: task.currentStepIndex + 1,
+  1261→          maxSteps: task.maxSteps,
+  1262→          recentObservations: task.observations.slice(-5),
+  1263→          projectPath: task.context.projectPath,
+  1264→          tools: listToolDefinitions(),
+  1265→        });
+  1266→
+  1267→        // Cancellation checkpoint 7: after ReAct LLM call
+  1268→        token.throwIfCancelled();
+  1269→
+  1270→        emit({
+  1271→          type: 'react_decision',
+  1272→          taskId: task.id,
+  1273→          stepId: step.id,
+  1274→          message: `ReAct: ${reactDecision.action} — ${reactDecision.reason}`,
+  1275→          data: {
+  1276→            action: reactDecision.action,
+  1277→            confidence: reactDecision.confidence,
+  1278→            newSteps: reactDecision.newSteps?.length || 0,
+  1279→          },
+  1280→        });
+  1281→        emit({
+  1282→          type: 'replan_completed',
+  1283→          taskId: task.id,
+  1284→          stepId: step.id,
+  1285→          message: `ReAct decision: ${reactDecision.action}`,
+  1286→        });
+  1287→      }
+  1288→
+  1289→      // ── Apply the ReAct decision ────────────────────────────────────────
+  1290→      if (reactDecision.action === 'abort') {
+  1291→        // Fail the task immediately with the ReAct reason.
+  1292→        step.status = 'failed';
+  1293→        step.error = reactDecision.reason;
+  1294→        const error: AgentError = {
+  1295→          id: `err-${Date.now()}`,
+  1296→          stepId: step.id,
+  1297→          type: 'tool_error',
+  1298→          message: `ReAct abort: ${reactDecision.reason}`,
+  1299→          timestamp: Date.now(),
+  1300→        };
+  1301→        task.errors.push(error);
+  1302→        task.status = 'failed';
+  1303→        emit({
+  1304→          type: 'task_failed',
+  1305→          taskId: task.id,
+  1306→          message: `Task aborted by ReAct: ${reactDecision.reason}`,
+  1307→          data: { error },
+  1308→        });
+  1309→        return; // exits executeStep — runTask loop sees status='failed'
+  1310→      }
+  1311→
+  1312→      if (reactDecision.action === 'complete') {
+  1313→        // Mark the step completed and signal the runTask loop to finalize.
+  1314→        step.status = 'completed';
+  1315→        step.completedAt = Date.now();
+  1316→        // Mark ALL remaining steps as 'skipped' (the ReAct decided we're done).
+  1317→        for (let i = task.currentStepIndex + 1; i < task.plan.length; i++) {
+  1318→          task.plan[i].status = 'skipped';
+  1319→        }
+  1320→        // If the LLM gave a final answer, emit it as a token stream.
+  1321→        if (reactDecision.finalAnswer) {
+  1322→          emit({
+  1323→            type: 'agent_token',
+  1324→            taskId: task.id,
+  1325→            message: 'ReAct final answer',
+  1326→            data: { content: reactDecision.finalAnswer, phase: 'react-final' },
+  1327→          });
+  1328→        }
+  1329→        emit({
+  1330→          type: 'step_completed',
+  1331→          taskId: task.id,
+  1332→          stepId: step.id,
+  1333→          message: `Step ${step.index + 1} completed (ReAct: task complete)`,
+  1334→          data: { durationMs: step.completedAt - (step.startedAt || 0) },
+  1335→        });
+  1336→        return; // exits executeStep — runTask loop sees remaining steps skipped
+  1337→      }
+  1338→
+  1339→      if (reactDecision.action === 'replan' && reactDecision.newSteps) {
+  1340→        // Phase 38: discard remaining steps, append the new ones.
+  1341→        // Re-index the new steps so they continue from currentStepIndex+1.
+  1342→        const oldRemaining = task.plan.length - (task.currentStepIndex + 1);
+  1343→        const newSteps: AgentStep[] = reactDecision.newSteps.map((s, idx) => ({
+  1344→          id: `react-step-${idx + 1}-${Date.now().toString(36)}`,
+  1345→          index: task.currentStepIndex + 1 + idx,
+  1346→          description: s.description,
+  1347→          toolName: s.tool,
+  1348→          toolParams: s.params || {},
+  1349→          requiresPermission: s.requiresPermission,
+  1350→          requiresDiffApproval: s.tool === 'write_file' || s.tool === 'edit_file',
+  1351→          verificationCriteria: s.verificationCriteria,
+  1352→          status: 'pending',
+  1353→          retryCount: 0,
+  1354→          injectedByReAct: true,
+  1355→        }));
+  1356→        // Replace remaining steps with the new ones.
+  1357→        task.plan = [
+  1358→          ...task.plan.slice(0, task.currentStepIndex + 1),
+  1359→          ...newSteps,
+  1360→        ];
+  1361→        AgentLogger.info(
+  1362→          `ReAct replan: discarded ${oldRemaining} remaining steps, ` +
+  1363→          `appended ${newSteps.length} new steps (injectedByReAct=true)`,
+  1364→          { taskId: task.id, stepId: step.id },
+  1365→        );
+  1366→        emit({
+  1367→          type: 'replan_completed',
+  1368→          taskId: task.id,
+  1369→          stepId: step.id,
+  1370→          message: `ReAct replan: ${newSteps.length} new steps replace ${oldRemaining} old`,
+  1371→          data: { newStepCount: newSteps.length, discardedCount: oldRemaining },
+  1372→        });
+  1373→      }
+  1374→
+  1375→      // ── Step completion / failure ──────────────────────────────────────
+  1376→      // (applies to 'continue' and 'replan' decisions — 'complete' and
+  1377→      // 'abort' already returned above)
+  1378→      if (result.success && verificationPassed) {
+  1379→        step.status = 'completed';
+  1380→        step.completedAt = Date.now();
+  1381→        emit({
+  1382→          type: 'step_completed',
+  1383→          taskId: task.id,
+  1384→          stepId: step.id,
+  1385→          message: `Step ${step.index + 1} completed`,
+  1386→          data: { durationMs: step.completedAt - (step.startedAt || 0) },
+  1387→        });
+  1388→      } else if (!result.success) {
+  1389→        // Tool failed — handle retry or fail the step.
+  1390→        // (Only retry if ReAct didn't already replan — if it replanned,
+  1391→        // the failure was expected and new steps are already in place.)
+  1392→        if (reactDecision.action === 'replan') {
+  1393→          // The re-planner already emitted corrective steps. Mark this step
+  1394→          // as completed (it "completed" in the sense that we observed it
+  1395→          // and decided to replan, not that the tool succeeded).
+  1396→          step.status = 'completed';
+  1397→          step.completedAt = Date.now();
+  1398→          emit({
+  1399→            type: 'step_completed',
+  1400→            taskId: task.id,
+  1401→            stepId: step.id,
+  1402→            message: `Step ${step.index + 1} completed (tool failed, ReAct replanned)`,
+  1403→            data: { durationMs: step.completedAt - (step.startedAt || 0) },
+  1404→          });
+  1405→        } else {
+  1406→          await handleStepFailure(task, step, result.error || 'Tool reported failure', token, runtime, model);
+  1407→        }
+  1408→      } else if (!verificationPassed) {
+  1409→        // ── Phase 9: Tool succeeded BUT verification failed ──────────────
+  1410→        // This is the "false success" path: the tool ran fine, but the
+  1411→        // expected outcome didn't actually happen (file doesn't exist,
+  1412→        // content doesn't match, exit code wrong, etc.).
+  1413→        //
+  1414→        // Phase 9 FIX: we now route this through handleStepFailure (Phase 7
+  1415→        // recovery) with errorCode='VERIFICATION_FAILED'. The Phase 7
+  1416→        // recovery engine maps this to the 'verification_failed' error class
+  1417→        // and decides RETRY (once) → REPLAN → SKIP/ABORT. This replaces the
+  1418→        // old behavior of just marking the step failed (which bypassed
+  1419→        // recovery — a false-success could never recover).
+  1420→        //
+  1421→        // Build the verification failure message from the last verification
+  1422→        // result (so the recovery engine sees WHY verification failed).
+  1423→        const lastVer = verificationResults[verificationResults.length - 1];
+  1424→        const verErrorMessage = `Verification failed: ${lastVer?.details || 'expected outcome not observed'}`;
+  1425→        if (reactDecision.action === 'replan') {
+  1426→          // The re-planner already decided to replan — let it proceed.
+  1427→          step.status = 'completed';
+  1428→          step.completedAt = Date.now();
+  1429→          emit({
+  1430→            type: 'step_completed',
+  1431→            taskId: task.id,
+  1432→            stepId: step.id,
+  1433→            message: `Step ${step.index + 1} completed (verification failed, ReAct replanned)`,
+  1434→            data: { durationMs: step.completedAt - (step.startedAt || 0) },
+  1435→          });
+  1436→        } else {
+  1437→          // Route to Phase 7 recovery with verification_failed error code.
+  1438→          await handleStepFailure(task, step, verErrorMessage, token, runtime, model);
+  1439→        }
+  1440→      }
+  1441→    } else {
+  1442→      // Non-tool step (reasoning / observation / verification step)
+  1443→      // For Phase 7: just mark as completed
+  1444→      step.status = 'completed';
+  1445→      step.completedAt = Date.now();
+  1446→      emit({
+  1447→        type: 'step_completed',
+  1448→        taskId: task.id,
+  1449→        stepId: step.id,
+  1450→        message: `Step ${step.index + 1} (non-tool) completed`,
+  1451→      });
+  1452→    }
+  1453→  } catch (err: any) {
+  1454→    // Phase 17: re-throw cancellation signals (AGENT_CANCELLED token OR
+  1455→    // AbortError from abortInference during planner/ReAct LLM calls) so
+  1456→    // the runTask outer catch can transition the task to 'cancelled' /
+  1457→    // 'failed' cleanly. Previously only AGENT_CANCELLED was re-thrown,
+  1458→    // so an AbortError from cancelTask's new abortInference call would
+  1459→    // be caught here, marked as a step_failed tool_error, and the task
+  1460→    // would continue to the next step instead of aborting.
+  1461→    if (err.code === 'AGENT_CANCELLED' || err.name === 'AbortError' || err.code === 'ABORT_ERR' || /abort/i.test(err.message || '')) {
+  1462→      throw err; // re-throw — runTask outer catch handles cancellation
+  1463→    }
+  1464→    step.status = 'failed';
+  1465→    step.error = err.message;
+  1466→    const error: AgentError = {
+  1467→      id: `err-${Date.now()}`,
+  1468→      stepId: step.id,
+  1469→      type: 'tool_error',
+  1470→      message: err.message,
+  1471→      timestamp: Date.now(),
+  1472→    };
+  1473→    task.errors.push(error);
+  1474→    emit({
+  1475→      type: 'step_failed',
+  1476→      taskId: task.id,
+  1477→      stepId: step.id,
+  1478→      message: `Step ${step.index + 1} failed: ${err.message}`,
+  1479→      data: { error },
+  1480→    });
+  1481→  }
+  1482→}
+  1483→
+  1484→async function handleStepFailure(
+  1485→  task: AgentTask,
+  1486→  step: AgentStep,
+  1487→  errorMessage: string,
+  1488→  token: CancellationToken,
+  1489→  runtime: AIRuntime,
+  1490→  model: LocalModelInfo
+  1491→): Promise<void> {
+  1492→  const retryCount = step.retryCount || 0;
+  1493→
+  1494→  // ════════════════════════════════════════════════════════════════════════
+  1495→  // Phase 7: LLM Error Recovery
+  1496→  //
+  1497→  // Replaces the Phase-14 decideRetry() with a 5-action recovery engine:
+  1498→  //   RETRY / MODIFY_AND_RETRY / REPLAN / SKIP / ABORT
+  1499→  //
+  1500→  // The engine is heuristic-first (offline-capable) and uses the LLM only
+  1501→  // as a fallback for ambiguous errors. Cancellation/permission/security
+  1502→  // errors are NEVER auto-retried (Phase 7 §8).
+  1503→  //
+  1504→  // The old decideRetry() is preserved for backward-compat (other callers),
+  1505→  // but this is the only caller that mattered.
+  1506→  // ════════════════════════════════════════════════════════════════════════
+  1507→
+  1508→  // Emit recovery_started — UI shows THINKING (Orb → 'thinking' condition)
+  1509→  emit({
+  1510→    type: 'recovery_started',
+  1511→    taskId: task.id,
+  1512→    stepId: step.id,
+  1513→    message: `Analyzing failure: ${errorMessage.slice(0, 100)}`,
+  1514→    data: { attempt: retryCount, maxRetries: task.maxRetries, errorMessage },
+  1515→  });
+  1516→
+  1517→  // Build the recovery context (Phase 7 §5 — context propagation, redacted)
+  1518→  const lastObservation = task.observations.length > 0
+  1519→    ? task.observations[task.observations.length - 1]
+  1520→    : undefined;
+  1521→
+  1522→  const recoveryCtx: RecoveryContext = {
+  1523→    taskId: task.id,
+  1524→    step,
+  1525→    task,
+  1526→    toolName: step.toolName,
+  1527→    errorMessage,
+  1528→    // Phase 9: detect verification failures via the "Verification failed:" prefix
+  1529→    // (set by the !verificationPassed path in executeStep). This lets the
+  1530→    // Phase 7 classifier map them to 'verification_failed' error class with
+  1531→    // the right recovery policy (RETRY once → REPLAN → SKIP/ABORT).
+  1532→    errorCode: task.cancelled
+  1533→      ? 'AGENT_CANCELLED'
+  1534→      : errorMessage.startsWith('Verification failed:')
+  1535→        ? 'VERIFICATION_FAILED'
+  1536→        : 'TOOL_FAILURE',
+  1537→    attempt: retryCount,
+  1538→    maxRetries: task.maxRetries,
+  1539→    lastObservation,
+  1540→    cancelled: task.cancelled,
+  1541→    cancelReason: task.cancelReason,
+  1542→  };
+  1543→
+  1544→  // Decide the recovery action (heuristic first, LLM fallback for ambiguous)
+  1545→  let decision: RecoveryDecision;
+  1546→  try {
+  1547→    decision = await decideRecovery({
+  1548→      context: recoveryCtx,
+  1549→      runtime,
+  1550→      model,
+  1551→    });
+  1552→  } catch (err: any) {
+  1553→    // If the recovery engine itself crashes, fall back to ABORT (safe default).
+  1554→    AgentLogger.error(`Recovery engine crashed: ${err.message} — aborting step`, {
+  1555→      taskId: task.id, stepId: step.id,
+  1556→    });
+  1557→    decision = {
+  1558→      action: 'ABORT',
+  1559→      reason: `Recovery engine failure: ${err.message}`,
+  1560→      errorClass: 'unknown',
+  1561→      backoffMs: 0,
+  1562→      llmAnalyzed: false,
+  1563→      confidence: 0.0,
+  1564→      ambiguous: false,
+  1565→    };
+  1566→  }
+  1567→
+  1568→  // Emit recovery_decision — UI shows the chosen action + reason
+  1569→  emit({
+  1570→    type: 'recovery_decision',
+  1571→    taskId: task.id,
+  1572→    stepId: step.id,
+  1573→    message: `Recovery: ${decision.action} — ${decision.reason.slice(0, 80)}`,
+  1574→    data: {
+  1575→      action: decision.action,
+  1576→      reason: decision.reason,
+  1577→      errorClass: decision.errorClass,
+  1578→      backoffMs: decision.backoffMs,
+  1579→      llmAnalyzed: decision.llmAnalyzed,
+  1580→      confidence: decision.confidence,
+  1581→      ambiguous: decision.ambiguous,
+  1582→    },
+  1583→  });
+  1584→
+  1585→  AgentLogger.warn(
+  1586→    `Recovery decision for step ${step.index + 1}: ${decision.action} (${decision.errorClass}) — ${decision.reason}`,
+  1587→    { taskId: task.id, stepId: step.id, data: decision },
+  1588→  );
+  1589→
+  1590→  // ── Execute the recovery action ──────────────────────────────────────
+  1591→  switch (decision.action) {
+  1592→    case 'RETRY': {
+  1593→      step.retryCount = retryCount + 1;
+  1594→      (step as { status: string }).status = 'pending';
+  1595→      emit({
+  1596→        type: 'retry',
+  1597→        taskId: task.id,
+  1598→        stepId: step.id,
+  1599→        message: `Retrying step ${step.index + 1}: ${decision.reason}`,
+  1600→        data: {
+  1601→          retryCount: step.retryCount,
+  1602→          maxRetries: task.maxRetries,
+  1603→          errorClass: decision.errorClass,
+  1604→          backoffMs: decision.backoffMs,
+  1605→          llmAnalyzed: decision.llmAnalyzed,
+  1606→        },
+  1607→      });
+  1608→      await sleep(decision.backoffMs);
+  1609→      await executeStep(task, step, token, runtime, model);
+  1610→      // If the step succeeded after retry, emit recovery_succeeded
+  1611→      if (step.status === 'completed') {
+  1612→        emit({
+  1613→          type: 'recovery_succeeded',
+  1614→          taskId: task.id,
+  1615→          stepId: step.id,
+  1616→          message: `Recovery succeeded after retry ${step.retryCount}`,
+  1617→          data: { action: 'RETRY', attempts: step.retryCount },
+  1618→        });
+  1619→        recordRecoveryMemory(task, step, decision, true);
+  1620→      }
+  1621→      break;
+  1622→    }
+  1623→
+  1624→    case 'MODIFY_AND_RETRY': {
+  1625→      step.retryCount = retryCount + 1;
+  1626→      (step as { status: string }).status = 'pending';
+  1627→      // Phase 8: Snapshot the ORIGINAL tool params before modification.
+  1628→      // This preserves auditability — we can later see what the recovery
+  1629→      // engine changed. Uses snapshotToolParams (shallow clone — sufficient
+  1630→      // for flat key-value params).
+  1631→      if (decision.modifiedParams && !task.originalToolParams) {
+  1632→        try {
+  1633→          const { snapshotToolParams } = await import('./context-contract');
+  1634→          task.originalToolParams = snapshotToolParams(step);
+  1635→        } catch { /* best-effort — audit field, not critical */ }
+  1636→      }
+  1637→      // Apply the modified tool params (from heuristic or LLM)
+  1638→      if (decision.modifiedParams) {
+  1639→        step.toolParams = { ...step.toolParams, ...decision.modifiedParams };
+  1640→      }
+  1641→      emit({
+  1642→        type: 'modify_retry_started',
+  1643→        taskId: task.id,
+  1644→        stepId: step.id,
+  1645→        message: `Modifying arguments and retrying: ${decision.reason.slice(0, 80)}`,
+  1646→        data: {
+  1647→          modifiedParams: decision.modifiedParams,
+  1648→          // Phase 8: include the original (pre-modification) params for audit
+  1649→          originalParams: task.originalToolParams,
+  1650→          retryCount: step.retryCount,
+  1651→          llmAnalyzed: decision.llmAnalyzed,
+  1652→        },
+  1653→      });
+  1654→      await sleep(decision.backoffMs);
+  1655→      await executeStep(task, step, token, runtime, model);
+  1656→      if (step.status === 'completed') {
+  1657→        emit({
+  1658→          type: 'recovery_succeeded',
+  1659→          taskId: task.id,
+  1660→          stepId: step.id,
+  1661→          message: `Recovery succeeded after MODIFY_AND_RETRY`,
+  1662→          data: { action: 'MODIFY_AND_RETRY', attempts: step.retryCount },
+  1663→        });
+  1664→        recordRecoveryMemory(task, step, decision, true);
+  1665→      }
+  1666→      break;
+  1667→    }
+  1668→
+  1669→    case 'REPLAN': {
+  1670→      // Phase 38: delegate to rePlanAfterObservation for the actual replan.
+  1671→      // We mark this step as 'completed' (in the sense that we observed it
+  1672→      // and decided to replan) so the runTask loop continues.
+  1673→      step.status = 'completed';
+  1674→      step.completedAt = Date.now();
+  1675→      emit({
+  1676→        type: 'replan_started',
+  1677→        taskId: task.id,
+  1678→        stepId: step.id,
+  1679→        message: `Replanning after failure: ${decision.reason.slice(0, 80)}`,
+  1680→        data: { errorClass: decision.errorClass, llmAnalyzed: decision.llmAnalyzed },
+  1681→      });
+  1682→      // The actual replan happens in executeStep's ReAct loop (which calls
+  1683→      // rePlanAfterObservation). For a REPLAN triggered by handleStepFailure
+  1684→      // (step already failed), we set the step status so the runTask loop
+  1685→      // continues and the ReAct loop picks up the failure on the next step.
+  1686→      // Note: replan via ReAct is already handled in executeStep; here we
+  1687→      // just allow the loop to proceed.
+  1688→      recordRecoveryMemory(task, step, decision, false);
+  1689→      break;
+  1690→    }
+  1691→
+  1692→    case 'SKIP': {
+  1693→      step.status = 'skipped';
+  1694→      step.error = `Skipped after ${decision.errorClass}: ${errorMessage.slice(0, 100)}`;
+  1695→      emit({
+  1696→        type: 'skip_executed',
+  1697→        taskId: task.id,
+  1698→        stepId: step.id,
+  1699→        message: `Skipping step ${step.index + 1}: ${decision.reason.slice(0, 80)}`,
+  1700→        data: { errorClass: decision.errorClass, llmAnalyzed: decision.llmAnalyzed },
+  1701→      });
+  1702→      // SKIP doesn't fail the task — the runTask loop continues to next step
+  1703→      recordRecoveryMemory(task, step, decision, false);
+  1704→      break;
+  1705→    }
+  1706→
+  1707→    case 'ABORT': {
+  1708→      step.status = 'failed';
+  1709→      step.error = `Aborted after ${decision.errorClass}: ${errorMessage}`;
+  1710→      const error: AgentError = {
+  1711→        id: `err-${Date.now()}`,
+  1712→        stepId: step.id,
+  1713→        type: mapErrorClassToAgentErrorType(decision.errorClass),
+  1714→        message: errorMessage,
+  1715→        details: { recoveryDecision: 'ABORT', reason: decision.reason },
+  1716→        timestamp: Date.now(),
+  1717→        recovered: false,
+  1718→        errorClass: decision.errorClass,
+  1719→        recoveryDecision: 'ABORT',
+  1720→        recoveryAttempts: retryCount,
+  1721→        llmAnalyzed: decision.llmAnalyzed,
+  1722→      };
+  1723→      task.errors.push(error);
+  1724→      emit({
+  1725→        type: 'recovery_failed',
+  1726→        taskId: task.id,
+  1727→        stepId: step.id,
+  1728→        message: `Recovery failed — task will abort: ${decision.reason.slice(0, 80)}`,
+  1729→        data: { errorClass: decision.errorClass, attempts: retryCount, llmAnalyzed: decision.llmAnalyzed },
+  1730→      });
+  1731→      emit({
+  1732→        type: 'step_failed',
+  1733→        taskId: task.id,
+  1734→        stepId: step.id,
+  1735→        message: `Step ${step.index + 1} failed: ${decision.reason.slice(0, 100)}`,
+  1736→        data: { errorClass: decision.errorClass, recoveryDecision: 'ABORT' },
+  1737→      });
+  1738→      recordRecoveryMemory(task, step, decision, false);
+  1739→      break;
+  1740→    }
+  1741→  }
+  1742→}
+  1743→
+  1744→/**
+  1745→ * Phase 7 §12: Record only important recoveries to memory.
+  1746→ * Skip transient/noisy retries. Record: SKIP, ABORT, REPLAN, LLM-analyzed, MODIFY_AND_RETRY.
+  1747→ */
+  1748→function recordRecoveryMemory(
+  1749→  task: AgentTask,
+  1750→  step: AgentStep,
+  1751→  decision: RecoveryDecision,
+  1752→  succeeded: boolean,
+  1753→): void {
+  1754→  // Don't record routine transient RETRY decisions (noisy)
+  1755→  if (decision.action === 'RETRY' && decision.errorClass === 'transient_network' && !decision.llmAnalyzed) {
+  1756→    return;
+  1757→  }
+  1758→  // Don't record successful simple retries of unknown errors (noisy)
+  1759→  if (decision.action === 'RETRY' && decision.errorClass === 'unknown' && succeeded && !decision.llmAnalyzed) {
+  1760→    return;
+  1761→  }
+  1762→  // Phase 9: don't record successful verification-failed retries that succeeded
+  1763→  // (the verification failure was transient — not worth remembering). We DO
+  1764→  // record verification-failed REPLAN/ABORT decisions (the expected outcome
+  1765→  // was genuinely wrong — worth remembering for future planning).
+  1766→  if (decision.action === 'RETRY' && decision.errorClass === 'verification_failed' && succeeded && !decision.llmAnalyzed) {
+  1767→    return;
+  1768→  }
+  1769→
+  1770→  try {
+  1771→    const { TaskMemory } = require('../memory');
+  1772→    TaskMemory.set(`recovery-${task.id}-${step.id}`, {
+  1773→      taskId: task.id,
+  1774→      stepId: step.id,
+  1775→      stepDescription: step.description,
+  1776→      action: decision.action,
+  1777→      errorClass: decision.errorClass,
+  1778→      reason: decision.reason,
+  1779→      llmAnalyzed: decision.llmAnalyzed,
+  1780→      confidence: decision.confidence,
+  1781→      succeeded,
+  1782→      attempts: step.retryCount || 0,
+  1783→      timestamp: Date.now(),
+  1784→    });
+  1785→  } catch (err: any) {
+  1786→    // Memory recording is best-effort — don't fail the recovery
+  1787→    AgentLogger.warn(`Failed to record recovery memory: ${err.message}`);
+  1788→  }
+  1789→}
+  1790→
+  1791→/**
+  1792→ * Map a 10-class error class to the legacy AgentError.type (for backward-compat).
+  1793→ */
+  1794→function mapErrorClassToAgentErrorType(
+  1795→  errorClass: RecoveryDecision['errorClass'],
+  1796→): AgentError['type'] {
+  1797→  switch (errorClass) {
+  1798→    case 'permission_denied': return 'permission_denied';
+  1799→    case 'timeout': return 'timeout';
+  1800→    case 'user_cancellation': return 'cancelled';
+  1801→    case 'model_inference': return 'llm_error';
+  1802→    case 'verification_failed':
+  1803→    // Phase 9: verification failure maps to 'tool_error' (the tool didn't
+  1804→    // achieve the expected outcome). We keep the detailed class in
+  1805→    // AgentError.errorClass for recovery analysis.
+  1806→    case 'browser_error':
+  1807→    // Phase 10: browser errors map to 'tool_error' (browser tool didn't
+  1808→    // achieve expected outcome — navigation failed, element not found, etc.).
+  1809→    case 'computer_error':
+  1810→    // Phase 11: computer errors map to 'tool_error' (computer tool didn't
+  1811→    // achieve expected outcome — mouse/keyboard/screenshot failed).
+  1812→    case 'security_policy':
+  1813→    case 'invalid_arguments':
+  1814→    case 'file_path':
+  1815→    case 'tool_failure':
+  1816→    case 'transient_network':
+  1817→    case 'unknown':
+  1818→    default:
+  1819→      return 'tool_error';
+  1820→  }
+  1821→}
+  1822→
+  1823→function extractSignals(result: any): Array<{ type: 'success' | 'error' | 'warning' | 'info' | 'needs-attention'; message: string; details?: any }> {
+  1824→  const signals: Array<{ type: 'success' | 'error' | 'warning' | 'info' | 'needs-attention'; message: string; details?: any }> = [];
+  1825→  if (result.success) {
+  1826→    signals.push({ type: 'success', message: 'Tool succeeded' });
+  1827→  } else {
+  1828→    signals.push({ type: 'error', message: `Tool failed: ${result.error || '(no error message)'}` });
+  1829→  }
+  1830→  if (result.data?.exitCode !== undefined && result.data.exitCode !== 0) {
+  1831→    signals.push({
+  1832→      type: 'needs-attention',
+  1833→      message: `Process exited with code ${result.data.exitCode}`,
+  1834→    });
+  1835→  }
+  1836→  if (result.data?.stderr && result.data.stderr.length > 0) {
+  1837→    // Look for common error patterns
+  1838→    const stderr = result.data.stderr;
+  1839→    if (/error TS\d+/i.test(stderr)) {
+  1840→      signals.push({ type: 'error', message: 'TypeScript compilation error detected' });
+  1841→    }
+  1842→    if (/error/i.test(stderr) && !stderr.includes('0 errors')) {
+  1843→      signals.push({ type: 'warning', message: 'stderr contains error messages' });
+  1844→    }
+  1845→  }
+  1846→  if (result.data?.diff && result.data.diff.length > 0) {
+  1847→    signals.push({ type: 'info', message: 'File modifications detected' });
+  1848→  }
+  1849→  return signals;
+  1850→}
+  1851→
+  1852→// ─── Cancellation ─────────────────────────────────────────────────────────────
+  1853→
+  1854→/**
+  1855→ * Phase 17 (P1-5 / BUG-GAP-2 fix): Cancel the specified task.
+  1856→ *
+  1857→ * In addition to setting the cancellation token (which propagates to all
+  1858→ * `token.throwIfCancelled()` checkpoints between LLM calls + tools), this
+  1859→ * now ALSO calls `abortInference()` to interrupt any in-flight LLM
+  1860→ * generation. Previously, a cancel during mid-inference would only take
+  1861→ * effect at the next checkpoint — wasting tokens + time while the LLM
+  1862→ * finished generating. Now the LLM call's AbortController fires
+  1863→ * immediately, the `session.prompt()` Promise rejects with AbortError,
+  1864→ * and the runTask outer catch transitions the task to 'cancelled'/'failed'.
+  1865→ *
+  1866→ * The dynamic import avoids a static circular dependency
+  1867→ * (inference.ts ↔ core.ts). At runtime, inference.ts is already loaded
+  1868→ * by the time any task runs (model is preloaded), so the import resolves
+  1869→ * synchronously from the module cache.
+  1870→ */
+  1871→export async function cancelTask(taskId: string, reason?: string): Promise<boolean> {
+  1872→  const token = _cancellationTokens.get(taskId);
+  1873→  if (!token) return false;
+  1874→  const task = _activeTasks.get(taskId);
+  1875→  if (task) {
+  1876→    task.cancelled = true;
+  1877→    task.cancelReason = reason || 'cancelled by user';
+  1878→  }
+  1879→  // Phase 17: abort any in-flight LLM inference so the cancel takes effect
+  1880→  // immediately instead of waiting for the next checkpoint.
+  1881→  try {
+  1882→    const { abortInference } = await import('../ai/inference');
+  1883→    abortInference(`agent task cancelled: ${taskId}${reason ? ` (${reason})` : ''}`);
+  1884→  } catch { /* inference module may not be loaded — best-effort */ }
+  1885→  return token.cancel(reason);
+  1886→}
+  1887→
+  1888→/**
+  1889→ * Synchronous cancel (legacy API). Kept for callers that don't want to
+  1890→ * await. The async `cancelTask` above is preferred because it also aborts
+  1891→ * in-flight inference. This synchronous version only sets the token.
+  1892→ */
+  1893→export function cancelTaskSync(taskId: string, reason?: string): boolean {
+  1894→  const token = _cancellationTokens.get(taskId);
+  1895→  if (!token) return false;
+  1896→  const task = _activeTasks.get(taskId);
+  1897→  if (task) {
+  1898→    task.cancelled = true;
+  1899→    task.cancelReason = reason || 'cancelled by user';
+  1900→  }
+  1901→  return token.cancel(reason);
+  1902→}
+  1903→
+  1904→/**
+  1905→ * Phase 115: Cancel all active (non-terminal) agent tasks.
+  1906→ * Called during app shutdown to prevent orphaned in-flight tool calls
+  1907→ * and pending permission prompts from hanging the process.
+  1908→ *
+  1909→ * Phase 17: now async — awaits each `cancelTask` so the abortInference
+  1910→ * call inside it completes before we proceed to shutdownLlama. This
+  1911→ * prevents the shutdown-hang bug (CLEANUP-LEAK-3) where the in-flight
+  1912→ * LLM call was never aborted, causing `shutdownLlama → unloadModel →
+  1913→ * waitForInFlight` to wait 30s+ for natural completion.
+  1914→ *
+  1915→ * Returns the number of tasks that were cancelled.
+  1916→ */
+  1917→export async function cancelAllActiveTasks(reason?: string): Promise<number> {
+  1918→  const r = reason || 'Application shutting down';
+  1919→  let count = 0;
+  1920→  for (const [taskId, task] of _activeTasks) {
+  1921→    // Only cancel non-terminal tasks
+  1922→    if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled') {
+  1923→      if (await cancelTask(taskId, r)) {
+  1924→        count++;
+  1925→      }
+  1926→    }
+  1927→  }
+  1928→  if (count > 0) {
+  1929→    console.log(`[AGENT] Cancelled ${count} active task(s) on shutdown`);
+  1930→  }
+  1931→  return count;
+  1932→}
+  1933→
+  1934→// ─── Diff Approval ───────────────────────────────────────────────────────────
+  1935→
+  1936→export async function acceptDiff(taskId: string, changeId: string): Promise<void> {
+  1937→  const { acceptChange } = await import('./diff-manager');
+  1938→  await acceptChange(changeId);
+  1939→  emit({
+  1940→    type: 'diff_accepted',
+  1941→    taskId,
+  1942→    message: `Change ${changeId} accepted`,
+  1943→    data: { changeId },
+  1944→  });
+  1945→}
+  1946→
+  1947→export function rejectDiff(taskId: string, changeId: string, reason?: string): void {
+  1948→  rejectChange(changeId, reason);
+  1949→  emit({
+  1950→    type: 'diff_rejected',
+  1951→    taskId,
+  1952→    message: `Change ${changeId} rejected: ${reason || '(no reason given)'}`,
+  1953→    data: { changeId, reason },
+  1954→  });
+  1955→}
+  1956→
+  1957→export async function acceptAllDiffs(taskId: string): Promise<void> {
+  1958→  const { acceptAllChanges } = await import('./diff-manager');
+  1959→  await acceptAllChanges(taskId);
+  1960→  emit({
+  1961→    type: 'diff_accepted',
+  1962→    taskId,
+  1963→    message: `All changes accepted`,
+  1964→  });
+  1965→}
+  1966→
+  1967→export function rejectAllDiffs(taskId: string, reason?: string): void {
+  1968→  const { rejectAllChanges } = require('./diff-manager');
+  1969→  rejectAllChanges(taskId, reason);
+  1970→  emit({
+  1971→    type: 'diff_rejected',
+  1972→    taskId,
+  1973→    message: `All changes rejected: ${reason || '(no reason given)'}`,
+  1974→  });
+  1975→}
+  1976→
+  1977→export function listPendingDiffs(taskId: string): any[] {
+  1978→  return listPendingChanges(taskId).filter((c) => c.status === 'pending');
+  1979→}
+  1980→
+  1981→// ─── Phase 12 / P12-B: read-only agent state for the System Monitor ────────
+  1982→
+  1983→export interface AgentMonitorState {
+  1984→  currentTask?: string;
+  1985→  currentStep?: string;
+  1986→  stepProgress?: { current: number; total: number };
+  1987→  activeTool?: string;
+  1988→  toolDurationMs?: number;
+  1989→  queueState: 'idle' | 'running' | 'waiting-permission' | 'queued' | 'unknown';
+  1990→  cancelled: boolean;
+  1991→  inferenceActive?: boolean;
+  1992→  contextUsedTokens?: number;
+  1993→  contextMaxTokens?: number;
+  1994→  backend?: 'local' | 'online' | 'none';
+  1995→}
+  1996→
+  1997→/** Derived monitor view over _activeTasks — no mutation, no events. */
+  1998→export function getAgentMonitorState(): AgentMonitorState {
+  1999→  const tasks = [..._activeTasks.values()];
+  2000→  const active =
+
+[showing lines 1-2000 of 2246; use offset=2001 with limit to continue reading]

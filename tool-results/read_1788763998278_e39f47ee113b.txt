@@ -1,0 +1,632 @@
+     1→/**
+     2→ * NEX AI — Voice Service (Phase 30 + Phase 116 JARVIS)
+     3→ *
+     4→ * Always-ready voice system with Web Audio API microphone analysis +
+     5→ * browser SpeechRecognition for STT + SpeechSynthesis for TTS.
+     6→ *
+     7→ * Phase 116 JARVIS additions:
+     8→ *   - Continuous Conversation mode (auto-restart listening after TTS)
+     9→ *   - Push-to-talk mode (manual start/stop)
+    10→ *   - Disabled mode (no voice)
+    11→ *   - Wake Word detection ("NEX") — simple regex-based, fully local
+    12→ *   - VAD (Voice Activity Detection) for auto speech-end detection
+    13→ *   - Barge-in support (stop TTS when user starts speaking)
+    14→ *
+    15→ * Architecture:
+    16→ *   VoiceService (this module)
+    17→ *       ├── microphone: getUserMedia + AudioContext + AnalyserNode
+    18→ *       ├── audio level: RMS → noise gate → attack/release smoothing → 0..1
+    19→ *       ├── VAD: speech/silence detection → auto-transcribe
+    20→ *       ├── STT: webkitSpeechRecognition (fallback) / whisper (main process)
+    21→ *       ├── TTS: SpeechSynthesis (local OS voices — offline capable)
+    22→ *       ├── Wake Word: regex match on partial transcripts
+    23→ *       └── state: state machine → callbacks → VoiceController
+    24→ */
+    25→
+    26→export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'offline' | 'working' | 'success' | 'cancelled';
+    27→
+    28→// Phase 116: Voice mode controls how listening works
+    29→export type VoiceMode = 'continuous' | 'push-to-talk' | 'disabled';
+    30→
+    31→export interface VoiceConfig {
+    32→  noiseFloor: number;
+    33→  attackSpeed: number;
+    34→  releaseSpeed: number;
+    35→  language: string;
+    36→  /** Phase 116: Wake word to listen for before activating commands */
+    37→  wakeWord: string;
+    38→  /** Phase 116: VAD silence threshold for speech-end detection */
+    39→  vadSilenceThreshold: number;
+    40→  /** Phase 116: VAD silence duration (ms) before declaring speech ended */
+    41→  vadSilenceDurationMs: number;
+    42→}
+    43→
+    44→export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
+    45→  noiseFloor: 0.015,
+    46→  attackSpeed: 0.4,
+    47→  releaseSpeed: 0.08,
+    48→  language: 'en-US',
+    49→  wakeWord: 'nex',
+    50→  vadSilenceThreshold: 0.02,
+    51→  vadSilenceDurationMs: 1200,
+    52→};
+    53→
+    54→export interface VoiceCallbacks {
+    55→  onStateChange?: (state: VoiceState) => void;
+    56→  onAudioLevel?: (level: number) => void;
+    57→  onPartialTranscript?: (text: string) => void;
+    58→  onFinalTranscript?: (text: string) => void;
+    59→  onPermissionChange?: (granted: boolean | null) => void;
+    60→  onError?: (message: string) => void;
+    61→  /** Phase 116: Called when wake word is detected */
+    62→  onWakeWord?: () => void;
+    63→}
+    64→
+    65→const STATE_PRIORITY: Record<VoiceState, number> = {
+    66→  error: 8, offline: 7, speaking: 6, working: 5, thinking: 4, listening: 3, success: 2, cancelled: 2, idle: 1,
+    67→};
+    68→
+    69→// Phase 18 (BUG-37): Import the Orb state-machine enforcement function.
+    70→// `recomputeState()` now validates every state transition via
+    71→// `safeOrbTransition()` before applying it. Previously the state machine
+    72→// in orb-state.ts was documentation-only — `safeOrbTransition` was defined
+    73→// but never called, so invalid transitions silently happened. Now blocked
+    74→// transitions are rejected and a diagnostic warning is logged:
+    75→//   `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+    76→import { safeOrbTransition, type NexOrbState } from '../components/orb/orb-state';
+    77→
+    78→export class VoiceService {
+    79→  private config: VoiceConfig;
+    80→  private callbacks: VoiceCallbacks = {};
+    81→  private _state: VoiceState = 'idle';
+    82→  private _stateConditions = new Map<string, VoiceState>();
+    83→  private _stream: MediaStream | null = null;
+    84→  private _audioContext: AudioContext | null = null;
+    85→  private _analyser: AnalyserNode | null = null;
+    86→  private _dataArray: Uint8Array<ArrayBuffer> | null = null;
+    87→  private _rafId: number | null = null;
+    88→  private _smoothedLevel = 0;
+    89→  private _micPermission: boolean | null = null;
+    90→  private _recognition: any = null;
+    91→  private _sttActive = false;
+    92→  private _shouldRestartSTT = false;
+    93→  // Phase 18 (P2-6 fix): REMOVED `_ttsActive` field.
+    94→  // The entire renderer-side TTS path (speak/stopSpeaking/_ttsActive/
+    95→  // _bargeInEnabled/isSpeaking) was dead — no production caller invoked
+    96→  // voiceController.speak() or voiceService.speak(). Real TTS flows
+    97→  // EXCLUSIVELY through the main-side Piper pipeline (voiceConversationSpeak
+    98→  // IPC → nex-voice-conversation.speakResponse → local-voice-engine.speak
+    99→  // → voice-tts-audio IPC → App.tsx Audio). The renderer-side barge-in
+   100→  // branch (processVAD line 269) was dead code that never fired because
+   101→  // _ttsActive was never set to true. See the P2-6 comment block in
+   102→  // voice-service.ts (former speak() location) for the full reference search.
+   103→
+   104→  // Phase 116: Voice mode + wake word + VAD
+   105→  private _mode: VoiceMode = 'continuous';
+   106→  private _wakeWordDetected = false;
+   107→  private _wakeWordBuffer = '';
+   108→  private _vadState: 'silence' | 'speech' = 'silence';
+   109→  private _vadSilenceStart = 0;
+   110→  private _vadSpeechStart = 0;
+   111→  // Phase 18 (P2-6 fix): REMOVED `_bargeInEnabled` field.
+   112→  // The renderer-side barge-in path was dead (see P2-6 comment block).
+   113→
+   114→  // PCM audio capture for LocalVoiceEngine (whisper STT)
+   115→  private _scriptProcessor: ScriptProcessorNode | null = null;
+   116→  private _chunksSent = 0;
+   117→  private _lastChunkSize = 0;
+   118→  private _ipcFeedingEnabled = false;
+   119→  private _audioProcessEventCount = 0;
+   120→  private _audioLevelLogCount = 0;
+   121→
+   122→  constructor(config?: Partial<VoiceConfig>) {
+   123→    this.config = { ...DEFAULT_VOICE_CONFIG, ...config };
+   124→  }
+   125→
+   126→  setCallbacks(callbacks: VoiceCallbacks): void {
+   127→    this.callbacks = { ...this.callbacks, ...callbacks };
+   128→  }
+   129→
+   130→  get state(): VoiceState { return this._state; }
+   131→  get audioLevel(): number { return this._smoothedLevel; }
+   132→  get micPermission(): boolean | null { return this._micPermission; }
+   133→  get isListening(): boolean { return this._sttActive; }
+   134→  // Phase 18 (P2-6 fix): REMOVED `isSpeaking` getter.
+   135→  // Was `return this._ttsActive` — but `_ttsActive` was removed (always false).
+   136→  // No external caller used this getter (verified by reference search).
+   137→  get mode(): VoiceMode { return this._mode; }
+   138→
+   139→  /** Phase 116: Set voice mode (continuous / push-to-talk / disabled) */
+   140→  setMode(mode: VoiceMode): void {
+   141→    const prevMode = this._mode;
+   142→    this._mode = mode;
+   143→    console.log(`[VOICE] Mode changed: ${prevMode} → ${mode}`);
+   144→
+   145→    if (mode === 'disabled') {
+   146→      this.stopListening();
+   147→      this.stopSpeaking();
+   148→    } else if (mode === 'continuous' && prevMode !== 'continuous') {
+   149→      // Auto-start continuous listening
+   150→      this.startListening().catch(() => {});
+   151→    } else if (mode === 'push-to-talk' && prevMode === 'continuous') {
+   152→      // Stop continuous listening — user will push to talk
+   153→      this.stopListening();
+   154→    }
+   155→  }
+   156→
+   157→  async enableMicrophone(): Promise<boolean> {
+   158→    if (this._stream) return true;
+   159→    try {
+   160→      this._micPermission = null; // pending
+   161→      console.log(`[VOICE] calling getUserMedia...`);
+   162→      this._stream = await navigator.mediaDevices.getUserMedia({
+   163→        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+   164→      });
+   165→      this._micPermission = true;
+   166→      this.callbacks.onPermissionChange?.(true);
+   167→      console.log(`[VOICE] getUserMedia resolved — stream tracks: ${this._stream.getTracks().length}`);
+   168→
+   169→      this._audioContext = new AudioContext();
+   170→      console.log(`[VOICE] AudioContext created — state: ${this._audioContext.state}`);
+   171→
+   172→      // CRITICAL: AudioContext starts in 'suspended' state in Electron.
+   173→      if (this._audioContext.state === 'suspended') {
+   174→        console.log(`[VOICE] AudioContext suspended — calling resume()...`);
+   175→        try {
+   176→          await this._audioContext.resume();
+   177→          console.log(`[VOICE] AudioContext resumed — state: ${this._audioContext.state}`);
+   178→        } catch (err: any) {
+   179→          console.warn(`[VOICE] AudioContext resume failed: ${err?.message}`);
+   180→        }
+   181→      }
+   182→
+   183→      const source = this._audioContext.createMediaStreamSource(this._stream);
+   184→      this._analyser = this._audioContext.createAnalyser();
+   185→      this._analyser.fftSize = 256;
+   186→      this._analyser.smoothingTimeConstant = 0.8;
+   187→      source.connect(this._analyser);
+   188→      this._dataArray = new Uint8Array(new ArrayBuffer(this._analyser.frequencyBinCount));
+   189→
+   190→      // ── PCM audio capture for LocalVoiceEngine ──────────────────────────
+   191→      this._scriptProcessor = this._audioContext.createScriptProcessor(4096, 1, 1);
+   192→      console.log(`[VOICE] ScriptProcessorNode created — bufferSize: ${this._scriptProcessor.bufferSize}`);
+   193→
+   194→      this._audioProcessEventCount = 0;
+   195→      this._scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
+   196→        this._audioProcessEventCount++;
+   197→        if (!this._ipcFeedingEnabled) {
+   198→          if (this._audioProcessEventCount <= 3) {
+   199→            console.log(`[VOICE] onaudioprocess (#${this._audioProcessEventCount}) but IPC feeding disabled`);
+   200→          }
+   201→          return;
+   202→        }
+   203→        const inputBuffer = event.inputBuffer;
+   204→        const channelData = inputBuffer.getChannelData(0);
+   205→
+   206→        // Downsample from 48kHz to 16kHz
+   207→        const downsampled = this.downsampleTo16k(channelData);
+   208→
+   209→        // Convert Float32 to Int16 PCM
+   210→        const pcm16 = new Int16Array(downsampled.length);
+   211→        for (let i = 0; i < downsampled.length; i++) {
+   212→          const s = Math.max(-1, Math.min(1, downsampled[i]));
+   213→          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+   214→        }
+   215→
+   216→        // Send the PCM chunk to the main process via IPC
+   217→        const chunkBuffer = pcm16.buffer;
+   218→        this._chunksSent++;
+   219→        this._lastChunkSize = chunkBuffer.byteLength;
+   220→        try {
+   221→          const ipcAvailable = !!(window as any).nexAPI?.voiceFeedAudioChunk;
+   222→          if (!ipcAvailable) {
+   223→            if (this._chunksSent <= 3) {
+   224→              console.warn(`[VOICE] voiceFeedAudioChunk NOT available on window.nexAPI!`);
+   225→            }
+   226→            return;
+   227→          }
+   228→          window.nexAPI!.voiceFeedAudioChunk!(chunkBuffer);
+   229→        } catch (err: any) {
+   230→          if (this._chunksSent <= 3) {
+   231→            console.warn(`[VOICE] voiceFeedAudioChunk error: ${err?.message}`);
+   232→          }
+   233→        }
+   234→
+   235→        // Compute audio level (RMS) for VAD + Orb animation
+   236→        let sum = 0;
+   237→        for (let i = 0; i < downsampled.length; i++) {
+   238→          sum += downsampled[i] * downsampled[i];
+   239→        }
+   240→        const rms = Math.sqrt(sum / downsampled.length);
+   241→        const gated = rms < this.config.noiseFloor ? 0 : rms;
+   242→        const normalized = Math.min(1, gated * 4);
+   243→        const speed = normalized > this._smoothedLevel
+   244→          ? this.config.attackSpeed : this.config.releaseSpeed;
+   245→        this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
+   246→        this.callbacks.onAudioLevel?.(this._smoothedLevel);
+   247→        try {
+   248→          window.nexAPI?.voiceFeedAudioLevel?.(this._smoothedLevel);
+   249→        } catch { /* best-effort */ }
+   250→
+   251→        // Phase 116: VAD (Voice Activity Detection) — detect speech start/end
+   252→        this.processVAD(normalized);
+   253→      };
+   254→      source.connect(this._scriptProcessor);
+   255→      this._scriptProcessor.connect(this._audioContext.destination);
+   256→      console.log(`[VOICE] ScriptProcessorNode connected — source→processor→destination`);
+   257→
+   258→      this.startAudioLoop();
+   259→      return true;
+   260→    } catch (err: any) {
+   261→      this._micPermission = false;
+   262→      this.callbacks.onPermissionChange?.(false);
+   263→      const msg = err.name === 'NotAllowedError' ? 'Microphone access denied'
+   264→        : err.name === 'NotFoundError' ? 'No microphone found'
+   265→        : `Microphone error: ${err.message}`;
+   266→      console.error(`[VOICE] enableMicrophone failed: ${msg} (name=${err.name})`);
+   267→      this.callbacks.onError?.(msg);
+   268→      return false;
+   269→    }
+   270→  }
+   271→
+   272→  /**
+   273→   * Phase 116: Voice Activity Detection — detects speech start and end
+   274→   * based on audio level. When speech ends (silence after speech), we
+   275→   * know the user finished their sentence and can process the transcript.
+   276→   *
+   277→   * Phase 18 Stage 3 (AUDIO-NO-MUTE-TTS fix): skip VAD processing when the
+   278→   * engine is in 'speaking' state. This prevents TTS audio bleed from
+   279→   * updating the `_vadState` (harmless but wasteful, and prevents stale
+   280→   * 'speech' state from persisting after TTS ends). The main-side VAD
+   281→   * handles barge-in detection with its own higher threshold — the
+   282→   * renderer VAD is purely for the renderer-side speech/silence tracking
+   283→   * which is no longer used for any action (barge-in was removed in P2-6).
+   284→   *
+   285→   * The audio level is still sent to main unconditionally (via
+   286→   * `voiceFeedAudioLevel`) so the main-side VAD can detect barge-in. Only
+   287→   * the renderer-side `processVAD` computation is skipped.
+   288→   */
+   289→  private processVAD(level: number): void {
+   290→    // Phase 18 Stage 3: skip when engine is speaking (TTS in progress).
+   291→    if (this._stateConditions.get('engine') === 'speaking') return;
+   292→
+   293→    const now = Date.now();
+   294→    const isLoud = level > this.config.vadSilenceThreshold;
+   295→
+   296→    if (isLoud) {
+   297→      // Speech detected
+   298→      if (this._vadState === 'silence') {
+   299→        this._vadState = 'speech';
+   300→        this._vadSpeechStart = now;
+   301→        this._vadSilenceStart = 0;
+   302→        // Phase 18 (P2-6 fix): REMOVED the renderer-side barge-in branch.
+   303→        // Previously: `if (this._ttsActive && this._bargeInEnabled) {
+   304→        //   this.stopSpeaking(); if (this._mode === 'continuous' && !this._sttActive)
+   305→        //   { this.startSTT(); this.setCondition('mic', 'listening'); ... } }`
+   306→        // This was dead code — `_ttsActive` was never set to true (no caller
+   307→        // invoked voiceService.speak()). The renderer VAD cannot distinguish
+   308→        // user speech from TTS audio bleed (browser echo cancellation is
+   309→        // imperfect with speakers). Barge-in detection should be on the
+   310→        // MAIN side (where sttActive gates VAD) — see Phase 18 audit P1-1
+   311→        // for the recommended main-side barge-in fix (Stage 3, not yet
+   312→        // implemented). For now, the renderer VAD only transitions state —
+   313→        // it does NOT trigger barge-in. This is safe because the main-side
+   314→        // VAD (local-voice-engine.ts:199) is gated by `sttActive` and
+   315→        // `ttsActive` (engine.speak sets ttsActive=true during synthesis),
+   316→        // so the main side correctly suppresses transcription during TTS.
+   317→      }
+   318→    } else {
+   319→      // Silence detected
+   320→      if (this._vadState === 'speech') {
+   321→        if (this._vadSilenceStart === 0) {
+   322→          this._vadSilenceStart = now;
+   323→        }
+   324→        // If silence lasts long enough, declare speech ended
+   325→        if (now - this._vadSilenceStart >= this.config.vadSilenceDurationMs) {
+   326→          this._vadState = 'silence';
+   327→          console.log('[VOICE] VAD: speech ended (silence detected)');
+   328→        }
+   329→      }
+   330→    }
+   331→  }
+   332→
+   333→  /**
+   334→   * Downsample Float32 audio from 48kHz to 16kHz by taking every 3rd sample.
+   335→   */
+   336→  private downsampleTo16k(input: Float32Array): Float32Array {
+   337→    const ratio = 3; // 48000 / 16000
+   338→    const outputLength = Math.floor(input.length / ratio);
+   339→    const output = new Float32Array(outputLength);
+   340→    for (let i = 0; i < outputLength; i++) {
+   341→      output[i] = input[i * ratio];
+   342→    }
+   343→    return output;
+   344→  }
+   345→
+   346→  /**
+   347→   * Enable/disable IPC feeding of PCM audio to the main process.
+   348→   */
+   349→  setIPCFeedingEnabled(enabled: boolean): void {
+   350→    this._ipcFeedingEnabled = enabled;
+   351→    if (enabled) {
+   352→      this._chunksSent = 0;
+   353→    }
+   354→    console.log(`[VOICE_AUDIO] IPC feeding ${enabled ? 'enabled' : 'disabled'}`);
+   355→  }
+   356→
+   357→  async startListening(): Promise<void> {
+   358→    if (this._mode === 'disabled') return;
+   359→    if (!this._stream) {
+   360→      const ok = await this.enableMicrophone();
+   361→      if (!ok) { this.setCondition('mic', 'error'); return; }
+   362→    }
+   363→    // Phase 18 (P2-6 fix): REMOVED `if (this._ttsActive) this.stopSpeaking();`
+   364→    // — `_ttsActive` was removed (always false). Real TTS is on the main side.
+   365→    this.setIPCFeedingEnabled(true);
+   366→    this.startSTT();
+   367→    this.setCondition('mic', 'listening');
+   368→    this._shouldRestartSTT = true;
+   369→  }
+   370→
+   371→  stopListening(): void {
+   372→    this.stopSTT();
+   373→    this.setIPCFeedingEnabled(false);
+   374→    this.clearCondition('mic');
+   375→    this._shouldRestartSTT = false;
+   376→  }
+   377→
+   378→  // Phase 18 (P2-6 fix): REMOVED the `speak(text: string)` method.
+   379→  //
+   380→  // Reference search confirmed ZERO production callers of voiceService.speak()
+   381→  // or voiceController.speak(). The Phase 15 regression test
+   382→  // (tests/tools/test-phase-15-voice-unification.ts:165-177) explicitly
+   383→  // asserts `!foundSpeakCall` ("no renderer component calls
+   384→  // voiceController.speak()") — this is a TESTED invariant.
+   385→  //
+   386→  // The previous implementation was state-only (no audio) — it set
+   387→  // `_ttsActive = true`, setCondition('tts', 'speaking'), then a setTimeout
+   388→  // cleared both after `Math.max(500, text.length * 50)` ms. This was a
+   389→  // fake-completion path that ran in parallel with the main-side Piper
+   390→  // pipeline (voiceConversationSpeak IPC → nex-voice-conversation.speakResponse
+   391→  // → local-voice-engine.speak → voice-tts-audio → App.tsx Audio). It was
+   392→  // a source of STATE DESYNC (the 'tts' condition was set/cleared on a
+   393→  // different timeline than the real TTS playback).
+   394→  //
+   395→  // Real TTS is handled EXCLUSIVELY by the main-side Piper pipeline:
+   396→  //   NexChatPanel.speakResponseIfVoice → voiceConversationSpeak IPC
+   397→  //   → nex-voice-conversation.speakResponse() → local-voice-engine.speak()
+   398→  //   → piper → voice-tts-audio IPC → App.tsx Audio playback
+   399→  // The Orb's 'speaking' state is driven by the main-side
+   400→  // `voice-conversation-state` IPC → AppShell → voiceController.setCondition
+   401→  // ('engine', 'speaking'). No renderer-side TTS state is needed.
+   402→
+   403→  /**
+   404→   * Phase 18 (P2-6 fix): stopSpeaking() is now a no-op.
+   405→   *
+   406→   * Previously this cleared `_ttsActive = false` + `clearCondition('tts')`.
+   407→   * Both are dead:
+   408→   *   - `_ttsActive` was removed (always false)
+   409→   *   - The 'tts' condition was only set in the removed `speak()` method
+   410→   *     (also dead), so `clearCondition('tts')` is a no-op (deleting a
+   411→   *     non-existent key from the Map).
+   412→   *
+   413→   * The method is kept as a no-op (rather than removed) because `dispose()`
+   414→   * calls it. Removing the call from dispose() would be a larger diff;
+   415→   * the no-op is harmless and clearly documents the dead path. Real TTS
+   416→   * cancellation is handled by the `voiceConversationStopSpeaking` IPC
+   417→   * (main process) — see main.ts voice-conversation-stop-speaking handler
+   418→   * (Phase 16 BUG-26 B + Phase 18 P0-1 fix).
+   419→   */
+   420→  stopSpeaking(): void {
+   421→    // No-op. See method comment above.
+   422→  }
+   423→
+   424→  setCondition(key: string, state: VoiceState): void {
+   425→    this._stateConditions.set(key, state);
+   426→    this.recomputeState();
+   427→  }
+   428→
+   429→  clearCondition(key: string): void {
+   430→    this._stateConditions.delete(key);
+   431→    this.recomputeState();
+   432→  }
+   433→
+   434→  dispose(): void {
+   435→    this.stopListening();
+   436→    this.stopSpeaking();
+   437→    this.stopAudioLoop();
+   438→    if (this._scriptProcessor) {
+   439→      try { this._scriptProcessor.disconnect(); } catch { /* */ }
+   440→      this._scriptProcessor = null;
+   441→    }
+   442→    if (this._stream) {
+   443→      this._stream.getTracks().forEach((track) => track.stop());
+   444→      this._stream = null;
+   445→    }
+   446→    if (this._audioContext) {
+   447→      this._audioContext.close().catch(() => {});
+   448→      this._audioContext = null;
+   449→    }
+   450→    this._analyser = null;
+   451→    this._dataArray = null;
+   452→    this._smoothedLevel = 0;
+   453→    this._stateConditions.clear();
+   454→    this._state = 'idle';
+   455→  }
+   456→
+   457→  private recomputeState(): void {
+   458→    let newState: VoiceState = 'idle';
+   459→    let highest = 0;
+   460→    for (const state of this._stateConditions.values()) {
+   461→      const p = STATE_PRIORITY[state] || 0;
+   462→      if (p > highest) { highest = p; newState = state; }
+   463→    }
+   464→    if (newState !== this._state) {
+   465→      // Phase 18 (BUG-37): enforce the Orb state machine. Validate the
+   466→      // transition via `safeOrbTransition()`. If the transition is invalid
+   467→      // per the relaxed VALID_TRANSITIONS graph in orb-state.ts, the
+   468→      // function returns the CURRENT state (blocking the invalid transition)
+   469→      // and logs `[ORB_STATE] Invalid transition blocked: <from> → <to>`.
+   470→      //
+   471→      // This prevents invalid transitions (e.g. offline → speaking without
+   472→      // going through idle) while allowing all documented production flows
+   473→      // (voice, chat, agent, voice-agent, barge-in, flash-state recovery).
+   474→      // See orb-state.ts VALID_TRANSITIONS comment for the full list of
+   475→      // relaxed transitions.
+   476→      //
+   477→      // Cast VoiceState ↔ NexOrbState: VoiceState has 9 states (a subset of
+   478→      // NexOrbState's 13), so the cast is safe — every VoiceState is a
+   479→      // valid NexOrbState. The returned NexOrbState is similarly castable
+   480→      // back to VoiceState (the blocked case returns the current state,
+   481→      // which was already a VoiceState).
+   482→      const validated = safeOrbTransition(this._state as NexOrbState, newState as NexOrbState) as VoiceState;
+   483→      if (validated !== this._state) {
+   484→        this._state = validated;
+   485→        this.callbacks.onStateChange?.(validated);
+   486→      }
+   487→      // If validated === this._state, the transition was blocked — the
+   488→      // warning was already logged by safeOrbTransition. We keep the
+   489→      // current state (do NOT update this._state, do NOT fire callback).
+   490→    }
+   491→  }
+   492→
+   493→  private startAudioLoop(): void {
+   494→    if (this._rafId !== null) return;
+   495→    const loop = () => {
+   496→      if (!this._analyser || !this._dataArray) return;
+   497→      this._analyser.getByteTimeDomainData(this._dataArray);
+   498→      let sum = 0;
+   499→      for (let i = 0; i < this._dataArray.length; i++) {
+   500→        const val = (this._dataArray[i] - 128) / 128;
+   501→        sum += val * val;
+   502→      }
+   503→      const rms = Math.sqrt(sum / this._dataArray.length);
+   504→      const gated = rms < this.config.noiseFloor ? 0 : rms;
+   505→      const normalized = Math.min(1, gated * 4);
+   506→      const speed = normalized > this._smoothedLevel
+   507→        ? this.config.attackSpeed : this.config.releaseSpeed;
+   508→      this._smoothedLevel += (normalized - this._smoothedLevel) * speed;
+   509→      this.callbacks.onAudioLevel?.(this._smoothedLevel);
+   510→      this._audioLevelLogCount++;
+   511→      if (this._audioLevelLogCount % 60 === 0) {
+   512→        console.log(`[ORB_AUDIO] VoiceService: rms=${rms.toFixed(4)} smoothed=${this._smoothedLevel.toFixed(4)}`);
+   513→      }
+   514→      this._rafId = requestAnimationFrame(loop);
+   515→    };
+   516→    this._rafId = requestAnimationFrame(loop);
+   517→  }
+   518→
+   519→  private stopAudioLoop(): void {
+   520→    if (this._rafId !== null) {
+   521→      cancelAnimationFrame(this._rafId);
+   522→      this._rafId = null;
+   523→    }
+   524→  }
+   525→
+   526→  private startSTT(): void {
+   527→    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+   528→    if (!SR) {
+   529→      // Phase 116: Browser SpeechRecognition is NOT available in Electron.
+   530→      // Use the main-side whisper STT path instead.
+   531→      // The whisper path: mic → IPC → whisper → transcript → voice-conversation-user IPC
+   532→      console.log('[VOICE] Browser STT not available — using main-side whisper STT');
+   533→      this._sttActive = true;
+   534→      this.setCondition('mic', 'listening');
+   535→      return;
+   536→    }
+   537→    this.stopSTT();
+   538→    const recognition = new SR();
+   539→    recognition.continuous = true;
+   540→    recognition.interimResults = true;
+   541→    recognition.lang = this.config.language;
+   542→    recognition.onresult = (event: any) => {
+   543→      let interim = '';
+   544→      let final = '';
+   545→      for (let i = event.resultIndex; i < event.results.length; i++) {
+   546→        const result = event.results[i];
+   547→        if (result.isFinal) final += result[0].transcript;
+   548→        else interim += result[0].transcript;
+   549→      }
+   550→      if (interim) {
+   551→        // Phase 116: Check for wake word in interim results
+   552→        this.checkWakeWord(interim);
+   553→        this.callbacks.onPartialTranscript?.(interim);
+   554→      }
+   555→      if (final) {
+   556→        console.log(`[VOICE] browser STT transcript: "${final.trim().substring(0, 100)}"`);
+   557→        // Phase 116: Check for wake word in final results
+   558→        const wakeWordFound = this.checkWakeWord(final);
+   559→        if (wakeWordFound) {
+   560→          // Strip the wake word from the transcript
+   561→          const stripped = final.trim().replace(
+   562→            new RegExp(`\\b${this.config.wakeWord}\\b`, 'i'),
+   563→            ''
+   564→          ).trim();
+   565→          if (stripped) {
+   566→            this.callbacks.onFinalTranscript?.(stripped);
+   567→          } else {
+   568→            // Just the wake word — signal that NEX should respond "بله؟"
+   569→            this.callbacks.onWakeWord?.();
+   570→          }
+   571→        } else if (this._wakeWordDetected || this._mode === 'continuous') {
+   572→          // In continuous mode or after wake word, send all transcripts
+   573→          this.callbacks.onFinalTranscript?.(final.trim());
+   574→        }
+   575→        this._wakeWordDetected = wakeWordFound;
+   576→      }
+   577→    };
+   578→    recognition.onerror = (event: any) => {
+   579→      console.warn(`[VOICE] browser STT error: ${event.error}`);
+   580→      if (event.error === 'not-allowed') {
+   581→        this.callbacks.onError?.('Speech recognition permission denied');
+   582→        this._shouldRestartSTT = false;
+   583→      }
+   584→    };
+   585→    recognition.onend = () => {
+   586→      this._sttActive = false;
+   587→      if (this._mode === 'continuous' && this._shouldRestartSTT) {
+   588→        setTimeout(() => {
+   589→          if (this._mode === 'continuous' && this._shouldRestartSTT) this.startSTT();
+   590→        }, 100);
+   591→      }
+   592→    };
+   593→    try {
+   594→      recognition.start();
+   595→      this._recognition = recognition;
+   596→      this._sttActive = true;
+   597→      console.log('[VOICE] browser STT started');
+   598→    } catch { /* already started */ }
+   599→  }
+   600→
+   601→  /**
+   602→   * Phase 116: Check if the wake word ("NEX") appears in the transcript.
+   603→   * If found, sets _wakeWordDetected = true and calls onWakeWord callback.
+   604→   * Returns true if wake word was found.
+   605→   */
+   606→  private checkWakeWord(text: string): boolean {
+   607→    const lower = text.toLowerCase().trim();
+   608→    const wakeWord = this.config.wakeWord.toLowerCase();
+   609→
+   610→    // Check if the wake word appears as a standalone word
+   611→    const regex = new RegExp(`\\b${wakeWord}\\b`, 'i');
+   612→    if (regex.test(lower)) {
+   613→      console.log(`[VOICE] Wake word detected: "${this.config.wakeWord}"`);
+   614→      this._wakeWordDetected = true;
+   615→      this.callbacks.onWakeWord?.();
+   616→      return true;
+   617→    }
+   618→    return false;
+   619→  }
+   620→
+   621→  private stopSTT(): void {
+   622→    this._shouldRestartSTT = false;
+   623→    this._sttActive = false;
+   624→    if (this._recognition) {
+   625→      try { this._recognition.stop(); } catch { /* already stopped */ }
+   626→      this._recognition = null;
+   627→    }
+   628→  }
+   629→}
+   630→
+   631→export const voiceService = new VoiceService();
+   632→

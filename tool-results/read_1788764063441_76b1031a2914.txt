@@ -1,0 +1,966 @@
+     1→/**
+     2→ * NEX AI — Settings Panel (UI-15 Settings Rework)
+     3→ *
+     4→ * Professional, compact, consolidated Settings with internal sidebar + content area.
+     5→ * 9 sections per directive: General, AI & Model, Voice, Connectivity, Memory,
+     6→ * Knowledge, Plugins & Tools, Security, System, About.
+     7→ *
+     8→ * Every control is wired to real backend (store/IPC). No fake badges, no dead
+     9→ * toggles, no decorative-only elements. If data is unavailable, shows N/A.
+    10→ *
+    11→ * Architecture:
+    12→ *   - Sidebar: 9 sections with icon + label, active state, compact.
+    13→ *   - Content: card-based sections with title, description, controls.
+    14→ *   - All data from useStore (NexSettings) + IPC (settingsLoad/Save, modelList,
+    15→ *     persistenceInfo, systemSnapshot, knowledge*, memory*, plugins*).
+    16→ */
+    17→
+    18→import React, { useState, useEffect, useCallback } from 'react';
+    19→import { useStore } from '../store/useStore';
+    20→import ThemeSelector from './settings/ThemeSelector';
+    21→import {
+    22→  Settings, Cpu, Mic, Globe, Brain, BookOpen, Puzzle, Shield, Activity, Info,
+    23→  Save, Check, ChevronRight, AlertCircle, RefreshCw, Trash2, Eye, EyeOff,
+    24→  Wifi, WifiOff, Cloud, HardDrive, Zap,
+    25→} from 'lucide-react';
+    26→
+    27→type SectionId = 'general' | 'ai' | 'voice' | 'connectivity' | 'memory' | 'knowledge' | 'plugins' | 'security' | 'system' | 'about';
+    28→
+    29→interface Section {
+    30→  id: SectionId;
+    31→  label: string;
+    32→  icon: React.ReactNode;
+    33→}
+    34→
+    35→const SECTIONS: Section[] = [
+    36→  { id: 'general', label: 'General', icon: <Settings size={14} /> },
+    37→  { id: 'ai', label: 'AI & Model', icon: <Cpu size={14} /> },
+    38→  { id: 'voice', label: 'Voice', icon: <Mic size={14} /> },
+    39→  { id: 'connectivity', label: 'Connectivity', icon: <Globe size={14} /> },
+    40→  { id: 'memory', label: 'Memory', icon: <Brain size={14} /> },
+    41→  { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={14} /> },
+    42→  { id: 'plugins', label: 'Plugins & Tools', icon: <Puzzle size={14} /> },
+    43→  { id: 'security', label: 'Security', icon: <Shield size={14} /> },
+    44→  { id: 'system', label: 'System', icon: <Activity size={14} /> },
+    45→  { id: 'about', label: 'About', icon: <Info size={14} /> },
+    46→];
+    47→
+    48→// ─── Reusable Card Component ──────────────────────────────────────────────────
+    49→function Card({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+    50→  return (
+    51→    <div
+    52→      className="rounded-lg p-4"
+    53→      style={{
+    54→        background: 'var(--nex-glass-bg)',
+    55→        border: '1px solid var(--nex-glass-border)',
+    56→      }}
+    57→    >
+    58→      <div className="mb-3">
+    59→        <h3 className="text-xs font-semibold" style={{ color: 'var(--nex-text)' }}>{title}</h3>
+    60→        {description && <p className="text-xs mt-0.5" style={{ color: 'var(--nex-text-muted)' }}>{description}</p>}
+    61→      </div>
+    62→      {children}
+    63→    </div>
+    64→  );
+    65→}
+    66→
+    67→function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+    68→  return (
+    69→    <label className="flex items-center justify-between cursor-pointer py-1.5">
+    70→      <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>{label}</span>
+    71→      <button
+    72→        onClick={() => onChange(!checked)}
+    73→        className="relative w-8 h-4 rounded-full transition-colors nex-click"
+    74→        style={{ background: checked ? 'var(--nex-accent)' : 'var(--nex-glass-border)' }}
+    75→        role="switch"
+    76→        aria-checked={checked}
+    77→        aria-label={label}
+    78→      >
+    79→        <span
+    80→          className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform"
+    81→          style={{ left: checked ? '18px' : '2px' }}
+    82→        />
+    83→      </button>
+    84→    </label>
+    85→  );
+    86→}
+    87→
+    88→function Row({ label, value, mono }: { label: string; value: string | number | undefined; mono?: boolean }) {
+    89→  return (
+    90→    <div className="flex items-center justify-between py-1">
+    91→      <span className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>{label}</span>
+    92→      <span
+    93→        className={`text-xs font-medium ${mono ? 'font-mono' : ''}`}
+    94→        style={{ color: value !== undefined && value !== null ? 'var(--nex-text-dim)' : 'var(--nex-text-muted)' }}
+    95→      >
+    96→        {value !== undefined && value !== null ? value : 'N/A'}
+    97→      </span>
+    98→    </div>
+    99→  );
+   100→}
+   101→
+   102→function Slider({ label, value, min, max, step, onChange, unit }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; unit?: string }) {
+   103→  return (
+   104→    <div className="py-1.5">
+   105→      <label className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>
+   106→        <span>{label}</span>
+   107→        <span className="font-mono" style={{ color: 'var(--nex-accent-text)' }}>{value}{unit}</span>
+   108→      </label>
+   109→      <input
+   110→        type="range" min={min} max={max} step={step} value={value}
+   111→        onChange={(e) => onChange(parseFloat(e.target.value))}
+   112→        className="w-full accent-[var(--nex-accent)]"
+   113→        aria-label={label}
+   114→      />
+   115→    </div>
+   116→  );
+   117→}
+   118→
+   119→function Select({ label, value, options, onChange }: { label: string; value: string; options: Array<{ value: string; label: string }>; onChange: (v: string) => void }) {
+   120→  return (
+   121→    <div className="py-1.5">
+   122→      <label className="block text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
+   123→      <select
+   124→        value={value}
+   125→        onChange={(e) => onChange(e.target.value)}
+   126→        className="w-full rounded-md px-2 py-1.5 text-xs outline-none nex-click"
+   127→        style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text)' }}
+   128→        aria-label={label}
+   129→      >
+   130→        {options.map((opt) => (
+   131→          <option key={opt.value} value={opt.value}>{opt.label}</option>
+   132→        ))}
+   133→      </select>
+   134→    </div>
+   135→  );
+   136→}
+   137→
+   138→function Input({ label, value, onChange, type = 'text', placeholder }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string }) {
+   139→  return (
+   140→    <div className="py-1.5">
+   141→      <label className="block text-xs mb-1" style={{ color: 'var(--nex-text-dim)' }}>{label}</label>
+   142→      <input
+   143→        type={type}
+   144→        value={value}
+   145→        onChange={(e) => onChange(e.target.value)}
+   146→        placeholder={placeholder}
+   147→        className="w-full rounded-md px-2 py-1.5 text-xs outline-none nex-click font-mono"
+   148→        style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text)' }}
+   149→        aria-label={label}
+   150→      />
+   151→    </div>
+   152→  );
+   153→}
+   154→
+   155→function ActionButton({ onClick, children, variant = 'default' }: { onClick: () => void; children: React.ReactNode; variant?: 'default' | 'danger' }) {
+   156→  return (
+   157→    <button
+   158→      onClick={onClick}
+   159→      className="nex-click nex-focus px-3 py-1.5 rounded-md text-xs font-medium transition-all"
+   160→      style={{
+   161→        background: variant === 'danger' ? 'rgba(239,68,68,0.1)' : 'var(--nex-accent-dim)',
+   162→        color: variant === 'danger' ? 'rgb(248,113,113)' : 'var(--nex-accent-text)',
+   163→        border: `1px solid ${variant === 'danger' ? 'rgba(239,68,68,0.3)' : 'var(--nex-glass-border)'}`,
+   164→      }}
+   165→    >
+   166→      {children}
+   167→    </button>
+   168→  );
+   169→}
+   170→
+   171→// ─── Phase 81: AI Storage Section ─────────────────────────────────────────────
+   172→function formatBytes(n: number): string {
+   173→  if (!n) return '0 B';
+   174→  if (n < 1024) return `${n} B`;
+   175→  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+   176→  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)} MB`;
+   177→  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+   178→}
+   179→
+   180→function AIStorageSection() {
+   181→  const [storageInfo, setStorageInfo] = useState<any>(null);
+   182→  const [scanning, setScanning] = useState(false);
+   183→  const [repairing, setRepairing] = useState(false);
+   184→  const [toast, setToast] = useState<string | null>(null);
+   185→
+   186→  const refresh = useCallback(async () => {
+   187→    try {
+   188→      const res = await window.nexAPI.aiStorageInfo();
+   189→      if (res.success) setStorageInfo(res);
+   190→    } catch {}
+   191→  }, []);
+   192→
+   193→  useEffect(() => { refresh(); }, [refresh]);
+   194→
+   195→  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+   196→
+   197→  const handleChooseFolder = async () => {
+   198→    const res = await window.nexAPI.aiStorageChooseFolder();
+   199→    if (res.success) {
+   200→      showToast('Storage location updated');
+   201→      refresh();
+   202→    } else if (!res.cancelled) {
+   203→      showToast('Error: ' + (res.error || 'failed'));
+   204→    }
+   205→  };
+   206→
+   207→  const handleScan = async () => {
+   208→    setScanning(true);
+   209→    try {
+   210→      const res = await window.nexAPI.aiStorageScan();
+   211→      if (res.success) {
+   212→        showToast(`Scan complete: ${res.registered} new, ${res.alreadyRegistered} existing`);
+   213→        refresh();
+   214→      } else {
+   215→        showToast('Scan failed: ' + (res.error || 'unknown'));
+   216→      }
+   217→    } catch (err: any) {
+   218→      showToast('Error: ' + err?.message);
+   219→    } finally {
+   220→      setScanning(false);
+   221→    }
+   222→  };
+   223→
+   224→  const handleRepair = async () => {
+   225→    setRepairing(true);
+   226→    try {
+   227→      const res = await window.nexAPI.aiStorageRepair();
+   228→      if (res.success) {
+   229→        showToast(`Registry repaired: ${res.removed} removed, ${res.total} valid`);
+   230→        refresh();
+   231→      }
+   232→    } catch {} finally {
+   233→      setRepairing(false);
+   234→    }
+   235→  };
+   236→
+   237→  const handleOpenFolder = async () => {
+   238→    await window.nexAPI.aiStorageOpenFolder();
+   239→  };
+   240→
+   241→  if (!storageInfo) {
+   242→    return <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Loading...</div>;
+   243→  }
+   244→
+   245→  return (
+   246→    <div className="space-y-3">
+   247→      {/* Current path */}
+   248→      <Row label="Path" value={storageInfo.path} mono />
+   249→
+   250→      {/* Stats */}
+   251→      <div className="grid grid-cols-2 gap-2 py-1">
+   252→        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+   253→          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Total Size</div>
+   254→          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{formatBytes(storageInfo.totalSize || 0)}</div>
+   255→        </div>
+   256→        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+   257→          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Models</div>
+   258→          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.modelCount || 0}</div>
+   259→        </div>
+   260→        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+   261→          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Voice Components</div>
+   262→          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.voiceCount || 0}</div>
+   263→        </div>
+   264→        <div className="p-2 rounded-md" style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}>
+   265→          <div className="text-[10px]" style={{ color: 'var(--nex-text-muted)' }}>Documents</div>
+   266→          <div className="text-sm font-mono" style={{ color: 'var(--nex-text)' }}>{storageInfo.documentCount || 0}</div>
+   267→        </div>
+   268→      </div>
+   269→
+   270→      {/* Buttons */}
+   271→      <div className="flex flex-wrap gap-2">
+   272→        <ActionButton onClick={handleChooseFolder}>
+   273→          <span className="flex items-center gap-1"><HardDrive size={11} /> Change Location</span>
+   274→        </ActionButton>
+   275→        <ActionButton onClick={handleScan}>
+   276→          <span className="flex items-center gap-1">
+   277→            {scanning ? <RefreshCw size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+   278→            Scan Storage
+   279→          </span>
+   280→        </ActionButton>
+   281→        <ActionButton onClick={handleRepair}>
+   282→          <span className="flex items-center gap-1">
+   283→            {repairing ? <RefreshCw size={11} className="animate-spin" /> : <Shield size={11} />}
+   284→            Repair Registry
+   285→          </span>
+   286→        </ActionButton>
+   287→        <ActionButton onClick={handleOpenFolder}>
+   288→          <span className="flex items-center gap-1"><Globe size={11} /> Open Folder</span>
+   289→        </ActionButton>
+   290→      </div>
+   291→
+   292→      {/* Toast */}
+   293→      {toast && (
+   294→        <div className="p-2 rounded-md text-xs" style={{ background: 'rgba(6,182,212,0.1)', color: '#67e8f9', border: '1px solid rgba(6,182,212,0.2)' }}>
+   295→          {toast}
+   296→        </div>
+   297→      )}
+   298→
+   299→      {/* Help text */}
+   300→      <div className="text-[10px] p-2 rounded" style={{ color: 'var(--nex-text-muted)', background: 'var(--nex-glass-bg)' }}>
+   301→        Download models manually, place them in the correct folder (e.g. models/llm/qwen/),
+   302→        then click Scan Storage. NEX AI will automatically detect, classify, and register them.
+   303→      </div>
+   304→    </div>
+   305→  );
+   306→}
+   307→
+   308→function StatusBadge({ status, label }: { status: boolean | null; label: string }) {
+   309→  if (status === null) {
+   310→    return <span className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Checking…</span>;
+   311→  }
+   312→  return (
+   313→    <span
+   314→      className="text-xs px-1.5 py-0.5 rounded-full"
+   315→      style={{
+   316→        background: status ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+   317→        color: status ? 'rgb(74,222,128)' : 'rgb(248,113,113)',
+   318→      }}
+   319→    >
+   320→      {status ? '✓' : '✗'} {label}
+   321→    </span>
+   322→  );
+   323→}
+   324→
+   325→export default function SettingsPanel() {
+   326→  const { settings, updateSettings, aiMode, setAIMode, projectPath } = useStore();
+   327→  const [activeSection, setActiveSection] = useState<SectionId>('general');
+   328→  const [saved, setSaved] = useState(false);
+   329→  const [saveError, setSaveError] = useState<string | null>(null);
+   330→  const [localSettings, setLocalSettings] = useState({ ...settings });
+   331→  const [localApiKey, setLocalApiKey] = useState(settings.aiApiKey);
+   332→  const [localGlmApiKey, setLocalGlmApiKey] = useState(settings.glmApiKey);
+   333→  const [persistenceInfo, setPersistenceInfo] = useState<{ userDataPath: string; portable: boolean; secretsAvailable: boolean } | null>(null);
+   334→  const [localModelCount, setLocalModelCount] = useState<number>(0);
+   335→  const [showApiKey, setShowApiKey] = useState(false);
+   336→  const [showGlmKey, setShowGlmKey] = useState(false);
+   337→  const [snap, setSnap] = useState<any>(null);
+   338→  const [plugins, setPlugins] = useState<any[]>([]);
+   339→  const [knowledgeStats, setKnowledgeStats] = useState<any>(null);
+   340→
+   341→  useEffect(() => {
+   342→    setLocalSettings({ ...settings });
+   343→    setLocalApiKey(settings.aiApiKey);
+   344→    setLocalGlmApiKey(settings.glmApiKey);
+   345→  }, [settings]);
+   346→
+   347→  useEffect(() => {
+   348→    window.nexAPI.persistenceInfo().then((info) => {
+   349→      setPersistenceInfo(info);
+   350→    }).catch(() => {});
+   351→  }, []);
+   352→
+   353→  useEffect(() => {
+   354→    window.nexAPI.modelList().then((models) => {
+   355→      setLocalModelCount(Array.isArray(models) ? models.length : 0);
+   356→    }).catch(() => setLocalModelCount(0));
+   357→  }, [activeSection]);
+   358→
+   359→  // Poll system snapshot for System section
+   360→  useEffect(() => {
+   361→    if (activeSection !== 'system') return;
+   362→    const poll = async () => {
+   363→      try {
+   364→        const r = await window.nexAPI.systemSnapshot();
+   365→        if (r.success && r.snapshot) setSnap(r.snapshot);
+   366→      } catch {}
+   367→    };
+   368→    poll();
+   369→    const timer = setInterval(poll, 2000);
+   370→    return () => clearInterval(timer);
+   371→  }, [activeSection]);
+   372→
+   373→  // Load plugins for Plugins section
+   374→  useEffect(() => {
+   375→    if (activeSection !== 'plugins') return;
+   376→    window.nexAPI.pluginsList?.().then((r: any) => {
+   377→      if (r?.success) setPlugins(r.plugins || []);
+   378→    }).catch(() => {});
+   379→  }, [activeSection]);
+   380→
+   381→  // Load knowledge stats for Knowledge section
+   382→  useEffect(() => {
+   383→    if (activeSection !== 'knowledge') return;
+   384→    if (!projectPath) return;
+   385→    window.nexAPI.knowledgeStats(projectPath).then((r: any) => {
+   386→      if (r?.success) setKnowledgeStats(r);
+   387→    }).catch(() => {});
+   388→  }, [activeSection, projectPath]);
+   389→
+   390→  const handleSave = useCallback(async () => {
+   391→    setSaveError(null);
+   392→    updateSettings(localSettings);
+   393→    if (localApiKey !== settings.aiApiKey) updateSettings({ aiApiKey: localApiKey });
+   394→    if (localGlmApiKey !== settings.glmApiKey) updateSettings({ glmApiKey: localGlmApiKey });
+   395→    try {
+   396→      const result = await window.nexAPI.settingsSave(localSettings, localApiKey, localGlmApiKey);
+   397→      if (result.success) {
+   398→        setSaved(true);
+   399→        setTimeout(() => setSaved(false), 2000);
+   400→      } else {
+   401→        setSaveError(result.error || 'Failed to save');
+   402→      }
+   403→    } catch (err: any) {
+   404→      setSaveError(err.message);
+   405→    }
+   406→  }, [localSettings, localApiKey, localGlmApiKey, settings, updateSettings]);
+   407→
+   408→  const updateLocal = (key: string, value: any) => {
+   409→    setLocalSettings((prev) => ({ ...prev, [key]: value }));
+   410→  };
+   411→
+   412→  const rt = snap?.aiRuntime;
+   413→  const secretsAvailable = persistenceInfo?.secretsAvailable ?? null;
+   414→
+   415→  return (
+   416→    <div className="h-full flex" style={{ background: 'var(--nex-bg)' }}>
+   417→      {/* Sidebar — wider for readability (was 180px) */}
+   418→      <div
+   419→        className="w-[200px] shrink-0 flex flex-col"
+   420→        style={{ borderRight: '1px solid var(--nex-glass-border)', background: 'var(--nex-panel-solid)' }}
+   421→      >
+   422→        <div
+   423→          className="h-9 flex items-center px-3 shrink-0"
+   424→          style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
+   425→        >
+   426→          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--nex-text-dim)' }}>
+   427→            Settings
+   428→          </span>
+   429→        </div>
+   430→        <div className="flex-1 overflow-y-auto nex-scrollbar py-1">
+   431→          {SECTIONS.map((section) => (
+   432→            <button
+   433→              key={section.id}
+   434→              onClick={() => setActiveSection(section.id)}
+   435→              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-all nex-click nex-focus"
+   436→              style={{
+   437→                color: activeSection === section.id ? 'var(--nex-accent)' : 'var(--nex-text-dim)',
+   438→                background: activeSection === section.id ? 'var(--nex-accent-dim)' : 'transparent',
+   439→                borderLeft: activeSection === section.id ? '2px solid var(--nex-accent)' : '2px solid transparent',
+   440→              }}
+   441→              aria-current={activeSection === section.id ? 'page' : undefined}
+   442→            >
+   443→              {section.icon}
+   444→              <span>{section.label}</span>
+   445→            </button>
+   446→          ))}
+   447→        </div>
+   448→        {/* Save button at bottom */}
+   449→        <div className="p-2 shrink-0" style={{ borderTop: '1px solid var(--nex-glass-border)' }}>
+   450→          <button
+   451→            onClick={handleSave}
+   452→            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-all nex-click nex-focus"
+   453→            style={{
+   454→              background: 'var(--nex-accent)',
+   455→              color: 'var(--nex-bg)',
+   456→            }}
+   457→            aria-label="Save settings"
+   458→          >
+   459→            {saved ? <Check size={12} /> : <Save size={12} />}
+   460→            {saved ? 'Saved' : 'Save'}
+   461→          </button>
+   462→          {saveError && (
+   463→            <p className="text-xs mt-1" style={{ color: 'rgb(248,113,113)' }}>{saveError}</p>
+   464→          )}
+   465→        </div>
+   466→      </div>
+   467→
+   468→      {/* Content — wider max-width + more padding for readability */}
+   469→      <div className="flex-1 overflow-y-auto nex-scrollbar p-5">
+   470→        <div className="max-w-2xl space-y-4">
+   471→
+   472→          {/* ═══ GENERAL ═══ */}
+   473→          {activeSection === 'general' && (
+   474→            <>
+   475→              <Card title="Appearance" description="Theme and visual customization">
+   476→                <ThemeSelector />
+   477→                <Select
+   478→                  label="Theme Variant"
+   479→                  value={localSettings.theme}
+   480→                  onChange={(v) => updateLocal('theme', v)}
+   481→                  options={[
+   482→                    { value: 'dark', label: 'Dark' },
+   483→                    { value: 'darker', label: 'Midnight' },
+   484→                  ]}
+   485→                />
+   486→                <Select
+   487→                  label="Language"
+   488→                  value={localSettings.language}
+   489→                  onChange={(v) => updateLocal('language', v)}
+   490→                  options={[
+   491→                    { value: 'en', label: 'English' },
+   492→                    { value: 'fa', label: 'فارسی (Persian)' },
+   493→                    { value: 'ar', label: 'العربية (Arabic)' },
+   494→                    { value: 'es', label: 'Español' },
+   495→                    { value: 'fr', label: 'Français' },
+   496→                    { value: 'de', label: 'Deutsch' },
+   497→                    { value: 'ja', label: '日本語' },
+   498→                    { value: 'ko', label: '한국어' },
+   499→                    { value: 'zh', label: '中文' },
+   500→                    { value: 'hi', label: 'हिन्दी' },
+   501→                    { value: 'ru', label: 'Русский' },
+   502→                    { value: 'pt', label: 'Português' },
+   503→                    { value: 'tr', label: 'Türkçe' },
+   504→                  ]}
+   505→                />
+   506→              </Card>
+   507→
+   508→              <Card title="Editor" description="Code editor preferences">
+   509→                <Slider label="Font Size" value={localSettings.fontSize} min={10} max={24} step={1} onChange={(v) => updateLocal('fontSize', v)} unit="px" />
+   510→                <Select
+   511→                  label="Font Family"
+   512→                  value={localSettings.fontFamily}
+   513→                  onChange={(v) => updateLocal('fontFamily', v)}
+   514→                  options={[
+   515→                    { value: 'JetBrains Mono, Fira Code, monospace', label: 'JetBrains Mono' },
+   516→                    { value: 'Fira Code, monospace', label: 'Fira Code' },
+   517→                    { value: 'Cascadia Code, monospace', label: 'Cascadia Code' },
+   518→                    { value: 'monospace', label: 'System Mono' },
+   519→                  ]}
+   520→                />
+   521→                <Slider label="Tab Size" value={localSettings.tabSize} min={2} max={8} step={2} onChange={(v) => updateLocal('tabSize', v)} unit=" sp" />
+   522→              </Card>
+   523→
+   524→              <Card title="Startup" description="Launch behavior (requires backend support)">
+   525→                <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
+   526→                  Startup behavior (start-with-OS, restore session) requires Electron
+   527→                  auto-launch integration. Not yet wired — accessible via Agent.
+   528→                </p>
+   529→              </Card>
+   530→            </>
+   531→          )}
+   532→
+   533→          {/* ═══ AI & MODEL ═══ */}
+   534→          {activeSection === 'ai' && (
+   535→            <>
+   536→              <Card title="AI Mode" description="Where NEX AI's intelligence runs">
+   537→                <div className="grid grid-cols-3 gap-2">
+   538→                  {(['local', 'online', 'auto'] as const).map((mode) => (
+   539→                    <button
+   540→                      key={mode}
+   541→                      onClick={() => setAIMode(mode)}
+   542→                      className="p-2 rounded-md text-left transition-all nex-click nex-focus"
+   543→                      style={{
+   544→                        border: `1px solid ${aiMode === mode ? 'var(--nex-accent)' : 'var(--nex-glass-border)'}`,
+   545→                        background: aiMode === mode ? 'var(--nex-accent-dim)' : 'transparent',
+   546→                      }}
+   547→                      aria-label={`Set AI mode to ${mode}`}
+   548→                    >
+   549→                      <div className="text-xs font-medium capitalize" style={{ color: aiMode === mode ? 'var(--nex-accent-text)' : 'var(--nex-text-dim)' }}>
+   550→                        {mode}
+   551→                      </div>
+   552→                    </button>
+   553→                  ))}
+   554→                </div>
+   555→              </Card>
+   556→
+   557→              <Card title="Local Model" description={`${localModelCount} model(s) registered`}>
+   558→                <Row label="Engine" value="node-llama-cpp (bundled)" mono />
+   559→                <Row label="Models" value={localModelCount} />
+   560→                <Row label="Status" value={localModelCount > 0 ? 'Ready' : 'No models'} />
+   561→                <ActionButton onClick={async () => {
+   562→                  const r = await window.nexAPI.openFile();
+   563→                  if (!r.canceled && r.path) {
+   564→                    await window.nexAPI.modelAdd(r.path, { category: 'embedding' }).catch(() => {});
+   565→                  }
+   566→                }}>
+   567→                  Add Model File
+   568→                </ActionButton>
+   569→              </Card>
+   570→
+   571→              <Card title="Model Parameters" description="Inference configuration">
+   572→                <Slider label="CPU Threads" value={localSettings.localThreads} min={1} max={16} step={1} onChange={(v) => updateLocal('localThreads', v)} />
+   573→                <Slider label="Context Size" value={localSettings.localContextSize} min={512} max={8192} step={512} onChange={(v) => updateLocal('localContextSize', v)} unit=" tok" />
+   574→                <Slider label="Temperature" value={localSettings.localTemperature} min={0} max={2} step={0.05} onChange={(v) => updateLocal('localTemperature', v)} />
+   575→                <Slider label="Max Tokens" value={localSettings.localMaxTokens} min={128} max={4096} step={128} onChange={(v) => updateLocal('localMaxTokens', v)} />
+   576→              </Card>
+   577→
+   578→              <Card title="Runtime Status" description="Live inference telemetry">
+   579→                <Row label="Backend" value={rt?.gpuBackend || 'N/A'} mono />
+   580→                <Row label="Active Model" value={rt?.activeModelName || 'N/A'} />
+   581→                <Row label="Tokens/sec" value={rt?.lastTokensPerSecond ? Math.round(rt.lastTokensPerSecond) : 'N/A'} />
+   582→                <Row label="Inference Active" value={rt?.inferenceActive ? 'Yes' : 'No'} />
+   583→                <Row label="Context Usage" value={rt?.contextMaxTokens ? `${rt.contextUsedTokens || 0}/${rt.contextMaxTokens}` : 'N/A'} />
+   584→              </Card>
+   585→
+   586→              {/* Phase 81: AI Storage Manager */}
+   587→              <Card title="AI Storage" description="External data directory for models, voice, documents">
+   588→                <AIStorageSection />
+   589→              </Card>
+   590→            </>
+   591→          )}
+   592→
+   593→          {/* ═══ VOICE ═══ */}
+   594→          {activeSection === 'voice' && (
+   595→            <>
+   596→              <Card title="Always-Ready Voice" description="NEX is always listening — no toggle needed">
+   597→                <div className="flex items-center gap-2 py-1">
+   598→                  <span
+   599→                    className="inline-block w-2 h-2 rounded-full animate-pulse"
+   600→                    style={{ background: 'var(--nex-success)' }}
+   601→                  />
+   602→                  <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>
+   603→                    Always Listening (auto-starts on boot)
+   604→                  </span>
+   605→                </div>
+   606→                <p className="text-xs mt-1" style={{ color: 'var(--nex-text-muted)' }}>
+   607→                  Voice auto-restarts after each command. Interrupt with "stop" or "cancel".
+   608→                </p>
+   609→              </Card>
+   610→
+   611→              <Card title="Voice Configuration" description="STT/TTS settings">
+   612→                <Toggle
+   613→                  label="Voice Enabled (TTS output)"
+   614→                  checked={localSettings.voiceEnabled}
+   615→                  onChange={(v) => updateLocal('voiceEnabled', v)}
+   616→                />
+   617→                <Select
+   618→                  label="Voice Language"
+   619→                  value={localSettings.language}
+   620→                  onChange={(v) => updateLocal('language', v)}
+   621→                  options={[
+   622→                    { value: 'en-US', label: 'English (US)' },
+   623→                    { value: 'en-GB', label: 'English (UK)' },
+   624→                    { value: 'fa-IR', label: 'فارسی' },
+   625→                    { value: 'ar-SA', label: 'العربية' },
+   626→                    { value: 'es-ES', label: 'Español' },
+   627→                    { value: 'fr-FR', label: 'Français' },
+   628→                    { value: 'de-DE', label: 'Deutsch' },
+   629→                    { value: 'ja-JP', label: '日本語' },
+   630→                    { value: 'ko-KR', label: '한국어' },
+   631→                    { value: 'zh-CN', label: '中文' },
+   632→                  ]}
+   633→                />
+   634→              </Card>
+   635→
+   636→              <Card title="Microphone" description="Audio input safety">
+   637→                <Row label="Echo Cancellation" value="Enabled" />
+   638→                <Row label="Noise Suppression" value="Enabled" />
+   639→                <Row label="Auto Gain Control" value="Enabled" />
+   640→                <p className="text-xs mt-1" style={{ color: 'var(--nex-text-muted)' }}>
+   641→                  STT pauses during TTS to prevent self-hearing. Auto-resumes after.
+   642→                </p>
+   643→              </Card>
+   644→            </>
+   645→          )}
+   646→
+   647→          {/* ═══ CONNECTIVITY ═══ */}
+   648→          {activeSection === 'connectivity' && (
+   649→            <>
+   650→              <Card title="AI Mode" description="Server-side enforced (defense-in-depth)">
+   651→                <div className="flex gap-2">
+   652→                  {(['local', 'online', 'auto'] as const).map((mode) => (
+   653→                    <button
+   654→                      key={mode}
+   655→                      onClick={() => setAIMode(mode)}
+   656→                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-all nex-click nex-focus"
+   657→                      style={{
+   658→                        background: aiMode === mode ? 'var(--nex-accent-dim)' : 'transparent',
+   659→                        border: `1px solid ${aiMode === mode ? 'var(--nex-accent)' : 'var(--nex-glass-border)'}`,
+   660→                        color: aiMode === mode ? 'var(--nex-accent-text)' : 'var(--nex-text-muted)',
+   661→                      }}
+   662→                      aria-label={`Set mode to ${mode}`}
+   663→                    >
+   664→                      {mode === 'local' ? <WifiOff size={12} /> : <Wifi size={12} />}
+   665→                      {mode.toUpperCase()}
+   666→                    </button>
+   667→                  ))}
+   668→                </div>
+   669→                <p className="text-xs mt-2" style={{ color: 'var(--nex-text-muted)' }}>
+   670→                  Mode is enforced server-side (src/main/ai/ai-mode.ts). Persists across restarts.
+   671→                </p>
+   672→              </Card>
+   673→
+   674→              {aiMode !== 'local' && (
+   675→                <Card title="Online Provider" description="Cloud AI configuration">
+   676→                  <Select
+   677→                    label="Provider"
+   678→                    value={localSettings.onlineProvider}
+   679→                    onChange={(v) => updateLocal('onlineProvider', v)}
+   680→                    options={[
+   681→                      { value: 'glm', label: 'GLM 5.3 (Z.ai)' },
+   682→                      { value: 'openai', label: 'OpenAI' },
+   683→                      { value: 'claude', label: 'Anthropic Claude' },
+   684→                    ]}
+   685→                  />
+   686→                  {localSettings.onlineProvider === 'glm' && (
+   687→                    <>
+   688→                      <Input
+   689→                        label="GLM API Key"
+   690→                        type={showGlmKey ? 'text' : 'password'}
+   691→                        value={localGlmApiKey}
+   692→                        onChange={setLocalGlmApiKey}
+   693→                        placeholder="glm-..."
+   694→                      />
+   695→                      <button
+   696→                        onClick={() => setShowGlmKey(!showGlmKey)}
+   697→                        className="text-xs flex items-center gap-1 mt-1 nex-click"
+   698→                        style={{ color: 'var(--nex-text-muted)' }}
+   699→                      >
+   700→                        {showGlmKey ? <EyeOff size={10} /> : <Eye size={10} />}
+   701→                        {showGlmKey ? 'Hide' : 'Show'} key
+   702→                      </button>
+   703→                      <Input
+   704→                        label="GLM Endpoint"
+   705→                        value={localSettings.glmEndpoint}
+   706→                        onChange={(v) => updateLocal('glmEndpoint', v)}
+   707→                        placeholder="https://api.z.ai"
+   708→                      />
+   709→                    </>
+   710→                  )}
+   711→                  {localSettings.onlineProvider !== 'glm' && (
+   712→                    <Input
+   713→                      label="API Key"
+   714→                      type={showApiKey ? 'text' : 'password'}
+   715→                      value={localApiKey}
+   716→                      onChange={setLocalApiKey}
+   717→                      placeholder="sk-..."
+   718→                    />
+   719→                  )}
+   720→                </Card>
+   721→              )}
+   722→            </>
+   723→          )}
+   724→
+   725→          {/* ═══ MEMORY ═══ */}
+   726→          {activeSection === 'memory' && (
+   727→            <>
+   728→              <Card title="Memory System" description="5-store agent memory (Phase 13)">
+   729→                <Row label="Status" value="Active" />
+   730→                <Row label="Stores" value="5 (task/project/user/session/lessons)" />
+   731→                <Row label="Scope" value="Project-isolated" />
+   732→              </Card>
+   733→
+   734→              <Card title="Actions" description="Memory management">
+   735→                <div className="flex gap-2">
+   736→                  <ActionButton onClick={() => window.nexAPI.memoryList('task').catch(() => {})}>
+   737→                    View Task Memory
+   738→                  </ActionButton>
+   739→                  <ActionButton
+   740→                    onClick={() => {
+   741→                      if (confirm('Clear ALL memory? This cannot be undone.')) {
+   742→                        window.nexAPI.memoryClear('task').catch(() => {});
+   743→                        window.nexAPI.memoryClear('project').catch(() => {});
+   744→                        window.nexAPI.memoryClear('user').catch(() => {});
+   745→                        window.nexAPI.memoryClear('session').catch(() => {});
+   746→                        window.nexAPI.memoryClear('lessons').catch(() => {});
+   747→                      }
+   748→                    }}
+   749→                    variant="danger"
+   750→                  >
+   751→                    <Trash2 size={10} className="inline mr-1" />
+   752→                    Clear All
+   753→                  </ActionButton>
+   754→                </div>
+   755→              </Card>
+   756→            </>
+   757→          )}
+   758→
+   759→          {/* ═══ KNOWLEDGE ═══ */}
+   760→          {activeSection === 'knowledge' && (
+   761→            <>
+   762→              <Card title="Knowledge Base" description="Local RAG + embeddings (Phase 9-11)">
+   763→                <Row label="Status" value={knowledgeStats ? 'Active' : 'N/A'} />
+   764→                <Row label="Indexed Documents" value={knowledgeStats?.documents ?? 'N/A'} />
+   765→                <Row label="Total Chunks" value={knowledgeStats?.chunks ?? 'N/A'} />
+   766→                <Row label="Embedding Backend" value={knowledgeStats?.embedding?.backend ?? 'N/A'} />
+   767→                <Row label="Offline Capable" value={knowledgeStats?.embedding?.offline ? 'Yes' : 'N/A'} />
+   768→              </Card>
+   769→
+   770→              <Card title="Actions" description="Knowledge management">
+   771→                <div className="flex flex-wrap gap-2">
+   772→                  <ActionButton onClick={() => projectPath && window.nexAPI.knowledgeIngestFolder(projectPath, projectPath).catch(() => {})}>
+   773→                    <RefreshCw size={10} className="inline mr-1" />
+   774→                    Scan
+   775→                  </ActionButton>
+   776→                  <ActionButton onClick={() => projectPath && window.nexAPI.knowledgePurgeMissing(projectPath).catch(() => {})}>
+   777→                    Purge Missing
+   778→                  </ActionButton>
+   779→                  <ActionButton
+   780→                    onClick={() => {
+   781→                      if (confirm('Clear ALL knowledge? This cannot be undone.') && projectPath) {
+   782→                        window.nexAPI.knowledgeClear(projectPath).catch(() => {});
+   783→                      }
+   784→                    }}
+   785→                    variant="danger"
+   786→                  >
+   787→                    <Trash2 size={10} className="inline mr-1" />
+   788→                    Clear Knowledge
+   789→                  </ActionButton>
+   790→                </div>
+   791→              </Card>
+   792→            </>
+   793→          )}
+   794→
+   795→          {/* ═══ PLUGINS & TOOLS ═══ */}
+   796→          {activeSection === 'plugins' && (
+   797→            <>
+   798→              <Card title="Plugins" description="Sandboxed plugin management (Phase 15-16)">
+   799→                {plugins.length === 0 ? (
+   800→                  <p className="text-xs py-2" style={{ color: 'var(--nex-text-muted)' }}>
+   801→                    No plugins discovered. Place plugin folders in userData/plugins/.
+   802→                  </p>
+   803→                ) : (
+   804→                  <div className="space-y-2">
+   805→                    {plugins.map((p: any) => (
+   806→                      <div
+   807→                        key={p.id}
+   808→                        className="flex items-center justify-between p-2 rounded-md"
+   809→                        style={{ background: 'var(--nex-glass-bg)', border: '1px solid var(--nex-glass-border)' }}
+   810→                      >
+   811→                        <div className="flex-1 min-w-0">
+   812→                          <div className="text-xs font-medium truncate" style={{ color: 'var(--nex-text)' }}>
+   813→                            {p.name}
+   814→                          </div>
+   815→                          <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
+   816→                            v{p.version} · {p.enabled ? 'Enabled' : 'Disabled'}
+   817→                          </div>
+   818→                        </div>
+   819→                        <Toggle
+   820→                          checked={p.enabled}
+   821→                          onChange={(v) => window.nexAPI.pluginsSetEnabled(p.id, v).catch(() => {})}
+   822→                          label={`Toggle ${p.name}`}
+   823→                        />
+   824→                      </div>
+   825→                    ))}
+   826→                  </div>
+   827→                )}
+   828→              </Card>
+   829→
+   830→              <Card title="Tool Permissions" description="Agent tool sandbox status">
+   831→                <Row label="Sandbox" value="Active (vm-based)" />
+   832→                <Row label="Permission System" value="Prompt-based" />
+   833→                <Row label="Audit Trail" value="Enabled" />
+   834→              </Card>
+   835→            </>
+   836→          )}
+   837→
+   838→          {/* ═══ SECURITY ═══ */}
+   839→          {activeSection === 'security' && (
+   840→            <>
+   841→              <Card title="Security Features" description="Real status from backend">
+   842→                <div className="space-y-1.5">
+   843→                  <div className="flex items-center justify-between">
+   844→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Content Security Policy</span>
+   845→                    <StatusBadge status={true} label="CSP" />
+   846→                  </div>
+   847→                  <div className="flex items-center justify-between">
+   848→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Context Isolation</span>
+   849→                    <StatusBadge status={true} label="Isolated" />
+   850→                  </div>
+   851→                  <div className="flex items-center justify-between">
+   852→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Node Integration</span>
+   853→                    <StatusBadge status={true} label="Disabled" />
+   854→                  </div>
+   855→                  <div className="flex items-center justify-between">
+   856→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Path Jail (fs-service)</span>
+   857→                    <StatusBadge status={true} label="Enforced" />
+   858→                  </div>
+   859→                  <div className="flex items-center justify-between">
+   860→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>Knowledge Ingest Guard</span>
+   861→                    <StatusBadge status={true} label="Active" />
+   862→                  </div>
+   863→                  <div className="flex items-center justify-between">
+   864→                    <span className="text-xs" style={{ color: 'var(--nex-text-dim)' }}>API Key Encryption</span>
+   865→                    <StatusBadge status={secretsAvailable} label="safeStorage" />
+   866→                  </div>
+   867→                </div>
+   868→              </Card>
+   869→
+   870→              <Card title="Secure Storage" description="API key encryption (OS keychain)">
+   871→                <Row label="Available" value={secretsAvailable === null ? 'Checking…' : secretsAvailable ? 'Yes' : 'No'} />
+   872→                <Row label="Method" value={secretsAvailable ? 'safeStorage (OS keychain)' : 'In-memory only'} />
+   873→                <Row label="UserData Path" value={persistenceInfo?.userDataPath || 'N/A'} mono />
+   874→                <Row label="Portable" value={persistenceInfo?.portable ? 'Yes' : 'No'} />
+   875→              </Card>
+   876→            </>
+   877→          )}
+   878→
+   879→          {/* ═══ SYSTEM ═══ */}
+   880→          {activeSection === 'system' && (
+   881→            <>
+   882→              <Card title="CPU" description="Real-time CPU telemetry">
+   883→                <Row label="Model" value={snap?.cpu?.model || 'N/A'} />
+   884→                <Row label="Cores / Threads" value={snap ? `${snap.cpu.cores}/${snap.cpu.threads}` : 'N/A'} />
+   885→                <Row label="Usage" value={snap?.cpu?.usagePercent !== undefined ? `${Math.round(snap.cpu.usagePercent)}%` : 'N/A'} />
+   886→              </Card>
+   887→
+   888→              <Card title="Memory" description="RAM usage">
+   889→                <Row label="Total" value={snap?.memory?.totalBytes ? `${Math.round(snap.memory.totalBytes / 1024 / 1024 / 1024 * 10) / 10} GB` : 'N/A'} />
+   890→                <Row label="Used" value={snap?.memory?.usedBytes ? `${Math.round(snap.memory.usedBytes / 1024 / 1024 / 1024 * 10) / 10} GB` : 'N/A'} />
+   891→                <Row label="Usage" value={snap?.memory?.usagePercent !== undefined ? `${Math.round(snap.memory.usagePercent)}%` : 'N/A'} />
+   892→              </Card>
+   893→
+   894→              <Card title="GPU" description="GPU telemetry (N/A if unavailable)">
+   895→                {snap?.gpus && snap.gpus.length > 0 ? (
+   896→                  <>
+   897→                    <Row label="Name" value={snap.gpus[0].name} />
+   898→                    <Row label="Vendor" value={snap.gpus[0].vendor} />
+   899→                    <Row label="Utilization" value={snap.gpus[0].utilizationPercent !== undefined ? `${Math.round(snap.gpus[0].utilizationPercent)}%` : 'N/A'} />
+   900→                    <Row label="VRAM" value={snap.gpus[0].vramPercent !== undefined ? `${Math.round(snap.gpus[0].vramPercent)}%` : 'N/A'} />
+   901→                  </>
+   902→                ) : (
+   903→                  <p className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>
+   904→                    GPU: N/A (no GPU detected or backend unavailable)
+   905→                  </p>
+   906→                )}
+   907→              </Card>
+   908→
+   909→              <Card title="AI Runtime" description="Inference engine status">
+   910→                <Row label="Backend" value={rt?.gpuBackend || 'N/A'} mono />
+   911→                <Row label="Active Model" value={rt?.activeModelName || 'N/A'} />
+   912→                <Row label="Tokens/sec" value={rt?.lastTokensPerSecond ? Math.round(rt.lastTokensPerSecond) : 'N/A'} />
+   913→                <Row label="Inference" value={rt?.inferenceActive ? 'Active' : 'Idle'} />
+   914→              </Card>
+   915→
+   916→              <Card title="Diagnostics" description="System health checks">
+   917→                <ActionButton onClick={() => window.nexAPI.dialogOpenFolder?.().catch(() => {})}>
+   918→                  Open UserData Folder
+   919→                </ActionButton>
+   920→              </Card>
+   921→            </>
+   922→          )}
+   923→
+   924→          {/* ═══ ABOUT ═══ */}
+   925→          {activeSection === 'about' && (
+   926→            <>
+   927→              <Card title="NEX AI" description="Local-First AI Workstation">
+   928→                <div className="flex flex-col gap-2">
+   929→                  <div className="flex items-center gap-3">
+   930→                    <div
+   931→                      className="flex items-center justify-center rounded-xl"
+   932→                      style={{
+   933→                        width: 40, height: 40,
+   934→                        background: 'radial-gradient(circle at 40% 40%, var(--nex-accent) 0%, var(--nex-accent-secondary) 60%, transparent 100%)',
+   935→                      }}
+   936→                    >
+   937→                      <Zap size={20} style={{ color: 'var(--nex-bg)' }} />
+   938→                    </div>
+   939→                    <div>
+   940→                      <div className="text-sm font-bold" style={{ color: 'var(--nex-text)' }}>NEX AI</div>
+   941→                      <div className="text-xs" style={{ color: 'var(--nex-text-muted)' }}>Local-First AI Workstation</div>
+   942→                    </div>
+   943→                  </div>
+   944→                </div>
+   945→              </Card>
+   946→
+   947→              <Card title="Build Info" description="Version + engine metadata">
+   948→                <Row label="Version" value="1.2.0" mono />
+   949→                <Row label="Engine" value="node-llama-cpp v3.20.0" mono />
+   950→                <Row label="Electron" value="NEX AI Shell (Phase 27)" />
+   951→                <Row label="Theme Engine" value="16 themes (Phase 31)" />
+   952→              </Card>
+   953→
+   954→              <Card title="Storage" description="Persistence location">
+   955→                <Row label="UserData Path" value={persistenceInfo?.userDataPath || 'N/A'} mono />
+   956→                <Row label="Portable Mode" value={persistenceInfo?.portable ? 'Yes' : 'No'} />
+   957→              </Card>
+   958→            </>
+   959→          )}
+   960→
+   961→        </div>
+   962→      </div>
+   963→    </div>
+   964→  );
+   965→}
+   966→

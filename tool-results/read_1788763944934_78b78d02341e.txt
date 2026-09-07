@@ -1999,4 +1999,4 @@
   1999→    - `wireKnowledgePort(request)` (main.ts:5073) — injects `request.knowledgePort` (calls KnowledgeService.retrieveForPrompt)
   2000→    - `wireOnlineEnvironment(request)` (main.ts:5128) — reads `onlineProvider` (default 'glm'), `glmApiKey`/`aiApiKey` from secrets, sets `request.onlineEnvironment = { available, modelName, modelId }`
 
-[showing lines 1-2000 of 10464; use offset=2001 with limit to continue reading]
+[showing lines 1-2000 of 10797; use offset=2001 with limit to continue reading]

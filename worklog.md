@@ -10794,3 +10794,781 @@ Technical rationale:
 If Windows hardware is unavailable, fall back to Option C (Architectural Hardening): it can be validated on Linux CI, reduces risk surface for a future Windows release, and unblocks distribution security (signature verification). Option B can be merged into either A or C as a follow-on (better planner is always useful).
 
 Audit complete. No files modified. No commits made.
+
+
+---
+Task ID: PHASE-O-AUDIT-VOICE-UI-SEC
+Agent: Explore (Voice/UI/Security)
+Task: READ-ONLY audit of Voice + UI/Activity + Orb + Stores + Settings + Security + Online-Provider architecture to determine what exists vs. what's missing for adding a Gemini online provider + a "live activity" UI. No files modified, no commits.
+
+Work Log:
+- Read worklog.md recent Phase 18 entries (lines 6475–10796), README.md, package.json
+- Read all 7 audit targets in full:
+  - src/main/voice/{nex-voice-conversation,local-voice-engine,local-whisper-provider,local-piper-provider}.ts
+  - src/renderer/services/{voice-service,voice-controller}.ts
+  - src/renderer/components/{chat/NexChatPanel,chat/MessageBubble,layout/AppShell,agent/AgentStateDisplay,agent/PermissionPrompt,layout/AgentsPanel,SettingsPanel}.tsx
+  - src/renderer/components/orb/orb-state.ts
+  - src/renderer/store/useStore.ts
+  - src/main/persistence/index.ts, src/main/security/index.ts, src/main/ai/ai-mode.ts
+  - src/main/ai/glm.ts, src/main/ai-service.ts, src/main/ai/provider.ts
+  - src/main/ai/runtimes/{online-runtime,online-transport}.ts
+  - src/main/agent/{types,stream-emit,core}.ts
+  - src/main/ai/voice-manager.ts (relevant sections)
+  - src/main/main.ts (settings-save, settings-load, agent-event bridge, wireOnlineEnvironment)
+  - src/renderer/types/electron.d.ts (NexAPI surface)
+- Searched `gemini|Gemini` in src/main + src/renderer → ZERO matches (confirmed: Gemini is genuinely absent)
+- Searched `AgentStateDisplay` imports → ZERO matches (confirmed dead code)
+- Searched `ActivityPanel|TimelinePanel|LiveActivity|activityTimeline` in src/renderer → ZERO matches (no structured activity panel exists)
+- Searched `test.*connection|verifyApiKey` in main.ts → only `download-test-connection` for CDN hosts (no AI-provider test)
+
+Findings (per area):
+
+═══ 1. VOICE ARCHITECTURE ═══
+
+WHAT EXISTS:
+- `STTProvider` interface (local-voice-engine.ts:27-37): name, isLocal, isAvailable, init, transcribeFile, startStream, feedAudioChunk, stopStream, shutdown
+- `TTSProvider` interface (local-voice-engine.ts:41-50): name, isLocal, isAvailable, init, synthesize, listVoices, stop, shutdown
+- `LocalVoiceEngine` (local-voice-engine.ts:182-569): pluggable providers via `setSTTProvider(provider)` + `setTTSProvider(provider)` (lines 242-243) — providers ARE swappable at runtime
+- Two implementations only: `LocalWhisperProvider` (local-whisper-provider.ts:234-391) + `LocalPiperProvider` (local-piper-provider.ts:214-355) — both `isLocal=true`, both shell-out via `safeExecFile`
+- `NexVoiceConversation` FSM (nex-voice-conversation.ts:135-897) — 5 states: idle → listening → thinking → speaking → interrupted. Conversation header explicitly forbids cloud speech APIs (lines 31–42, "MUST NEVER use a cloud speech API")
+- Voice → AI wiring (documented at nex-voice-conversation.ts:399-410):
+    onUserUtterance → IPC `voice-conversation-user` → AppShell.tsx:366-372 dispatches `nex:voice-transcript` CustomEvent (source='voice') → NexChatPanel.tsx:322-347 → `brainRoute` IPC → agent/chat → `voiceConversationSpeak` IPC → `speakResponse(text)` (nex-voice-conversation.ts:489-562) → `engine.speak(text, {requestId})` → piper → `voice-tts-audio` IPC → renderer audio element → `voice-tts-ended` IPC → `notifyTtsPlaybackEnded(requestId)`
+- `VoiceManager.activate()` (voice-manager.ts:284-359) hardcodes Whisper + Piper (`new LocalWhisperProvider(...)` line 304, `new LocalPiperProvider(...)` line 318)
+- Renderer `voiceService.ts` (Phase 30 + 116 JARVIS): browser-only fallback path (webkitSpeechRecognition + SpeechSynthesis) — separate from the main-side engine. Phase 18 P2-6 REMOVED the renderer-side TTS path (`speak()`/`stopSpeaking()`/`_ttsActive`) as dead code (voice-service.ts:93-102, 378-405)
+
+WHAT'S MISSING:
+- NO "voice provider mode" concept (local vs online) — `NexSettings` has no `voiceProvider`/`voiceMode` field; voice-manager.ts only registers local providers
+- NO streaming STT interface — `STTProvider.startStream`/`feedAudioChunk`/`stopStream` accumulates a buffer then transcribes a temp WAV file (local-whisper-provider.ts:336-361); Gemini Live needs bidirectional audio streaming
+- NO streaming TTS interface — `TTSProvider.synthesize` returns a WAV file path (local-piper-provider.ts:261-323); Gemini Live returns streamed PCM chunks
+- NO online voice provider implementation (no `OnlineVoiceProvider`, no `GeminiLiveProvider`)
+- NO IPC for "voice provider selection" / "online voice mode"
+- NO `gemini` audio capability (Live API uses bidirectional WebSocket + PCM)
+- Security note: nex-voice-conversation.ts:31-42 hardcodes "no cloud speech API" — adding Gemini Live requires either (a) explicit user opt-in to override this rule, or (b) adding an `isLocal=false` branch with explicit user consent
+
+WHAT CAN BE REUSED:
+- `STTProvider`/`TTSProvider` interfaces — Gemini Live could implement with streaming variants (add optional `feedAudioChunkLive` / `onAudioChunk` methods)
+- `NexVoiceConversation` FSM — it doesn't know HOW STT/TTS work, just calls `engine.startListening()` / `engine.speak()`
+- `setSTTProvider()`/`setTTSProvider()` API on LocalVoiceEngine
+- The `voiceConversationSpeak` IPC + renderer audio playback pipeline (`onVoiceTTSAudio`, `voiceTtsEnded`)
+- The `voice-conversation-state` IPC channel → AppShell → Orb bridge
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a parallel "online voice conversation" FSM — extend `NexVoiceConversation` OR add a sibling class that reuses the same state machine + Orb bridge
+- Do NOT create a new "voice provider mode" Zustand store — extend `NexSettings`
+- Do NOT reimplement the renderer audio playback pipeline in App.tsx (it's already wired with stale-requestId protection via Phase 16 BUG-12 + BUG-26 fixes)
+- Do NOT bypass the `voice-conversation-state` IPC channel for Orb state — it routes by `source` field (Phase 18 Stage 4 GAP-7 fix)
+
+═══ 2. CHAT UI + ACTIVITY DISPLAY ═══
+
+WHAT EXISTS:
+- `NexChatPanel.tsx` (1502 lines) is the ONLY chat UI. Messages stored in local `useState<NexMessage[]>` (line 41), NOT Zustand
+- Agent events handled by a single `useEffect` listener (NexChatPanel.tsx:439-681) that MUTATES the LAST chat bubble IN PLACE via `setMessages((prev) => { ... next[next.length - 1] = { ...last, content: ... } })`
+- Event types handled (NexChatPanel.tsx:449-676): planning_started, planning_completed/plan_created, step_started/tool_call/tool_call_started, step_completed/tool_result (captures `snapshotId` for Undo), verification/verification_passed/verification_failed, replanning, recovery_started/recovery_decision/modify_retry_started/skip_executed/recovery_succeeded/recovery_failed, agent_token (accumulates), task_completed/completed, task_failed/failed, task_cancelled/cancelled, permission_request
+- UX pattern: each event REPLACES the previous content of the last assistant bubble with a single emoji + text line like "🧠 Agent is working...\n\n🔧 Running write_file..." — NO history of intermediate events is preserved
+- `AgentEvent` type defined in agent/types.ts:387-443 — 24 distinct event types, comprehensive
+- `AgentStateDisplay.tsx` (286 lines) IS DEAD CODE — `grep AgentStateDisplay src/renderer` returns only the file itself (zero importers). It already implements the full event-to-icon/color mapping (lines 34-100) + a structured event log (lines 238-282) + backend/model badge + stepProgress bar + live streaming preview — ALL UNUSED
+- `AgentsPanel.tsx` (164 lines) is a separate task LIST view (polls `agent-list-tasks` IPC every 3s, shows id/prompt/status/createdAt). NO live event timeline
+
+WHAT'S MISSING:
+- NO "live activity panel" / "activity timeline" — only a single chat bubble that gets overwritten
+- NO structured event list visible to the user (history of intermediate events is lost on every overwrite)
+- NO step checklist UI (the existing `stepProgress` in dead `AgentStateDisplay` extracts stepIndex/totalSteps but it's never rendered)
+- NO way to expand a tool_call to see params + result + duration (data is in the event payload but discarded)
+- NO distinction between "intermediate progress events" and "the assistant's final answer" — both overwrite the same bubble
+- NO "online voice activity" indicator (e.g. "Gemini Live is listening...", "transcribing...", "speaking...")
+- NO live transcript display for Gemini Live (current `partialTranscript` in AppShell.tsx:82 only shows browser STT partials)
+
+WHAT CAN BE REUSED:
+- `AgentEvent` type (agent/types.ts:435-443) — already comprehensive, no need to redefine
+- `AgentStateDisplay.tsx` event-to-icon/color mapping (lines 34-100) — REVIVE this component, don't reimplement
+- `deriveTaskMeta()` in AgentStateDisplay (lines 112-133) — already extracts backend/model/usage/stepProgress
+- The `agent-event` IPC channel + `onAgentEvent` listener pattern (NexChatPanel.tsx:440)
+- The `snapshotId` capture mechanism (Phase 115) for Undo UI
+- The structured event log layout in AgentStateDisplay (lines 238-282)
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a parallel event emitter — the `agent-event` IPC + `onAgentEvent` (agent/core.ts:100) is the single source of truth
+- Do NOT redefine event types — `AgentEventType` (types.ts:387-433) is the source of truth
+- Do NOT re-implement backend/model display — `AgentStateDisplay` already has it
+- Do NOT re-create the streaming preview — `agent_token` event + `streamText` is already wired
+- Do NOT add a parallel "activity panel" alongside `AgentStateDisplay` — REVIVE AgentStateDisplay instead (it's already 95% complete)
+
+═══ 3. ORB STATE + ACTIVITY ═══
+
+WHAT EXISTS:
+- 13 Orb states (orb-state.ts:23-36): idle, initializing, ready, listening, thinking, speaking, active, working, success, error, cancelled, offline, installing
+- State transition validation via `safeOrbTransition()` (orb-state.ts:117-121) — strictly enforced in voice-service.ts AND voice-controller.ts (Phase 18 BUG-37 fix). Invalid transitions are BLOCKED + logged `[ORB_STATE] Invalid transition blocked: <from> → <to>`
+- `VALID_TRANSITIONS` graph (orb-state.ts:75-89) — relaxed in Phase 18 to allow flash states (success/error/cancelled) to be interrupted by new activity
+- Orb state driven by `voiceController` condition system: `setCondition(key, state)` + `clearCondition(key)` (voice-controller.ts:173-180). Active condition keys: 'mic', 'engine', 'conversation' (Phase 18 Stage 4), 'agent', 'queue', 'chat'
+- STATE_PRIORITY resolution (voice-service.ts:65-67): error=8 > offline=7 > speaking=6 > working=5 > thinking=4 > listening=3 > success=2=cancelled=2 > idle=1 — highest priority active condition wins
+- 'agent' condition (NexChatPanel.tsx:452, 458, 467, 524, 543, 605, 636, 656): thinking on planning_started/recovery_started; working on plan_created/step_started/tool_call/modify_retry_started; success on task_completed (1.5s auto-clear); error on task_failed (1.5s auto-clear); cancelled on task_cancelled (1.5s auto-clear)
+- 'queue' condition (AppShell.tsx:241-258): mirrors agent condition for background task-queue events
+- 'conversation'/'engine' conditions (AppShell.tsx:294-355): driven by main-side `voice-conversation-state` IPC (source='conversation' or 'engine')
+- Orb only shows GRANULARITY at the working/thinking level — NO sub-states like "reading file" vs "running command". The 2.5× orange "working" particle motion (orb-state.ts:290-309) is the same for ALL tool types
+- `partialTranscript` is shown below the Orb (AppShell.tsx:495-503) — only the renderer-side browser STT partials, NOT main-side Whisper partials and NOT a generic "current activity" text
+
+WHAT'S MISSING:
+- NO granular sub-states within "working" — Orb cannot distinguish "reading file" vs "running terminal command" vs "calling Gemini Live"
+- NO "current activity text" below the Orb — only `partialTranscript` (browser STT only); would need a generic "currentActivity" string (e.g. "🔧 write_file → src/main.tsx", "🎙️ Gemini Live listening...")
+- NO Orb state for "online voice" — current 'listening'/'thinking'/'speaking' states are ambiguous between local Whisper and (hypothetical) Gemini Live
+
+WHAT CAN BE REUSED:
+- `setCondition(key, state)` API — supports adding a new condition key (e.g. 'gemini-live')
+- The STATE_PRIORITY system — can add a new "live" state with appropriate priority
+- The condition resolution logic in voice-service.ts — automatically picks the highest-priority active state
+- The `safeOrbTransition` enforcement — automatically validates any new state
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a new "Orb state" enum — extend `NexOrbState` (currently 13 states)
+- Do NOT bypass `safeOrbTransition` — the validation is a tested Phase 18 invariant
+- Do NOT add a separate "Orb activity" system — extend the condition system (already has 6 condition keys)
+- Do NOT add a new "Orb text below" component — extend the existing `partialTranscript` block in AppShell.tsx:495-503 to be a generic `currentActivity` (or add a sibling block)
+
+═══ 4. ZUSTAND STORES + IPC ═══
+
+WHAT EXISTS:
+- Single Zustand store `useStore.ts:139-196` (AppState) — manages: activePanel, sidebarView, openFiles, projectPath, settings (NexSettings), aiMode, localModels, activeLocalModel, terminalVisible, commandPaletteOpen
+- `NexSettings` (useStore.ts:54-77): theme, fontSize, fontFamily, tabSize, aiEndpoint, aiApiKey, language, voiceEnabled, aiMode, onlineProvider ('glm'|'openai'|'claude'), glmApiKey, glmModel, glmEndpoint, activeLocalModelId, localThreads, localContextSize, localTemperature, localMaxTokens
+- NO agent activity store — agent events are processed in-place in NexChatPanel's useState; no other component can query "what is the current agent state?"
+- NO centralized event bus / dispatcher — every component subscribes independently via `useEffect + window.nexAPI.on*`
+- IPC event subscription pattern: `window.nexAPI.onX(callback) => () => void` (returns unsubscribe). Defined in electron.d.ts:170-192 (onVoiceConversationState, onVoiceTTSAudio, onVoiceTtsStopPlayback, onVoiceConversationWake, onVoiceConversationUser, onVoiceConversationNex, onVoiceConversationCommand, onVoiceConversationError) and electron.d.ts:70 (onChatToken) and electron.d.ts:206-212 (planner events)
+- `getProviderConfig()` (useStore.ts:83-137) — pure function that returns {provider, apiKey, model, endpoint, maxTokens, ...} based on settings + mode + localModel. Has 'glm', 'openai'/'claude' branches. NO 'gemini' branch
+
+WHAT'S MISSING:
+- NO agent activity store (e.g. `useAgentActivityStore`) — agent state is local to NexChatPanel, not shared
+- NO way to query "current agent state" from any component without subscribing to ALL `agent-event` events and reconstructing it
+- NO "live activity" store that components can read on demand (would power a future activity timeline panel without re-subscribing to events)
+- NO `geminiApiKey` in `NexSettings` (useStore.ts:67 has `glmApiKey` only)
+- NO `geminiModel`/`geminiEndpoint` in `NexSettings`
+- NO `gemini` branch in `getProviderConfig()` (useStore.ts:116-125)
+- NO `voiceProvider`/`voiceMode` field in `NexSettings` for online voice selection
+
+WHAT CAN BE REUSED:
+- `useStore.ts` pattern — easy to add new slices via `set((s) => ({ ...s, foo: bar }))`
+- `getProviderConfig()` function — extend with a 'gemini' branch (mirror the 'glm' branch at lines 116-125)
+- `aiMode` + `setAIMode` pattern — already wired to main process (Phase 17 P0 13-1 fix syncs settings.aiMode)
+- The IPC subscription pattern — `window.nexAPI.onX(callback) => unsubscribe`
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a second chat-message store — messages are owned by NexChatPanel `useState` (Phase 17 cleanup removed the dead Zustand `messages` field at useStore.ts:166-170)
+- Do NOT create a parallel aiMode system — extend the existing one
+- Do NOT create a separate "online provider" store — extend `NexSettings`
+- Do NOT add a new "current agent state" store that competes with the existing event-driven pattern — instead, create a derived `useAgentActivityStore` that subscribes to `onAgentEvent` ONCE and exposes state to all consumers
+
+═══ 5. SETTINGS UI ═══
+
+WHAT EXISTS:
+- `SettingsPanel.tsx` (966 lines) — 10 sections: General, AI & Model, Voice, Connectivity, Memory, Knowledge, Plugins & Tools, Security, System, About
+- "Online Provider" card (SettingsPanel.tsx:674-721) ONLY shown when `aiMode !== 'local'`
+- Provider dropdown (SettingsPanel.tsx:680-684): 'GLM 5.3 (Z.ai)', 'OpenAI', 'Anthropic Claude' — NO Gemini option
+- GLM-specific inputs (SettingsPanel.tsx:686-710): GLM API Key (password + Show/Hide toggle), GLM Endpoint
+- Non-GLM inputs (SettingsPanel.tsx:711-719): single API Key (password + Show/Hide) — uses `aiEndpoint` + `aiApiKey`
+- NO "Test Connection" button for any AI provider (only `download-test-connection` exists, for CDN hosts — main.ts:3322, 3338)
+- NO provider status badge (e.g. "API key valid ✓", "Endpoint reachable")
+- NO "Online Voice" section — voice settings are in a separate "Voice" section (line 594+) and only cover local Whisper/Piper
+- Save flow (SettingsPanel.tsx:390-406): `window.nexAPI.settingsSave(localSettings, localApiKey, localGlmApiKey)` — sends API keys in plaintext over IPC. The `localApiKey`/`localGlmApiKey` are stored in local component state (lines 331-332) AND mirrored to `useStore.settings.aiApiKey`/`.glmApiKey` (line 393-394)
+
+WHAT'S MISSING:
+- NO "Gemini" option in the provider dropdown (SettingsPanel.tsx:680-684)
+- NO "Gemini API Key" input + endpoint field
+- NO "Test Connection" button for any provider (would require new IPC + main-process handler that calls the provider with a trivial "ping" prompt)
+- NO provider status badge
+- NO "Online Voice Provider" section (Gemini Live is a voice provider — needs a separate card from chat providers)
+- NO "Voice Provider Mode" toggle (local Whisper/Piper vs Gemini Live)
+- NO Gemini Live-specific UI (e.g. voice selection, model selection — Gemini Live has different voices)
+
+WHAT CAN BE REUSED:
+- The existing `Card`, `Input`, `Select`, `Toggle`, `Slider`, `Row` reusable components (SettingsPanel.tsx:49-160)
+- The `showGlmKey`/`showApiKey` show/hide pattern (lines 336, 696-702)
+- The `handleSave` flow + `settingsSave(settings, apiKey, glmApiKey)` IPC signature — extend with `geminiApiKey` parameter (4th arg)
+- The "Online Provider" card structure (lines 674-721) — clone for "Online Voice Provider" card
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a separate "Gemini Settings" panel — extend the existing AI section
+- Do NOT add a new save flow — use `settingsSave(settings, aiApiKey, glmApiKey, geminiApiKey)` (additive 4th arg)
+- Do NOT create a separate `localGeminiApiKey` state variable AND a separate save path — mirror the existing `localGlmApiKey` pattern
+
+═══ 6. SECURITY / API KEY STORAGE ═══
+
+WHAT EXISTS:
+- `persistence/index.ts:208-251`: `setSecret(key, value)`, `getSecret(key)`, `deleteSecret(key)` using Electron `safeStorage` (DPAPI on Windows, Keychain on macOS, libsecret on Linux)
+- Secrets stored in `<userData>/secrets.json` as base64-encoded ciphertext (persistence/index.ts:182-197, 220-224)
+- If `safeStorage.isEncryptionAvailable()` is false: `setSecret` returns false (does NOT store plaintext) + logs warning; `getSecret` returns '' (persistence/index.ts:209-212, 232-234)
+- `secrets.json` is BLOCKED by `isSensitivePath()` (security/index.ts:83-110) — agent cannot read it via filesystem tools
+- API keys (`aiApiKey`, `glmApiKey`) CURRENTLY SENT TO RENDERER on `settings-load` IPC (main.ts:633-635):
+    `const apiKey = getSecret('aiApiKey'); const glmApiKey = getSecret('glmApiKey'); return { settings: merged, apiKey, glmApiKey };`
+  This is a SECURITY GAP: API keys travel main→renderer in plaintext over IPC, then stored in `useStore.NexSettings.aiApiKey`/`.glmApiKey` as plain strings in React state
+- `wireOnlineEnvironment()` (main.ts:5269-5312) — for the AGENT path, reads API key lazily via `getSecret()` (main.ts:5290) — agent path is SECURE (key never leaves main process)
+- `createLazyOnlineTransport()` (online-transport.ts:76-101) — reads secret FRESH on every call via `getSecret()` (line 95) — never cached in the runtime, never logged
+- `setSecret` is invoked from `settings-save` IPC handler (main.ts:638-654): `setSecret('aiApiKey', apiKey)` + `setSecret('glmApiKey', glmApiKey)`
+- CSP (security/index.ts:191-203): `connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn` — NO Gemini origins
+- `ALLOWED_AI_ORIGINS` (security/index.ts:220-226): OpenAI, Anthropic, api.z.ai, open.bigmodel.cn — NO Gemini origins
+
+WHAT'S MISSING:
+- NO `geminiApiKey` in `setSecret('geminiApiKey', ...)` flow — needs adding to `settings-save` IPC handler (main.ts:647-649)
+- NO `geminiApiKey` returned from `settings-load` (main.ts:633-635) — and ideally, DO NOT propagate this anti-pattern. Phase O should return `geminiApiKey: string` (the plaintext) for parity with existing keys, OR (preferred) return `geminiApiKeySet: boolean` and let renderer send a "use stored key" sentinel — the latter is a security improvement but a breaking change for the existing pattern
+- NO Gemini in `ALLOWED_AI_ORIGINS` — must add `https://generativelanguage.googleapis.com` (and possibly `https://*.googleapis.com`)
+- NO Gemini endpoint in CSP `connect-src` — must add the same origins
+- SECURITY GAP (pre-existing, NOT introduced by Phase O): API keys are exposed to the renderer. Phase O should NOT make this worse — `geminiApiKey` should follow the existing pattern (returned on settings-load) for consistency, but the audit flags this for future hardening
+
+WHAT CAN BE REUSED:
+- `setSecret()` / `getSecret()` — already works for any key name, just call `setSecret('geminiApiKey', value)`
+- The `isSensitivePath()` block — already blocks `secrets.json` access from agent
+- The `safeStorage` encryption — handles any platform
+- The lazy `getSecret()` pattern in `online-transport.ts:94-95` — apply to a future `gemini-transport.ts`
+- The agent path's secret handling (`wireOnlineEnvironment` + `createLazyOnlineTransport`) — Gemini transport should follow the same pattern (read secret lazily, never cache)
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a separate "Gemini secret store" — use the existing `setSecret('geminiApiKey', ...)` pattern
+- Do NOT roll a custom encryption — `safeStorage` is the standard
+- Do NOT add `geminiApiKey` to `config.json` (plaintext) — must go in `secrets.json` via `setSecret()`
+- Do NOT log the API key — `wireOnlineEnvironment` already documents this (main.ts:5256-5267)
+- Do NOT pass the API key through `onlineEnvironment` interface — that interface only has `available`/`modelName`/`modelId` (intentional — agent core never learns HOW to authenticate)
+
+═══ 7. EXISTING ONLINE PROVIDER (GLM) ═══
+
+WHAT EXISTS:
+- `glm.ts` (182 lines) — PURE wire helpers, no electron imports, unit-testable:
+  - `GLM_DEFAULT_ENDPOINT = 'https://api.z.ai'` (line 34)
+  - `GLM_CN_ENDPOINT = 'https://open.bigmodel.cn'` (line 37)
+  - `GLM_DEFAULT_MODEL = 'glm-5.3'` (line 40)
+  - `GLM_MODELS = ['glm-5.3', 'glm-5.3-air', 'glm-5.3-flash']` (line 43)
+  - `GLM_CHAT_PATH = '/api/paas/v4/chat/completions'` (line 47)
+  - `glmEndpointUrl(endpoint)` — normalizes endpoint to full chat-completions URL (lines 75-87)
+  - `buildGlmRequest(apiKey, messages, opts)` — builds {url, headers, body} with `Authorization: Bearer <key>` (lines 94-116)
+  - `buildGlmRequestForEndpoint(endpoint, apiKey, messages, opts)` (lines 122-130)
+  - `parseGlmResponse(raw)` — strict OpenAI-compatible response parser (lines 145-173)
+  - `isGlmModel(model)` (lines 179-181)
+- `ai-service.ts:193-238` — `callGLM(config, messages, resolve)` uses electron `net.request` with the plan from `buildGlmRequestForEndpoint`; writes plan.body, parses via `parseGlmResponse`. HTTP 400+ errors get a `GLM HTTP <code>: <error>` message
+- `provider.ts:80-116` — `routeChat(config, messages, aiModeOverride)` is the SINGLE entry point:
+  1. `enforceAiMode(mode, provider)` — blocks online providers when aiMode='local' (lines 86-90)
+  2. Local: `localChatComplete(config, messages)` (lines 92-94)
+  3. Online: origin allowlist check `isAllowedAIOrigin(config.endpoint)` (lines 97-104)
+  4. Online: apiKey required check (lines 106-112)
+  5. Dispatch via `chatCompletion(config, messages)` — which has its own internal `callOpenAI`/`callClaude`/`callGLM` switch (ai-service.ts:66-73)
+- `ai-mode.ts:83-109` — `enforceAiMode(mode, provider)` blocks ALL online providers (not just specific ones) when aiMode='local' — Gemini would be blocked uniformly
+- `online-runtime.ts:46-155` — `OnlineRuntime` is an `AIRuntime` impl backed by an injected `OnlineChatTransport`. Provider-agnostic — does NOT know it's GLM/OpenAI/Claude
+- `online-transport.ts:76-101` — `createLazyOnlineTransport()` reads `onlineProvider` from settings + reads API key via `getSecret()` lazily, then calls `routeChat()`. Currently handles 'openai', 'claude', default→'glm' (line 80)
+- `wireOnlineEnvironment()` in main.ts:5269-5312 — sets `onlineEnvironment = { available, modelName, modelId }` on agent requests. Reads `onlineProvider` + `getSecret()` for the API key check. Currently handles 'glm', 'openai', 'claude' (lines 5288-5307)
+- Settings type: `onlineProvider: 'glm' | 'openai' | 'claude'` (useStore.ts:66, persistence/index.ts:39, main.ts:620)
+- Provider types: `AIProviderType = 'local' | 'openai' | 'claude' | 'glm'` (useStore.ts:19), `ProviderType = 'local' | 'openai' | 'claude' | 'glm'` (provider.ts:24), `provider: 'openai' | 'claude' | 'glm' | 'custom'` (ai-service.ts:10)
+- `DEFAULT_CONFIGS` in ai-service.ts:24-50 — has `glm`, `openai`, `claude`, `custom` entries
+
+WHAT'S MISSING:
+- NO `gemini` in any of the union types — must extend:
+  - useStore.ts:19 `AIProviderType` → add 'gemini'
+  - useStore.ts:66 `onlineProvider` (NexSettings) → add 'gemini'
+  - useStore.ts:116-125 `getProviderConfig()` → add 'gemini' branch (mirror 'glm' branch)
+  - persistence/index.ts:39 `onlineProvider?` → add 'gemini'
+  - provider.ts:24 `ProviderType` → add 'gemini'
+  - ai-service.ts:10 `AIConfig.provider` → add 'gemini'
+  - ai-service.ts:24-50 `DEFAULT_CONFIGS` → add 'gemini' entry
+  - ai-service.ts:66-73 `chatCompletion()` switch → add `callGemini` branch
+  - online-transport.ts:21 `provider()` return type → add 'gemini'
+  - online-transport.ts:80,84,90 → add 'gemini' branch
+  - main.ts:5288-5307 `wireOnlineEnvironment()` → add 'gemini' branch (modelName: 'Gemini 2.5 Pro', modelId: 'gemini-2.5-pro')
+- NO `gemini.ts` pure module — needs creating (mirror `glm.ts`):
+  - `GEMINI_DEFAULT_ENDPOINT = 'https://generativelanguage.googleapis.com'`
+  - `GEMINI_DEFAULT_MODEL = 'gemini-2.5-pro'` (or `'gemini-2.0-flash'`)
+  - `GEMINI_MODELS = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-live-001']`
+  - `buildGeminiRequest(apiKey, messages, opts)` — DIFFERENT shape: `{ contents: [{ role, parts: [{ text }] }], systemInstruction: { parts: [{ text }] } }`
+  - `parseGeminiResponse(raw)` — DIFFERENT shape: `{ candidates: [{ content: { parts: [{ text }] } }] }`
+- NO `callGemini()` in `ai-service.ts` — DIFFERENT auth: `X-Goog-Api-Key: <key>` header (NOT Bearer), DIFFERENT endpoint pattern: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=<key>` (or `:streamGenerateContent` for SSE)
+- NO `geminiApiKey` in `settings-save`/`settings-load` IPC handlers (main.ts:638-654, 633-635)
+- NO `geminiApiKey` in `setSecret('geminiApiKey', ...)` flow
+- NO `geminiApiKey` in `useStore.NexSettings`
+- NO `geminiApiKey` in `SettingsPanel.tsx` state + UI
+
+HOW GEMINI DIFFERS FROM THE GLM/OPENAI/CLAUDE PATTERN:
+- Auth: Gemini uses `X-Goog-Api-Key: <key>` header (or `?key=...` query param) — NOT `Authorization: Bearer <key>`. This is a clean difference: `buildGeminiRequest` puts the key in a different header than `buildGlmRequest`.
+- Endpoint: Gemini uses a path-embedded model + method, e.g. `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent` — NOT a fixed `/chat/completions` path
+- Request shape: Gemini uses `contents: [{ role, parts: [{ text }] }]` + `systemInstruction: { parts: [{ text }] }` (system is OUTSIDE contents) — NOT `messages: [{ role, content }]`. Mapping is straightforward but lossless.
+- Response shape: Gemini uses `candidates: [{ content: { parts: [{ text }], role } }]` + `usageMetadata` — NOT `choices: [{ message: { content } }]` + `usage`. Mapping is straightforward.
+- Streaming: Gemini uses `:streamGenerateContent?alt=sse` for SSE — same pattern as OpenAI but different endpoint. The `OnlineRuntime.chatStream` (online-runtime.ts:115-129) currently EMULATES streaming by awaiting full result then splitting by lines — a real Gemini SSE transport would need a new `OnlineChatTransport` that supports true streaming (the interface currently only has `ChatMessage[]→ChatResult`, no onChunk callback). This is a known limitation: online-runtime.ts:113-115 comment "streaming is emulated ... allows a true SSE transport later without any caller changes"
+- Live API (Gemini Live): bidirectional audio streaming over WebSocket — completely different transport (`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=<key>`). Would NOT fit `OnlineChatTransport` (which is HTTP request-response). Needs a separate `GeminiLiveProvider` implementing the `STTProvider`/`TTSProvider` interfaces (or new streaming variants).
+
+WHAT CAN BE REUSED:
+- The provider abstraction pattern (`routeChat` → dispatch by provider type) — Gemini is just another branch
+- `OnlineRuntime` (online-runtime.ts) — already provider-agnostic via injected transport; reuse AS-IS for chat
+- `createLazyOnlineTransport()` — extend with `gemini` branch (lazy getSecret + lazy settings read)
+- `enforceAiMode()` — already blocks ALL online providers uniformly; Gemini is blocked the same way
+- `wireOnlineEnvironment()` — extend with `gemini` branch (modelId: 'gemini-2.5-pro', modelName: 'Gemini 2.5 Pro')
+- The `glm.ts` pure-module pattern — clone for `gemini.ts` (pure, no electron imports, unit-testable)
+
+WHAT MUST NOT BE DUPLICATED:
+- Do NOT create a separate "GeminiRuntime" — `OnlineRuntime` is already provider-agnostic
+- Do NOT create a separate `routeGemini` — `routeChat()` is the single entry point
+- Do NOT duplicate the aiMode enforcement — `enforceAiMode` handles all online providers uniformly
+- Do NOT duplicate the `OnlineChatTransport` interface — extend it (or add a sibling `OnlineStreamingChatTransport` for true SSE)
+- Do NOT put Gemini-specific fields (apiKey, model) in the `OnlineEnvironment` interface — that interface only has `available`/`modelName`/`modelId` (intentional — agent core stays provider-ignorant). Read the API key lazily in the transport via `getSecret()`, exactly like `createLazyOnlineTransport` does for GLM
+
+═══ CROSS-CUTTING RECOMMENDATIONS ═══
+
+1. Type union changes are ADDITIVE — adding 'gemini' to `AIProviderType`, `ProviderType`, `onlineProvider`, `AIConfig.provider` does NOT break existing code (just adds a new branch). Same for adding `geminiApiKey` to `NexSettings` (optional field, default '').
+
+2. Pure module first — create `src/main/ai/gemini.ts` (mirror `glm.ts`) BEFORE touching `ai-service.ts`. Unit-testable in plain Node with zero mocks. Then add `callGemini()` to `ai-service.ts` using `buildGeminiRequest`/`parseGeminiResponse`.
+
+3. Origin allowlist + CSP — must add `https://generativelanguage.googleapis.com` to BOTH `ALLOWED_AI_ORIGINS` (security/index.ts:220-226) AND CSP `connect-src` (security/index.ts:196). Both layers are enforced (worklog line 5481).
+
+4. Live activity UI — REVIVE `AgentStateDisplay.tsx` (currently dead code, 286 lines, 95% complete) and wire it into the chat panel as a collapsible "Agent Activity" expandable section under the latest assistant message. DO NOT create a new component. The event-to-icon mapping + structured event log + backend badge + stepProgress bar + streaming preview are ALL ALREADY IMPLEMENTED but unused.
+
+5. Agent activity store — optional follow-on: extract a `useAgentActivityStore` (Zustand) that subscribes to `onAgentEvent` ONCE and exposes the current activity state to all consumers. This would let the Orb, the activity panel, AND any future "command palette" agent status entry all read from a single source. Currently NexChatPanel processes events in-place (no other component can see them). For Phase O, this is OPTIONAL — the activity panel can subscribe directly.
+
+6. Voice provider mode — add `voiceProvider: 'local' | 'gemini-live'` to `NexSettings` (default 'local'). `VoiceManager.activate()` reads this and either registers Whisper/Piper (current path) OR registers a new `GeminiLiveProvider` (new STT/TTS provider impl). The `NexVoiceConversation` FSM does NOT need to change — it just calls `engine.startListening()`/`engine.speak()`. The security header at nex-voice-conversation.ts:31-42 ("MUST NEVER use a cloud speech API") needs an explicit opt-in: only when `voiceProvider === 'gemini-live'` is the cloud path allowed, and it should be a separate IPC with explicit user consent (Phase 43 PermissionGate pattern).
+
+7. API key in renderer — pre-existing security gap (main.ts:633-635 returns plaintext API keys to renderer). For Phase O, `geminiApiKey` should follow the existing pattern for consistency, but the audit flags this for future hardening: change settings-load to return `geminiApiKeySet: boolean` instead, and let the renderer send a "use stored key" sentinel. NOT a Phase O blocker — Gemini API key handling should match the existing GLM pattern.
+
+Audit complete. No files modified. No commits made. All findings are READ-ONLY observations from source inspection. The architecture is well-structured for adding Gemini: the provider abstraction (`routeChat` + `OnlineRuntime` + `OnlineChatTransport`) cleanly accommodates a new branch, and the dead `AgentStateDisplay.tsx` provides a ready-made live-activity UI. The main gaps are (a) type-union extensions (additive, low-risk), (b) creating `gemini.ts` + `callGemini()` (mirrors the proven `glm.ts` pattern), (c) reviving `AgentStateDisplay` and wiring it into NexChatPanel, (d) adding `voiceProvider` mode + `GeminiLiveProvider` for online voice, (e) security allowlist + CSP additions for `generativelanguage.googleapis.com`.
+
+---
+Task ID: PHASE-O-AUDIT-PROVIDER-AGENT
+Agent: Explore (Provider/Agent/Tools)
+Task: READ-ONLY deep audit of the Provider + Agent + Tools architecture to determine what already exists and what's genuinely missing for adding a Gemini online provider. No files modified, no commits. Complements the sibling PHASE-O-AUDIT-VOICE-UI-SEC audit by going deeper on the agent core / runtime / tool-registry layers.
+
+Work Log:
+- Read worklog.md recent Phase 18 entries (lines 10446-10800) for context + the sibling PHASE-O audit (10797-11219)
+- Read in full: src/main/ai/runtime.ts (282 lines), runtimes/online-runtime.ts (155), runtimes/online-transport.ts (117), runtimes/llamacpp-runtime.ts (118), glm.ts (181), provider.ts (116), ai-mode.ts (109), local-model-provider.ts (466), local-engine.ts (315), tool-registry.ts (390), src/main/ai-service.ts (253)
+- Read in full: src/main/agent/core.ts (2245 lines, key sections: createTask 151-274, runTask 296-810, executeStep 807-1480, getRuntime 2042-2049, getModelForTask 2051-2077), model-router.ts (163), planner.ts (555), react-loop.ts (410), recovery-engine.ts (799), context-manager.ts (313), types.ts (515), stream-emit.ts (129), logger.ts (243)
+- Read in full: src/main/persistence/index.ts (392) and src/main/security/index.ts relevant sections (180-235)
+- Read main.ts relevant sections: settings-save/load (601-668), ai-chat-stream handler (759-921), brain-route (948-987), agent-create-task (5326-5339), wireOnlineEnvironment (5269-5312), onAgentEvent IPC bridge (5186-5188)
+- Read preload.ts onAgentEvent wiring (721-727)
+- Read NexChatPanel.tsx event handler (440-680) for activity display pattern
+- Searched: `gemini|Gemini|generativelanguage` in src/ → ZERO matches (Gemini genuinely absent)
+- Searched: `tool_calls|function_call|toolCalls` in src/main → `toolCalls` only refers to the agent's own ToolCallRecord array (NO LLM-level tool_calls field anywhere)
+- Searched: `getToolSchemasForLLM` consumers → only main.ts:5396 (agent-get-tool-schemas IPC for UI display); NOT used by planner
+- Searched: `SSE|EventSource|text/event-stream` → only doc-comments in online-runtime.ts (no real SSE implementation)
+
+Findings (per area):
+
+═════════════════════════════════════════════════════════════════════════════
+1. AI PROVIDER ABSTRACTION
+═════════════════════════════════════════════════════════════════════════════
+
+WHAT EXISTS:
+
+(A) AIRuntime interface — src/main/ai/runtime.ts:95-149
+   - Single unified interface. Both LlamaCppRuntime and OnlineRuntime implement it.
+   - Methods (exact signatures):
+       readonly type: RuntimeType         // 'llamacpp'|'onnx'|'mlc'|'wasm'|'online'|'custom'
+       readonly capabilities: ReadonlySet<ModelCapability>
+       init(): Promise<void>              // idempotent
+       loadModel(model: LocalModelInfo, opts?: ChatOptions): Promise<void>
+       unloadModel(): Promise<void>
+       chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>
+       chatStream(messages: ChatMessage[], onChunk: (c: StreamChunk) => void, opts?: ChatOptions): Promise<ChatResult>
+       abort(): void
+       getStats(): RuntimeStats
+       shutdown(): Promise<void>
+   - ChatMessage is TEXT-ONLY (runtime.ts:35-38): { role: 'system'|'user'|'assistant'; content: string }. NO tool_calls field.
+   - ChatResult (runtime.ts:54-65) has `finishReason?: 'stop'|'length'|'tool_call'|'aborted'` — 'tool_call' is declared but NEVER populated by any runtime.
+
+(B) Runtime Registry — runtime.ts:151-202
+   - `registerRuntime(type, factory)` — Map<RuntimeType, RuntimeFactory>
+   - `getRuntime(type, instanceId)` — Map<`${type}:${instanceId}`, AIRuntime>
+   - `getDefaultRuntime()` — `getRuntime('llamacpp', 'default')`
+   - `listRuntimeTypes()` — returns registered keys
+   - `getRuntimeMonitorStats()` — System Monitor view of all instances + last inference
+   - `shutdownAllRuntimes()` — app-exit cleanup
+   - Built-in registrations (runtime.ts:276, 282):
+       registerRuntime('llamacpp', () => new LlamaCppRuntime())
+       registerRuntime('online', () => createDefaultOnlineRuntime())
+   - Two online instances used in practice: 'online:chat-shared' (main.ts:854, simple chat) and 'online:agent-shared' (core.ts:2048, agent)
+
+(C) LlamaCppRuntime — runtimes/llamacpp-runtime.ts:28-117
+   - Thin adapter around inference.ts (node-llama-cpp).
+   - Real streaming (chatStream → inference.ts chatStream).
+   - Real abort (abort → inference.ts abortInference).
+   - Reads model state from inference.ts as single source of truth (Phase 86 P0-3 fix removed shadow state).
+
+(D) OnlineRuntime — runtimes/online-runtime.ts:46-155
+   - Implements AIRuntime by delegating to an injected `OnlineChatTransport` (online-runtime.ts:30-33):
+       type OnlineChatTransport = (messages: ChatMessage[], opts: ChatOptions) => Promise<ChatResult>
+   - loadModel() is a NO-OP bookkeeping step (sets _loaded=true).
+   - chat() (79-106): awaits transport; tracks _inFlight for abort; notes inference stats.
+   - chatStream() (115-129): EMULATES streaming — awaits chat() then splits by '\n' into chunks. Comment explicitly says "allows a true SSE transport later without any caller changes".
+   - abort() (131-136): sets _aborted flag only. The in-flight HTTP request is NOT actually cancelled. Result is marked `finishReason='aborted'` when returned.
+   - Capabilities default to ['chat','completion','coding','reasoning'].
+   - shutdown() (151-154): clears state; no resources to release (transport owns lifecycle).
+
+(E) Online Transport — runtimes/online-transport.ts
+   - `OnlineConfigProvider` interface (19-28): provider(): 'glm'|'openai'|'claude' (CLOSED union — NO 'gemini'); model(): string; endpoint(): string; apiKey(): string|undefined
+   - `createRouteChatTransport(cfg)` (34-66): builds a transport that dynamically imports `routeChat` (avoiding circulars + keeping module electron-free at load time) and maps ProviderResult → ChatResult.
+   - `createLazyOnlineTransport()` (76-101): builds a transport that READS SETTINGS LAZILY ON EVERY CALL — provider/model/endpoint/apiKey are re-resolved via dynamic import of persistence. So settings changes take effect immediately without re-registering.
+       - Hard-coded if/else branches for 'openai'|'claude'|'glm' (line 80)
+       - Model default: glm-5.3, gpt-4o, claude-sonnet-4-20250514 (lines 85-88)
+       - Endpoint default: api.openai.com/v1, api.anthropic.com/v1, s.glmEndpoint||api.z.ai (lines 89-93)
+       - API key: getSecret('glmApiKey') for glm, getSecret('aiApiKey') otherwise (lines 94-95)
+   - `createDefaultOnlineRuntime()` (109-117): synchronous factory; instantiates OnlineRuntime with the lazy transport. modelId='glm-5.3', modelName='GLM 5.3' (display only — agent uses these for routing/telemetry).
+
+(F) GLM wire format — src/main/ai/glm.ts (PURE, no electron imports)
+   - Constants: GLM_DEFAULT_ENDPOINT='https://api.z.ai', GLM_CN_ENDPOINT='https://open.bigmodel.cn', GLM_DEFAULT_MODEL='glm-5.3', GLM_MODELS=['glm-5.3','glm-5.3-air','glm-5.3-flash'], GLM_CHAT_PATH='/api/paas/v4/chat/completions'
+   - `glmEndpointUrl(endpoint?)` (75-87): normalizes user endpoint to full chat-completions URL.
+   - `buildGlmRequest(apiKey, messages, opts)` (94-116): returns { url, headers, body } with Bearer auth + OpenAI-compatible JSON body.
+   - `buildGlmRequestForEndpoint(endpoint, apiKey, messages, opts)` (122-130): variant for custom endpoint.
+   - `parseGlmResponse(raw)` (145-173): strict OpenAI-compatible response parser (choices[0].message.content + usage.total_tokens).
+   - `isGlmModel(model)` (179-181): settings UI validation.
+
+(G) Provider routing — src/main/ai/provider.ts
+   - `ProviderType` (24): `'local' | 'openai' | 'claude' | 'glm'` (CLOSED union — NO 'gemini')
+   - `ProviderConfig` (26-45): { provider, maxTokens, temperature, apiKey?, model?, endpoint?, localModelId?/Path/ContextSize/Threads/GpuLayers/Temperature/MaxTokens }
+   - `ProviderResult` (47-56): { success, content?, error?, tokens?, durationMs?, modelId?, modelName?, provider }
+   - `AIProvider` interface (58-61): declared but NOT used — `routeChat()` is the actual dispatch.
+   - `routeChat(config, messages, aiModeOverride?)` (80-116): THE single entry point for online + local routing:
+       1. enforceAiMode(mode, config.provider) → may block
+       2. if provider='local' → localChatComplete()
+       3. else: validate endpoint via isAllowedAIOrigin(config.endpoint) → validate apiKey → chatCompletion(config, messages)
+   - Mirror dispatch: returns ProviderResult with `.provider` set to config.provider.
+
+(H) ai-service.ts (electron `net.request` binding — NOT fetch, NOT https)
+   - `AIConfig.provider` (10): `'openai' | 'claude' | 'glm' | 'custom'` (CLOSED union — NO 'gemini')
+   - `chatCompletion(config, messages)` (56-74): dispatches to callOpenAI / callClaude / callGLM (no gemini branch).
+   - `callOpenAI()` (76-127): net.request POST to config.endpoint; Bearer auth; parses OpenAI-shape response.
+   - `callClaude()` (129-188): net.request POST; x-api-key auth + anthropic-version; pulls system message out of messages[] (Anthropic format); parses content[0].text.
+   - `callGLM()` (195-238): delegates to glm.ts buildGlmRequestForEndpoint + parseGlmResponse; net.request POST.
+   - ALL three callX() functions are non-streaming (full response via callback). NO SSE.
+   - NO tool_calls / function_calling support at this layer.
+
+(I) ai-mode.ts — server-side aiMode enforcement
+   - `AIMode = 'local' | 'online' | 'auto'` (28)
+   - `getCurrentAiMode()` (41-50): reads persisted settings, default 'local' (safe).
+   - `isNetworkAvailable()` (58-65): electron `net.online` (sync).
+   - `enforceAiMode(mode, provider)` (83-109): returns null (allowed) OR ProviderResult error.
+       - mode='local' + provider!='local' → BLOCKED (defense-in-depth)
+       - mode='online' + provider!='local' + no network → BLOCKED
+       - mode='auto' → always allowed
+   - Adding 'gemini' to ProviderType is automatically handled — Gemini will be blocked in local mode just like GLM/OpenAI/Claude. NO CHANGE NEEDED to ai-mode.ts.
+
+(J) LocalModelProvider — local-model-provider.ts:121-441
+   - Phase 58 wrapper above AIRuntime. Backend-aware: 'llamacpp'|'onnx'|'tensorrt'|'wasm'.
+   - Used by the Multi-Model Runtime Manager (NOT by the agent directly).
+   - NOT relevant to Gemini (local-only abstraction, no online path).
+   - `LocalModelProvider` does NOT implement AIRuntime — it's a separate layer with `load()`, `unload()`, `generate()`, `stream()`, `getInfo()`, `healthCheck()`.
+
+(K) local-engine.ts — local chat path
+   - `localChatComplete(config, messages)` (140-226): called by routeChat when provider='local'. Uses ModelRouter (src/main/ai/model-router.ts — different from agent/model-router.ts) for smart model selection, then inference.ts chatComplete.
+   - `localChatStream(config, messages, onChunk)` (234-307): streaming variant for chat.
+   - `localAbort(reason)` (313-315): wraps inference.abortInference.
+   - NOT relevant to Gemini.
+
+KEY ANSWERS (Section 1):
+- ✅ YES, single AIRuntime interface (runtime.ts:95) implemented by both LlamaCpp and Online.
+- ⚠️  OnlineRuntime supports streaming (chatStream) but EMULATED — awaits full result, splits by lines. NO real SSE. Cancellation is flag-only (in-flight HTTP not actually cancelled). Tool calling: NOT supported (ChatMessage is text-only; ChatResult has 'tool_call' finishReason declared but never populated).
+- ✅ YES, "provider" concept is separate from "runtime" — provider.ts defines ProviderType and routeChat dispatches to chatCompletion (online) or localChatComplete (local). The "provider" is the wire-format layer; "runtime" is the inference engine layer.
+- ⚠️  "online provider" is configured via PersistedSettings.onlineProvider (CLOSED union 'glm'|'openai'|'claude'); the transport reads it LAZILY in createLazyOnlineTransport() and dispatches to routeChat → chatCompletion → callX().
+- 📝  To add Gemini as a third option (chat-only, non-streaming):
+       1. Widen the closed unions (additive, low-risk):
+          - persistence/index.ts:39  `onlineProvider?: 'glm'|'openai'|'claude'|'gemini'`
+          - ai/provider.ts:24        `ProviderType = 'local'|'openai'|'claude'|'glm'|'gemini'`
+          - ai-service.ts:10         `AIConfig.provider: 'openai'|'claude'|'glm'|'custom'|'gemini'`
+          - ai/runtimes/online-transport.ts:21  `provider(): 'glm'|'openai'|'claude'|'gemini'`
+          - renderer/store/useStore.ts:19,66  same widening
+       2. Create src/main/ai/gemini.ts (mirror glm.ts): pure module, buildGeminiRequest + parseGeminiResponse (different wire format — `contents/parts` instead of `messages`, `X-Goog-Api-Key` instead of Bearer, path-embedded model)
+       3. Add `callGemini()` to ai-service.ts (mirror callGLM): net.request POST to `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`, X-Goog-Api-Key header
+       4. Add 'gemini' branch in `chatCompletion()` dispatch (ai-service.ts:66-72)
+       5. Add 'gemini' branch in `createLazyOnlineTransport()` (online-transport.ts:80-95) for model/endpoint/apiKey defaults
+       6. Add `geminiApiKey` to secrets (mirror `glmApiKey`); use `getSecret('geminiApiKey')` in transport
+       7. Add `https://generativelanguage.googleapis.com` to BOTH `ALLOWED_AI_ORIGINS` (security/index.ts:220) AND CSP `connect-src` (security/index.ts:196)
+       8. Add 'gemini' option to SettingsPanel.tsx Select (681) + Input for geminiApiKey (mirror the GLM block 686-709)
+       9. Add 'gemini' branch to `wireOnlineEnvironment()` (main.ts:5297-5307): modelName='Gemini 2.5 Pro', modelId='gemini-2.5-pro'
+      10. NO agent-side changes — `OnlineEnvironment` interface only has `available/modelName/modelId` (intentional — agent core stays provider-ignorant).
+   📝  For native function-calling (Gemini supports `functionDeclarations` + `functionCall` responses) — OUT OF SCOPE for Phase O; would require:
+       - ChatMessage interface extended with `tool_calls`/`function_call` fields
+       - ChatResult extended with structured tool_calls return
+       - Planner/ReAct/recovery-engine rewritten to consume tool_calls instead of JSON-in-text parsing
+       - All three callX() functions extended to forward tool definitions + parse tool_calls from response
+
+═════════════════════════════════════════════════════════════════════════════
+2. AGENT ARCHITECTURE
+═════════════════════════════════════════════════════════════════════════════
+
+WHAT EXISTS:
+
+(A) createTask — agent/core.ts:151-274
+   - CreateTaskRequest (116-146): userRequest, intent?, projectPath?, activeFile?, recentConversation?, limits?, modelId?, backend?: 'auto'|'local'|'online', onlineEnvironment? (INJECTED — never imported here), knowledgePort? (injected), knowledgeLimit?, toolContextExtras?, conversationId?, sessionId?, language?
+   - Backend routing (167-182): calls `routeModel(criteria, onlineEnv, undefined, {preference})` from agent/model-router.ts. Sets task.backend ('local'|'online'), task.onlineModelName (display only).
+   - Synthetic online model descriptor (2042-2077): when backend='online', getModelForTask returns a synthetic LocalModelInfo with id=`online:${name}`, path='', contextSize=32768, fileExists=true. The OnlineRuntime ignores the path.
+   - Emits `task_created` event with backend + routingReason (259-271).
+   - Phase 9: pre-planning knowledge retrieval via injected knowledgePort.retrieve() (237-257) — fills task.context.relevantKnowledge.
+
+(B) runTask — agent/core.ts:296-810
+   - Phase 1: Planning (319-485)
+       - emit `planning_started` (322)
+       - `getRuntime(task.backend)` — returns 'online' runtime for online, default (llamacpp) for local (core.ts:2042-2049)
+       - `getModelForTask(task)` — synthetic descriptor for online; most-recently-used local model otherwise
+       - `runtime.loadModel(model, {contextSize:4096, threads:4, gpuLayers:-1, temperature:0.3, maxTokens:2048})` — agent ALWAYS uses 4096 context + auto gpuLayers (must match chat path for idempotency — Phase 116 fix, see lines 338-358)
+       - `listToolDefinitions()` — gets all 21+ registered tool definitions
+       - `createTokenStreamer(taskId, undefined, 'planning', emit, {logAssembled, redact})` — Phase 8/P8-E-1 throttled stream
+       - Phase 40: memory retrieval via memory-retrieval-engine (417-445)
+       - `generatePlan(runtime, model, request)` — planner.ts:113. Streams tokens via `runtime.chatStream` + the streamer. Returns PlanResult with steps[], reasoning, confidence, warnings, usage.
+       - emit `planning_completed` (468-482) with backend + model + usage telemetry
+   - Phase 2: Execute steps (488-547) — `while (currentStepIndex < plan.length)`:
+       - Cancellation checkpoints (490, 834, 847, 943, 992)
+       - Time/step/tool-call limit checks (503-542)
+       - `executeStep(task, step, token, runtime, model)` (807-1480) — see (C) below
+   - Phase 3: Finalize (549-810)
+       - Phase 116: 0-tool-call check (562-588) — fail task if `task.toolCalls.length === 0` (no fake success)
+       - Phase 9: Task Completion Gate (606-633) — `verifyTaskCompletion(task)` checks all steps terminal + no unresolved errors + ≥1 tool call
+       - emit `task_completed` (660-680) with `buildArtifactSummary` (2161-2244) — file paths + commands summary for chat history persistence
+       - emit final `agent_token` with summary so model has context for next turn (648-658)
+
+(C) executeStep — agent/core.ts:807-1480
+   - emit `step_started` (816-830) with toolName + backend + model visibility
+   - If step.toolName:
+       - `prepareToolCall(step)` (tool-selector.ts) — validates params
+       - Permission check (854-913) — requestPermissionAndWait; emit permission_requested/granted/denied
+       - Snapshot before-state for diff (932-939)
+       - emit `tool_call_started` (945-952)
+       - Build toolContext (973-987): projectPath, activeFile, runtime, permission, metadata (taskId, stepId, cancellationToken, toolContextExtras)
+       - `executeToolWithPermission(toolName, params, toolContext)` — tool-registry.ts:260
+       - Snapshot after-state; emit `tool_call_completed` (1005+)
+       - Build Observation from result (1100+); emit `observation`
+       - Phase 9: verifyToolResult + verifyStepOutcome (verification.ts) — emit verification_started/completed/passed/failed
+       - Phase 38: ReAct loop — `shouldInvokeRePlanner()` (react-loop.ts:381) decides if LLM call needed; if yes, `rePlanAfterObservation()` (react-loop.ts:140) returns continue/replan/complete/abort. Emit react_decision + replan_started/completed.
+       - Phase 7: Recovery on failure — `decideRecovery()` (recovery-engine.ts:769) returns RETRY/MODIFY_AND_RETRY/REPLAN/SKIP/ABORT. Emit recovery_started/recovery_decision/modify_retry_started/skip_executed/recovery_succeeded/recovery_failed.
+   - For write/edit tools: proposeChange via DiffManager (DiffManager.proposeChange); emit diff_proposed; await acceptChange/rejectChange; emit diff_accepted/rejected.
+
+(D) getRuntime — agent/core.ts:2042-2049
+   - `backend === 'online'` → `getRuntime('online', 'agent-shared')` (one shared instance for all agent tasks)
+   - else → `getDefaultRuntime()` (llamacpp default)
+   - The agent NEVER imports LlamaCppRuntime or OnlineRuntime directly — only the AIRuntime interface.
+
+(E) Agent runtime usage summary:
+   - `runtime.loadModel(model, opts)` — called once per task (idempotent for online, real load for local)
+   - `runtime.chatStream(messages, onChunk, opts)` — used by planner (planner.ts:176) and react-loop (react-loop.ts:189) when onToken callback provided
+   - `runtime.chat(messages, opts)` — used by planner retry (planner.ts:206), react-loop fallback (react-loop.ts:194), recovery-engine LLM fallback (recovery-engine.ts:538+)
+   - `runtime.abort()` — NOT called by agent directly (cancellation via CancellationToken.throwIfCancelled); main.ts:5349 calls `getRuntime('online','agent-shared').abort()` on agent-cancel-task IPC
+
+KEY ANSWERS (Section 2):
+- ✅ Agent calls `AIRuntime.chat()` / `AIRuntime.chatStream()` DIRECTLY (no wrapper). Planner (planner.ts:176,181,206), react-loop (react-loop.ts:189,194), recovery-engine (recovery-engine.ts:538+) all call these methods.
+- ✅ Agent does NOT know whether it's using Local or Online — it only knows `task.backend: 'local'|'online'` and `task.onlineModelName: string` (display only). The provider details (GLM vs OpenAI vs Claude vs Gemini) are NEVER in the agent — they're in the transport layer.
+- ⚠️  Tool calling is HEURISTIC + JSON-IN-TEXT (NOT native function-calling):
+       - Planner builds TEXT tool list in system prompt (planner.ts:119-122): `"- ${t.name} (${t.category}, permission: ${t.permission}): ${t.description}"`
+       - context-manager.ts:121-127 also renders toolSchemas as TEXT: `"- ${s.name}: ${s.description}\n  params: ${JSON.stringify(s.parameters)}"`
+       - LLM is asked to output JSON `{"steps":[{"tool":"...","params":{}}]}` (planner.ts:71-108 system prompt)
+       - Planner parses JSON from response text (planner.ts:317-369) — extracts via regex `\{[\s\S]*\}`, JSON.parse, no tool_calls field used
+       - ReAct loop same pattern: asks for JSON `{"action":"continue|replan|complete|abort", "newSteps":[...]}` (react-loop.ts:92-127)
+       - Recovery engine same: asks for JSON `{"action":"...", "modifiedParams":{}}` (recovery-engine.ts:548+)
+       - `ChatMessage` type has NO `tool_calls` field (runtime.ts:35-38)
+       - `ChatResult` declares `finishReason?: 'tool_call'` but NEVER populates it
+- ⚠️  There is NO function-calling / structured-output support in the AIRuntime interface. Tool selection is JSON-in-text parsing throughout. To use Gemini's native function-calling would require extending ChatMessage + ChatResult + planner + react-loop + recovery-engine. OUT OF SCOPE for Phase O (adding Gemini as a 3rd online chat provider) — Gemini will be used the SAME way as GLM/OpenAI/Claude: JSON-in-text.
+
+═════════════════════════════════════════════════════════════════════════════
+3. TOOL REGISTRY
+═════════════════════════════════════════════════════════════════════════════
+
+WHAT EXISTS:
+
+(A) Tool interfaces — src/main/ai/tool-registry.ts:38-145
+   - `ToolCategory` (38-57): filesystem|terminal|powershell|git|github|cloudflare|web|browser|computer|knowledge|calculation|vision|image|audio|video|memory|system|agent|plugin
+   - `ToolPermission` (63-74): read|write|execute|delete|network|system|git|cloud|admin|browser|computer
+   - `ToolParameter` (76-85): name, type ('string'|'number'|'boolean'|'array'|'object'), description, required?, default?, enum?, items? (for array), properties? (for object)
+   - `ToolDefinition` (87-106): name, description, category, permission, destructive?, requiresNetwork?, parameters: ToolParameter[], returns?, tags?
+   - `ToolContext` (108-119): projectPath?, activeFile?, runtime? (AIRuntime), permission? (PermissionContext), metadata? (any)
+   - `ToolResult` (121-135): success, output?, data?, error?, followUp?, modifiedFiles?, durationMs?
+   - `Tool` interface (140-145): `readonly definition: ToolDefinition; execute(params, context): Promise<ToolResult>`
+
+(B) Tool Registry — tool-registry.ts:147-213
+   - `registerTool(tool)` (154-161) — throws on duplicate name
+   - `unregisterTool(name)` (166-168)
+   - `getTool(name)` (173-175)
+   - `listTools()` (180-182) — returns Tool[] (instances)
+   - `listToolDefinitions()` (187-189) — returns ToolDefinition[] (metadata only — used by planner)
+   - `getToolSchemasForLLM()` (195-213) — returns JSON-schema-shaped objects: `{ name, description, parameters: { type:'object', properties, required } }`. ONLY consumed by main.ts:5396 `agent-get-tool-schemas` IPC (UI display); NOT used by planner.
+   - `executeTool(name, params, context)` (219-246) — direct execution (no permission check) — for internal use
+   - `executeToolWithPermission(name, params, context)` (260-299) — calls requestPermissionAndWait then executeTool. THE entry point Agent Core uses.
+   - `ensureBuiltinToolsRegistered()` (305-390) — lazy registration of all built-in tools (FileSystem, SearchFiles, ListDirectory, Git status/log/diff/commit, RunCommand, NpmBuild, NpmTest, Calculation, SystemInfo, LongRunningTest, ReadMultipleFiles, ProjectStructure, MultiFileEdit, KnowledgeSearch, WebSearch, WebFetch, AnalyzeImage, Remember, SearchMemory, Forget, FindSymbol, FindReferences, WriteFile, EditFile, GitPush, OpenFileInEditor, + browser tools (opt-in) + computer tools (opt-in)). 21 default + 7 browser + 7 computer = 35 tools max.
+
+(C) Tool registration timing
+   - `ensureBuiltinToolsRegistered()` called from main.ts:5176 (after window creation). Async fire-and-forget.
+   - Tools available to the agent from first agent-create-task call.
+   - Browser/Computer tools only registered if opt-in flag is set (Phase 10/11).
+
+KEY ANSWERS (Section 3):
+- ⚠️  Tool definitions are passed to the LLM as TEXT in the system prompt (planner.ts:119-122, context-manager.ts:121-127). NOT as JSON schema. NOT as a structured `tools` parameter to a function-calling API.
+- ⚠️  NO native "function calling" — the LLM does NOT directly specify "call tool X with params Y". Instead:
+       1. Planner emits a JSON plan `{"steps":[{"tool":"...","params":{}}]}` (text response)
+       2. Planner parses the JSON text via regex + JSON.parse (planner.ts:308-369)
+       3. Agent executes steps sequentially (with ReAct + recovery on failures)
+- ⚠️  `getToolSchemasForLLM()` produces JSON-schema-shaped output but is NEVER passed to the LLM. It's only consumed by `agent-get-tool-schemas` IPC (likely for UI display). The `parameters` field on ToolDefinition is simplified (not full JSON schema — see 76-85), so even if you wanted to forward to a function-calling API, you'd need to enhance the schema first.
+- ✅ The planner DOES produce a plan (list of steps with tool+params) and the agent executes them sequentially. The plan is FROZEN at generation time, but the Phase 38 ReAct loop can discard remaining steps and emit new ones based on observations (closed-loop).
+
+═════════════════════════════════════════════════════════════════════════════
+4. MODEL/PROVIDER CONFIGURATION
+═════════════════════════════════════════════════════════════════════════════
+
+WHAT EXISTS:
+
+(A) Persisted settings — src/main/persistence/index.ts:27-64
+   - `aiMode?: 'local'|'online'|'auto'` (34)
+   - `onlineProvider?: 'glm'|'openai'|'claude'` (39) — CLOSED union, NO 'gemini'
+   - `glmModel?: string` (40) — non-secret, plain JSON config.json
+   - `glmEndpoint?: string` (41) — non-secret
+   - NO `geminiModel` / `geminiEndpoint` / `geminiProvider` fields
+   - API keys explicitly NOT here — comment at lines 36-37: "aiApiKey is NOT here — it's in secrets.json; glmApiKey also NOT here — secrets.json (key: glmApiKey)"
+   - activeLocalModelId, localThreads/ContextSize/Temperature/MaxTokens — local engine tuning
+   - browserAutomationEnabled, computerControlEnabled — opt-in tool flags
+
+(B) Encrypted secrets — persistence/index.ts:180-251
+   - `setSecret(key, value)` (208-225): Electron `safeStorage.encryptString(value).toString('base64')` → secrets.json. Returns false if safeStorage unavailable (NEVER stores plaintext).
+   - `getSecret(key)` (231-245): decrypts via `safeStorage.decryptString(Buffer.from(b64, 'base64'))`. Returns '' on failure.
+   - `deleteSecret(key)` (247-251).
+   - Platform backend: DPAPI on Windows (user-scoped), Keychain on macOS, libsecret on Linux (or fallback base64).
+   - Existing keys: `aiApiKey` (OpenAI/Claude shared), `glmApiKey` (GLM-specific).
+   - For Gemini: add `geminiApiKey` (mirror glmApiKey pattern) OR reuse `aiApiKey` (mirror OpenAI/Claude pattern). Mirror glmApiKey for clarity (separate provider, separate key, separate UI input).
+
+(C) Settings IPC — main.ts:601-668
+   - `settings-load` (606-636): merges settings with defaults (onlineProvider default 'glm', glmModel default 'glm-5.3', glmEndpoint default 'https://api.z.ai'); returns apiKey + glmApiKey separately from encrypted secrets.
+   - `settings-save` (638-654): persistUpdateSettings(settings) + setSecret('aiApiKey', apiKey) + setSecret('glmApiKey', glmApiKey). For Gemini: add setSecret('geminiApiKey', geminiApiKey) — needs new IPC arg or per-key secret setters.
+   - `settings-set-api-key` / `settings-get-api-key` / `settings-delete-api-key` (656-668): single-key legacy for aiApiKey.
+
+(D) Online provider usage — main.ts:5269-5312 (wireOnlineEnvironment)
+   - Reads `settings.onlineProvider || 'glm'` (5288)
+   - Reads `getSecret('glmApiKey')` for glm, `getSecret('aiApiKey')` otherwise (5290)
+   - Sets `onlineEnvironment = { available: true, modelName, modelId }` — only display info, no apiKey (intentional — agent stays provider-ignorant)
+   - For Gemini: add 'gemini' branch (modelName='Gemini 2.5 Pro', modelId='gemini-2.5-pro', apiKey=getSecret('geminiApiKey'))
+   - aiMode='local' check (5283-5287): forces onlineEnvironment.available=false regardless of provider — Gemini would also be blocked in local mode (no change to ai-mode.ts needed).
+
+(E) Allowed origins + CSP — security/index.ts:196, 220-226
+   - `ALLOWED_AI_ORIGINS = { 'https://api.openai.com', 'https://api.anthropic.com', 'https://api.z.ai', 'https://open.bigmodel.cn' }` (220-226)
+   - CSP `connect-src` mirrors the same set (196)
+   - For Gemini: MUST add `https://generativelanguage.googleapis.com` to BOTH (routeChat rejects unknown origins at provider.ts:98-104)
+
+(F) Renderer mirror — useStore.ts:19, 60-137, 215-235
+   - `AIProviderType = 'local'|'openai'|'claude'|'glm'` (19) — CLOSED union, NO 'gemini'
+   - `NexSettings.onlineProvider: 'glm'|'openai'|'claude'` (66) — CLOSED union, NO 'gemini'
+   - `getProviderConfig(settings, mode, localModel)` (83-137): hard-coded if-branches for glm / claude / openai. For Gemini: add 'gemini' branch returning `{ provider:'gemini', apiKey: settings.geminiApiKey, model: settings.geminiModel, endpoint:'https://generativelanguage.googleapis.com', maxTokens, temperature }`.
+
+(G) SettingsPanel.tsx — Select + conditional Inputs (678-720)
+   - Options array: glm / openai / claude (680-684). For Gemini: add `{ value:'gemini', label:'Google Gemini' }`.
+   - Conditional GLM block (686-709): GLM API Key + GLM Endpoint inputs. For Gemini: mirror with Gemini API Key + (optional) Gemini Model input.
+   - Fallback non-GLM block (711-719): single API Key input (sk-...). Need to update the condition to `onlineProvider !== 'glm' && onlineProvider !== 'gemini'`.
+
+KEY ANSWERS (Section 4):
+- ✅ Secrets stored via Electron safeStorage (DPAPI/Keychain/libsecret) — secrets.json contains base64 ciphertext only, never plaintext. setSecret returns false (loud failure) if safeStorage unavailable.
+- ⚠️  `onlineProvider` is used as a STRING discriminator (CLOSED union). The transport (online-transport.ts:80-95) and wireOonlineEnvironment (main.ts:5288-5307) and useStore.getProviderConfig (useStore.ts:116-136) all have hard-coded if/else branches for 'glm'|'openai'|'claude'. Adding 'gemini' requires touching all 4 sites + 3 closed-union type declarations.
+- 📝  To add 'gemini' as an option (additive, low-risk):
+       1. Widen 4 type unions: persistence/index.ts:39, provider.ts:24, ai-service.ts:10, online-transport.ts:21, useStore.ts:19,66 — add `| 'gemini'`
+       2. Create src/main/ai/gemini.ts (pure module mirroring glm.ts) — buildGeminiRequest + parseGeminiResponse (different wire format)
+       3. Add callGemini() to ai-service.ts (mirror callGLM) + 'gemini' branch in chatCompletion() dispatch
+       4. Add 'gemini' branch in createLazyOnlineTransport() (online-transport.ts:80-95) — model='gemini-2.5-pro', endpoint='https://generativelanguage.googleapis.com', apiKey=getSecret('geminiApiKey')
+       5. Add geminiApiKey to setSecret/getSecret flow (mirror glmApiKey): settings-save IPC arg + settings-load IPC return
+       6. Add 'https://generativelanguage.googleapis.com' to ALLOWED_AI_ORIGINS + CSP connect-src
+       7. Add 'gemini' branch in wireOnlineEnvironment() (main.ts:5297-5307) — modelName/modelId
+       8. Add 'gemini' option + Gemini API Key input to SettingsPanel.tsx
+       9. Add 'gemini' branch to useStore.getProviderConfig() (renderer)
+      10. Add geminiApiKey + geminiModel fields to NexSettings (renderer mirror)
+
+═════════════════════════════════════════════════════════════════════════════
+5. ACTIVITY/STATUS EVENTS
+═════════════════════════════════════════════════════════════════════════════
+
+WHAT EXISTS:
+
+(A) AgentEvent system — agent/types.ts:387-443
+   - 24 distinct `AgentEventType` values (387-433):
+       task_created, planning_started, planning_completed, step_started, step_completed, step_failed,
+       tool_call_started, tool_call_completed, permission_requested, permission_granted, permission_denied,
+       diff_proposed, diff_accepted, diff_rejected, observation, verification_started, verification_completed,
+       verification_passed, verification_failed, retry, task_completed, task_failed, task_cancelled,
+       agent_token, log, react_decision, replan_started, replan_completed,
+       recovery_started, recovery_decision, modify_retry_started, skip_executed, recovery_succeeded, recovery_failed
+   - `AgentEvent` (435-443): { type, taskId, stepId?, toolCallId?, timestamp, message, data? }
+   - `AgentEventListener` (445): `(event: AgentEvent) => void`
+
+(B) emit() in agent/core.ts:105-112
+   - Calls `emitEvent(event)` from logger.ts (writes JSONL + notifies _eventListeners set in logger.ts)
+   - ALSO fires `_eventListeners` set in core.ts (separate from logger's set — both fire)
+   - Each emit is a single AgentEvent with timestamp added.
+
+(C) AgentLogger — agent/logger.ts:198-216
+   - 8 convenience methods: debug/info/warn/error + task/plan/tool/permission/observation/verification (by category)
+   - All routed through `log()` (132-169) which:
+       - Adds timestamp + redactObjectDeep(data) + redactSecrets(message)
+       - Appends JSONL to `<userData>/logs/agent-<taskId>.jsonl` (10MB rolling size limit)
+       - Logs to console
+       - Notifies _listeners set
+   - `emitEvent()` (174-194): logs the event AS a log entry + notifies _eventListeners set (UI subscribers)
+   - `onLogEntry(listener)` (118-121): subscribe to log entries
+   - `onAgentEvent(listener)` (123-126): subscribe to agent events
+
+(D) main.ts → renderer IPC bridge — main.ts:5186-5188
+   - `onAgentEvent((event) => mainWindow?.webContents.send('agent-event', event))` — single bridge, forwards every event to the renderer.
+   - preload.ts:721-727: `onAgentEvent(callback)` wraps `ipcRenderer.on('agent-event', handler)` with cleanup.
+
+(E) Token streamer — agent/stream-emit.ts:55-129
+   - `createTokenStreamer(taskId, stepId?, phase, emitOne, opts)` — PURE module, no electron, no runtime imports
+   - 4 phases: 'planning'|'step'|'verification'|'final' (16)
+   - `TokenEventPayload` (18-24): { phase, text, chars, done }
+   - Options (26-36): intervalMs (default 120ms), maxBufferChars (default 240), maxTotalChars (default 200_000 hard cap), logAssembled (redacted final text), redact (function)
+   - `push(chunk)` accumulates into buffer; `doEmit()` flushes by time OR size; `end()` final flush + done event + optional redacted logAssembled.
+   - Used by core.ts:397-412 (planning stream), core.ts:652+ (final answer stream).
+   - SEPARATE from `chat-token` events (main.ts:858) which is the streaming-chat path (non-agent).
+
+(F) NexChatPanel event consumption — NexChatPanel.tsx:440-680
+   - Single `useEffect` subscribes to `window.nexAPI.onAgentEvent`
+   - Switch on eventType (24+ cases). Each case MUTATES THE LAST MESSAGE BUBBLE IN PLACE via `setMessages((prev) => { next[next.length-1] = { ...last, content: ... } })`.
+   - NO history of intermediate events preserved — each event OVERWRITES the previous content.
+   - Drives Orb via `voiceController.setCondition('agent', state)`:
+       - 'thinking' on planning_started (452) + recovery_started (524)
+       - 'working' on planning_completed (458) + step_started/tool_call_started (467) + modify_retry_started (543)
+       - 'success' on task_completed (605) — 1.5s auto-clear via scheduleConditionClear
+       - 'error' on task_failed (636) — 1.5s auto-clear
+       - 'cancelled' on task_cancelled (656) — 1.5s auto-clear
+   - `agent_token` (569-588) accumulates streamed text (planner tokens or final answer) into the bubble.
+
+(G) AgentStateDisplay.tsx — DEAD CODE (286 lines, zero importers per sibling audit)
+   - Already implements event-to-icon/color mapping (34-100) for all event types
+   - Already implements structured event log (238-282)
+   - Already implements backend/model badge + stepProgress bar + streaming preview
+   - This is a ready-made "live activity panel" that was simply never wired up.
+
+KEY ANSWERS (Section 5):
+- ✅ YES, structured event system exists — `AgentEvent` type with 24 distinct types, `emitEvent()` writes JSONL to disk + notifies in-memory listeners + forwards to renderer via `agent-event` IPC.
+- ✅ Event types cover the full lifecycle: task_created → planning_started/completed → step_started → tool_call_started/completed → permission_requested/granted/denied → diff_proposed/accepted/rejected → observation → verification_started/completed/passed/failed → retry → react_decision → replan_started/completed → recovery_started/decision/succeeded/failed → modify_retry_started/skip_executed → agent_token (streaming) → task_completed/failed/cancelled.
+- ⚠️  Renderer displays events by OVERWRITING the last chat bubble inline (NexChatPanel.tsx:440-680). NO structured event list / timeline / activity panel. The dead AgentStateDisplay.tsx already implements this — sibling audit recommends REVIVING it.
+- ⚠️  NO "live activity" concept beyond the chat message bubble + Orb condition. The Orb 'agent' condition flips between thinking/working/success/error/cancelled. NO sub-states (e.g. "reading file" vs "running command" — both are just 'working' with the same orange particle motion).
+
+═════════════════════════════════════════════════════════════════════════════
+WHAT CAN BE REUSED vs. WHAT MUST NOT BE DUPLICATED (summary)
+═════════════════════════════════════════════════════════════════════════════
+
+REUSE AS-IS:
+- AIRuntime interface (runtime.ts:95) — provider-agnostic; no changes for Gemini chat.
+- OnlineRuntime class (online-runtime.ts:46) — already provider-agnostic via injected transport.
+- OnlineChatTransport type (online-runtime.ts:30) — transport contract; no signature change for Gemini.
+- routeChat() (provider.ts:80) — single dispatch entry point; just add a 'gemini' branch.
+- enforceAiMode() (ai-mode.ts:83) — already blocks ALL online providers uniformly.
+- OnlineEnvironment interface (model-router.ts:32) — only available/modelName/modelId; NO apiKey field (intentional).
+- wireOnlineEnvironment() (main.ts:5269) — extend with 'gemini' branch (additive).
+- createTokenStreamer() (stream-emit.ts) — already wired for planning + final phases.
+- AgentEvent type + emitEvent + agent-event IPC + onAgentEvent — already comprehensive (24 event types).
+- ToolDefinition + executeToolWithPermission + 21 default tools — no changes for Gemini.
+- Heuristic tool selection (planner JSON-in-text + react-loop + recovery-engine) — works for any LLM that can output JSON; Gemini will use the same path.
+- Persistence safeStorage pattern (setSecret/getSecret) — just add a new key 'geminiApiKey'.
+
+EXTEND (additive, low-risk):
+- 4 closed type unions (add '| gemini'): persistence/index.ts:39, provider.ts:24, ai-service.ts:10, online-transport.ts:21, useStore.ts:19,66
+- createLazyOnlineTransport() (online-transport.ts:80-95) — add 'gemini' branch
+- chatCompletion() dispatch (ai-service.ts:66-72) — add callGemini() branch
+- wireOnlineEnvironment() (main.ts:5297-5307) — add 'gemini' branch
+- useStore.getProviderConfig() (useStore.ts:116-136) — add 'gemini' branch
+- SettingsPanel.tsx (680-720) — add 'gemini' option + Gemini API Key input
+- ALLOWED_AI_ORIGINS + CSP (security/index.ts:196, 220) — add generativelanguage.googleapis.com
+- settings-load/settings-save IPC (main.ts:606-654) — add geminiApiKey arg/return
+
+CREATE NEW (mirror existing patterns):
+- src/main/ai/gemini.ts (pure module) — mirror glm.ts: buildGeminiRequest + parseGeminiResponse (different wire format: contents/parts, X-Goog-Api-Key, path-embedded model)
+- callGemini() in ai-service.ts — mirror callGLM: net.request POST to `:generateContent` endpoint
+- (Optional) real SSE streaming transport — would require extending OnlineChatTransport interface with an onChunk callback OR a sibling `OnlineStreamingChatTransport` type. The current chatStream emulation (online-runtime.ts:115-129) works but is suboptimal for Gemini's real SSE.
+
+MUST NOT DUPLICATE:
+- DO NOT create a separate `GeminiRuntime` class — OnlineRuntime is already provider-agnostic.
+- DO NOT create a separate `routeGemini()` — routeChat() is the single entry point.
+- DO NOT duplicate the aiMode enforcement — enforceAiMode() handles all online providers uniformly.
+- DO NOT modify the AIRuntime interface signature for Gemini (no tool_calls/function_call fields) — that's a separate, larger phase.
+- DO NOT modify the agent core (core.ts), planner (planner.ts), react-loop (react-loop.ts), or recovery-engine (recovery-engine.ts) for Gemini chat — they're provider-ignorant by design.
+- DO NOT create a parallel agent-event IPC channel — the existing one already covers all event types.
+- DO NOT create a new "live activity panel" alongside AgentStateDisplay.tsx — REVIVE the existing dead component (per sibling audit).
+- DO NOT add a parallel `geminiToken` streaming event — `agent_token` (core.ts:400, 579, 652) is already the streaming channel for all phases.
+
+Audit complete. No files modified. No commits made. All findings are READ-ONLY observations from source inspection. The architecture is well-structured for adding Gemini as a 3rd online chat provider: the provider abstraction (routeChat + OnlineRuntime + OnlineChatTransport) cleanly accommodates a new branch, and the agent core is provider-ignorant by design (only knows `backend: 'local'|'online'` + display name). The main gaps are (a) 4 closed type unions to widen (additive), (b) creating gemini.ts + callGemini (mirrors the proven glm.ts pattern), (c) security allowlist + CSP additions for generativelanguage.googleapis.com, (d) UI option + settings field. NO agent-side changes needed for chat. Native function-calling (Gemini's functionDeclarations/functionCall) is OUT OF SCOPE for Phase O — would require extending ChatMessage/ChatResult + rewriting planner/react-loop/recovery-engine to consume tool_calls instead of JSON-in-text.

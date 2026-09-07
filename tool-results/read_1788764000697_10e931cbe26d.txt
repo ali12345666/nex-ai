@@ -1,0 +1,1502 @@
+     1→/**
+     2→ * NEX AI — Chat Panel (Phase 29/33)
+     3→ *
+     4→ * Real conversational interface using existing AI infrastructure:
+     5→ *   - aiChatStream (P17) for streaming responses
+     6→ *   - aiChat (P8) as non-stream fallback
+     7→ *   - getProviderConfig for provider routing
+     8→ *   - FilesystemService (P28) for file attachments
+     9→ *
+    10→ * Phase 33 additions:
+    11→ *   - Auto-save to conversation persistence (on message complete)
+    12→ *   - Startup restore (last active conversation)
+    13→ *   - Edit user message (truncates dependent responses, resends)
+    14→ *   - Regenerate last assistant response
+    15→ *   - Keyboard shortcuts (Ctrl+N, Ctrl+K — not in input/textarea)
+    16→ */
+    17→
+    18→import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+    19→import {
+    20→  Send, Paperclip, X, File as FileIcon, Square, Loader2,
+    21→  Circle, Wifi, WifiOff, Plus, MessageSquare, Trash2, ChevronDown,
+    22→} from 'lucide-react';
+    23→import { useStore, getProviderConfig } from '../../store/useStore';
+    24→import {
+    25→  createMessage, toApiMessages, buildAttachmentContext,
+    26→  type NexMessage, type FileAttachment, MAX_ATTACHMENT_INLINE,
+    27→} from '../../lib/chat-model';
+    28→import MessageBubble from './MessageBubble';
+    29→// Phase 35: Malformed conversation protection
+    30→import { validateConversationData } from '../../lib/conversation-validator';
+    31→// Phase 30: Voice → Chat integration (transcripts + thinking state)
+    32→import { voiceController } from '../../services/voice-controller';
+    33→
+    34→const SUPPORTED_EXTENSIONS = new Set([
+    35→  'txt', 'md', 'json', 'csv', 'yaml', 'yml', 'js', 'ts', 'tsx', 'jsx',
+    36→  'css', 'html', 'py', 'sh', 'xml', 'docx', 'log', 'sql', 'env',
+    37→]);
+    38→
+    39→export default function NexChatPanel() {
+    40→  const { settings, aiMode, activeLocalModel, projectPath, activeFile } = useStore();
+    41→  const [messages, setMessages] = useState<NexMessage[]>([]);
+    42→  const [input, setInput] = useState('');
+    43→  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+    44→  const [isGenerating, setIsGenerating] = useState(false);
+    45→  const [chatStreaming, setChatStreaming] = useState(false);
+    46→  const [error, setError] = useState<string | null>(null);
+    47→  // Phase 33: conversation lifecycle state
+    48→  const [conversationId, setConversationId] = useState<string | null>(null);
+    49→  const [conversationTitle, setConversationTitle] = useState('');
+    50→  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    51→  const [editText, setEditText] = useState('');
+    52→  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+    53→  const conversationIdRef = useRef<string | null>(null);
+    54→  const conversationTitleRef = useRef<string>('');
+    55→  const messagesRef = useRef<NexMessage[]>([]);
+    56→
+    57→  // Keep refs in sync for auto-save
+    58→  useEffect(() => { messagesRef.current = messages; }, [messages]);
+    59→  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+    60→  useEffect(() => { conversationTitleRef.current = conversationTitle; }, [conversationTitle]);
+    61→
+    62→  // ── Phase 33: Auto-save conversation to persistence ──
+    63→  const saveConversation = useCallback(async (msgs?: NexMessage[]) => {
+    64→    const toSave = msgs || messagesRef.current;
+    65→    if (toSave.length === 0) return; // don't save empty conversations
+    66→
+    67→    const id = conversationIdRef.current || `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    68→    const title = conversationTitleRef.current ||
+    69→      (toSave.find((m) => m.role === 'user' && m.content.trim())?.content.slice(0, 60) || 'Untitled');
+    70→
+    71→    // Don't re-save if nothing meaningful changed since last save
+    72→    const now = Date.now();
+    73→    if (lastSavedAt && now - lastSavedAt < 500) return; // dedup within 500ms
+    74→
+    75→    setConversationId(id);
+    76→    setConversationTitle(title);
+    77→    conversationIdRef.current = id;
+    78→    conversationTitleRef.current = title;
+    79→
+    80→    // Strip attachment content (persist metadata only, not file contents)
+    81→    const persistableMsgs = toSave.map((m) => ({
+    82→      ...m,
+    83→      attachments: m.attachments?.map((a) => ({
+    84→        id: a.id, name: a.name, path: a.path, size: a.size, extension: a.extension,
+    85→        // content intentionally NOT persisted for large files
+    86→        ...(a.content && a.content.length < 2048 ? { content: a.content } : {}),
+    87→        ...(a.error ? { error: a.error } : {}),
+    88→      })),
+    89→    }));
+    90→
+    91→    try {
+    92→      await window.nexAPI.conversationSave({
+    93→        id,
+    94→        title,
+    95→        createdAt: conversationCreatedAtRef.current || now,
+    96→        updatedAt: now,
+    97→        messageCount: persistableMsgs.length,
+    98→        messages: persistableMsgs,
+    99→        workspace: projectPath || undefined,
+   100→        provider: aiMode,
+   101→        model: activeLocalModel?.name,
+   102→        mode: aiMode,
+   103→      });
+   104→      conversationCreatedAtRef.current = conversationCreatedAtRef.current || now;
+   105→      setLastSavedAt(now);
+   106→    } catch { /* non-fatal: chat still works */ }
+   107→  }, [projectPath, aiMode, activeLocalModel, lastSavedAt]);
+   108→
+   109→  const conversationCreatedAtRef = useRef<number | null>(null);
+   110→
+   111→  // ── Phase 33: Load / New conversation from external events ──
+   112→  useEffect(() => {
+   113→    const loadHandler = async (e: Event) => {
+   114→      const detail = (e as CustomEvent).detail;
+   115→      if (detail?.id) {
+   116→        try {
+   117→          const r = await window.nexAPI.conversationLoad(detail.id);
+   118→          if (r.success && r.data) {
+   119→            const validated = validateConversationData(r.data);
+   120→            if (validated === null) {
+   121→              console.warn('[NEX AI] Malformed conversation on load — ignoring');
+   122→              return;
+   123→            }
+   124→            setMessages(validated);
+   125→            setConversationId(r.data.id);
+   126→            setConversationTitle(r.data.title || '');
+   127→            conversationIdRef.current = r.data.id;
+   128→            conversationTitleRef.current = r.data.title || '';
+   129→            conversationCreatedAtRef.current = r.data.createdAt || null;
+   130→            setLastSavedAt(Date.now());
+   131→          }
+   132→        } catch { /* graceful */ }
+   133→      }
+   134→    };
+   135→    const newHandler = () => {
+   136→      setMessages([]);
+   137→      setConversationId(null);
+   138→      setConversationTitle('');
+   139→      conversationIdRef.current = null;
+   140→      conversationTitleRef.current = '';
+   141→      conversationCreatedAtRef.current = null;
+   142→      setLastSavedAt(null);
+   143→      setError(null);
+   144→    };
+   145→    window.addEventListener('nex:load-conversation', loadHandler);
+   146→    window.addEventListener('nex:new-conversation', newHandler);
+   147→    return () => {
+   148→      window.removeEventListener('nex:load-conversation', loadHandler);
+   149→      window.removeEventListener('nex:new-conversation', newHandler);
+   150→    };
+   151→  }, []);
+   152→
+   153→  // ── Phase 33: Startup restore (last conversation) ──
+   154→  useEffect(() => {
+   155→    (async () => {
+   156→      try {
+   157→        const r = await window.nexAPI.conversationList();
+   158→        if (r.success && r.conversations && r.conversations.length > 0) {
+   159→          const last = r.conversations[0]; // sorted by updatedAt desc
+   160→          const load = await window.nexAPI.conversationLoad(last.id);
+   161→          if (load.success && load.data) {
+   162→            const validated = validateConversationData(load.data);
+   163→            if (validated === null) {
+   164→              console.warn('[NEX AI] Malformed conversation data on startup — starting fresh');
+   165→              return;
+   166→            }
+   167→            setMessages(validated);
+   168→            setConversationId(load.data.id);
+   169→            setConversationTitle(load.data.title || '');
+   170→            conversationIdRef.current = load.data.id;
+   171→            conversationTitleRef.current = load.data.title || '';
+   172→            conversationCreatedAtRef.current = load.data.createdAt || null;
+   173→            setLastSavedAt(Date.now());
+   174→          }
+   175→        }
+   176→      } catch { /* no conversations or IPC unavailable — fine */ }
+   177→    })();
+   178→  }, []); // run once on mount
+   179→
+   180→  // ── Phase 33: Keyboard shortcuts (not in input/textarea) ──
+   181→  useEffect(() => {
+   182→    const handler = (e: KeyboardEvent) => {
+   183→      const target = e.target as HTMLElement;
+   184→      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+   185→
+   186→      if ((e.ctrlKey || e.metaKey) && e.key === 'n' && !isInput) {
+   187→        e.preventDefault();
+   188→        window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+   189→      }
+   190→      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !isInput) {
+   191→        e.preventDefault();
+   192→        window.dispatchEvent(new CustomEvent('nex:open-history-search'));
+   193→      }
+   194→    };
+   195→    window.addEventListener('keydown', handler);
+   196→    return () => window.removeEventListener('keydown', handler);
+   197→  }, []);
+   198→
+   199→  // ── Phase 33: Save on unmount (crash/close safety) ──
+   200→  useEffect(() => {
+   201→    return () => {
+   202→      // Save synchronously (best-effort) on unmount
+   203→      if (messagesRef.current.length > 0 && conversationIdRef.current) {
+   204→        window.nexAPI.conversationSave({
+   205→          id: conversationIdRef.current,
+   206→          title: conversationTitleRef.current || 'Untitled',
+   207→          createdAt: conversationCreatedAtRef.current || Date.now(),
+   208→          updatedAt: Date.now(),
+   209→          messageCount: messagesRef.current.length,
+   210→          messages: messagesRef.current,
+   211→          workspace: projectPath || undefined,
+   212→          provider: aiMode,
+   213→          mode: aiMode,
+   214→        }).catch(() => { /* best-effort */ });
+   215→      }
+   216→    };
+   217→  }, [projectPath, aiMode]); // eslint-disable-line react-hooks/exhaustive-deps
+   218→
+   219→  // Phase 34: guard against double-send from edit/regenerate DOM event hack
+   220→  const isResendingRef = useRef(false);
+   221→
+   222→  // ── Phase 33: Edit user message ──
+   223→  const handleEditMessage = useCallback(async (messageId: string, newContent: string) => {
+   224→    if (isGenerating || isResendingRef.current) return;
+   225→    isResendingRef.current = true;
+   226→    setTimeout(() => { isResendingRef.current = false; }, 1000);
+   227→    setEditingMessageId(null);
+   228→
+   229→    const msgIndex = messages.findIndex((m) => m.id === messageId);
+   230→    if (msgIndex === -1 || messages[msgIndex].role !== 'user') return;
+   231→
+   232→    // Truncate everything after the edited message
+   233→    const updated = messages.slice(0, msgIndex);
+   234→    const editedMsg = { ...messages[msgIndex], content: newContent, timestamp: Date.now() };
+   235→    const newMessages = [...updated, editedMsg];
+   236→    setMessages(newMessages);
+   237→
+   238→    // Re-send the edited message (will generate new assistant response)
+   239→    setInput(newContent);
+   240→    // Trigger send after state flush
+   241→    setTimeout(() => {
+   242→      const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+   243→      if (el) {
+   244→        el.value = newContent;
+   245→        el.dispatchEvent(new Event('input', { bubbles: true }));
+   246→        setTimeout(() => {
+   247→          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+   248→        }, 50);
+   249→      }
+   250→    }, 10);
+   251→
+   252→    // Persist the truncated conversation
+   253→    saveConversation(newMessages);
+   254→  }, [messages, isGenerating, saveConversation]);
+   255→
+   256→  // ── Phase 33: Regenerate last assistant response ──
+   257→  const handleRegenerate = useCallback(async () => {
+   258→    if (isGenerating || isResendingRef.current) return;
+   259→    isResendingRef.current = true;
+   260→    setTimeout(() => { isResendingRef.current = false; }, 1000);
+   261→
+   262→    // Find last assistant message
+   263→    const lastAssistantIdx = messages.findIndex((m) => m.role === 'assistant' && m === [...messages].reverse().find((r) => r.role === 'assistant'));
+   264→    if (lastAssistantIdx === -1) return;
+   265→
+   266→    // Find the user message before it
+   267→    let lastUserIdx = -1;
+   268→    for (let i = lastAssistantIdx - 1; i >= 0; i--) {
+   269→      if (messages[i].role === 'user') { lastUserIdx = i; break; }
+   270→    }
+   271→    if (lastUserIdx === -1) return;
+   272→
+   273→    // Remove the assistant response (keep everything before it)
+   274→    const truncated = messages.slice(0, lastAssistantIdx);
+   275→    setMessages(truncated);
+   276→
+   277→    // Re-send the same user message
+   278→    const userContent = messages[lastUserIdx].content;
+   279→    setInput(userContent);
+   280→    setTimeout(() => {
+   281→      const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+   282→      if (el) {
+   283→        el.value = userContent;
+   284→        el.dispatchEvent(new Event('input', { bubbles: true }));
+   285→        setTimeout(() => {
+   286→          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+   287→        }, 50);
+   288→      }
+   289→    }, 10);
+   290→  }, [messages, isGenerating]);
+   291→
+   292→  const startEdit = useCallback((messageId: string) => {
+   293→    const msg = messages.find((m) => m.id === messageId);
+   294→    if (msg?.role === 'user') {
+   295→      setEditingMessageId(messageId);
+   296→      setEditText(msg.content);
+   297→    }
+   298→  }, [messages]);
+   299→
+   300→  const cancelEdit = useCallback(() => {
+   301→    setEditingMessageId(null);
+   302→    setEditText('');
+   303→  }, []);
+   304→
+   305→  const messagesEndRef = useRef<HTMLDivElement>(null);
+   306→  const streamBufRef = useRef<string>('');
+   307→  const fileInputRef = useRef<HTMLInputElement>(null);
+   308→  const inputRef = useRef<HTMLTextAreaElement>(null);
+   309→
+   310→  // Phase 14: Track whether the current request originated from voice.
+   311→  // Set to true when a nex:voice-transcript event with source='voice' arrives.
+   312→  // Reset to false when keyboard/text input is submitted.
+   313→  // Used after response completion to decide whether to speak via TTS.
+   314→  const wasVoiceInputRef = useRef<boolean>(false);
+   315→  // Phase 14: Track whether the current request was cancelled before TTS.
+   316→  // Prevents stale requests from triggering TTS after cancellation.
+   317→  const ttsCancelledRef = useRef<boolean>(false);
+   318→
+   319→  // ── Phase 14: Voice transcript listener (final transcripts → sendMessage) ──
+   320→  // When a voice transcript arrives with source='voice', we set wasVoiceInputRef
+   321→  // so the response will be spoken via TTS after completion.
+   322→  useEffect(() => {
+   323→    const handler = (e: Event) => {
+   324→      const detail = (e as CustomEvent).detail;
+   325→      if (detail?.text?.trim()) {
+   326→        // Phase 14: Track voice origin for TTS
+   327→        wasVoiceInputRef.current = detail.source === 'voice';
+   328→        ttsCancelledRef.current = false; // reset cancellation flag for new request
+   329→        // Feed into the SAME pipeline as typed input
+   330→        setInput(detail.text.trim());
+   331→        // Trigger send on next tick (input state needs to flush)
+   332→        setTimeout(() => {
+   333→          const el = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input]');
+   334→          if (el) {
+   335→            el.value = detail.text.trim();
+   336→            el.dispatchEvent(new Event('input', { bubbles: true }));
+   337→            // Small delay for state flush, then simulate Enter
+   338→            setTimeout(() => {
+   339→              el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+   340→            }, 50);
+   341→          }
+   342→        }, 10);
+   343→      }
+   344→    };
+   345→    window.addEventListener('nex:voice-transcript', handler);
+   346→    return () => window.removeEventListener('nex:voice-transcript', handler);
+   347→  }, []);
+   348→
+   349→  // Phase 110: Track active agent task for session stickiness
+   350→  const activeAgentTaskRef = useRef<string | null>(null);
+   351→
+   352→  // Phase 18 (P2-1): Stale-timer protection for 'agent' + 'chat' condition
+   353→  // auto-clears. Previously the 1500ms setTimeout timers were anonymous —
+   354→  // their IDs were not captured. A stale timer from an OLD task could fire
+   355→  // during a NEW task and clear the NEW task's condition (brief Orb blip).
+   356→  // Now we capture the timer ID and clear the PREVIOUS timer before
+   357→  // scheduling a new one for the SAME condition key. The invariant is:
+   358→  //   A stale timer from an old task must NEVER clear the condition
+   359→  //   belonging to a newer task.
+   360→  const agentClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   361→  const chatClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   362→
+   363→  // Phase 18 (P2-1): Helper to schedule a 1500ms auto-clear for a condition,
+   364→  // clearing any previously-scheduled timer for the SAME key first.
+   365→  const scheduleConditionClear = useCallback(
+   366→    (key: 'agent' | 'chat', timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
+   367→      // Clear any previously-scheduled timer for this condition key.
+   368→      // This prevents a stale timer from an old task/event from clearing
+   369→      // the NEW task's condition.
+   370→      if (timerRef.current !== null) {
+   371→        clearTimeout(timerRef.current);
+   372→        timerRef.current = null;
+   373→      }
+   374→      // Schedule the new 1500ms auto-clear, capturing the timer ID.
+   375→      timerRef.current = setTimeout(() => {
+   376→        voiceController.clearCondition(key);
+   377→        timerRef.current = null; // clear the ref so we know no timer is pending
+   378→      }, 1500);
+   379→    },
+   380→    []
+   381→  );
+   382→
+   383→  // Phase 14: Speak a response via TTS if the request came from voice.
+   384→  // Guards:
+   385→  //   - Only speaks if wasVoiceInputRef is true AND not cancelled
+   386→  //   - Only speaks non-empty text (skips empty/error/intermediate)
+   387→  //   - Best-effort: TTS failure doesn't crash the UI
+   388→  //   - Resets wasVoiceInputRef after speaking (one-shot)
+   389→  // Security: only the final assistant response text is passed to TTS.
+   390→  // No API keys, tool params, or intermediate reasoning are spoken.
+   391→  const speakResponseIfVoice = useCallback((responseText: string) => {
+   392→    if (!wasVoiceInputRef.current) return; // text input → no TTS
+   393→    if (ttsCancelledRef.current) return;  // cancelled → no stale TTS
+   394→    const text = typeof responseText === 'string' ? responseText.trim() : '';
+   395→    if (!text) return; // empty response → no TTS
+   396→
+   397→    // Reset voice flag (one-shot — next text request won't speak)
+   398→    wasVoiceInputRef.current = false;
+   399→
+   400→    // Best-effort TTS — errors logged but don't crash UI
+   401→    window.nexAPI?.voiceConversationSpeak?.(text).catch((err: any) => {
+   402→      console.warn('[TTS] voiceConversationSpeak failed (non-blocking):', err?.message || err);
+   403→    });
+   404→  }, []);
+   405→
+   406→  // ── Phase 30: Voice thinking state (tell Orb when AI is processing) ──
+   407→  useEffect(() => {
+   408→    voiceController.setThinking(isGenerating);
+   409→    return () => voiceController.setThinking(false);
+   410→  }, [isGenerating]);
+   411→
+   412→  // Phase 116 JARVIS: Drive Orb state from agent events
+   413→  // WORKING: when agent starts executing tools (step_started, tool_call_started)
+   414→  // SUCCESS: when task completes successfully (task_completed)
+   415→  // CANCELLED: when user cancels (task_cancelled)
+   416→  // THINKING: when planning starts (planning_started)
+   417→  // This runs INSIDE the agent event listener (below) via voiceController.setCondition
+   418→
+   419→  // ── Streaming listener ──
+   420→  useEffect(() => {
+   421→    const off = window.nexAPI.onChatToken((ev) => {
+   422→      if (ev.text) {
+   423→        streamBufRef.current += ev.text;
+   424→        // Update the streaming message in place
+   425→        setMessages((prev) => {
+   426→          const next = [...prev];
+   427→          const last = next[next.length - 1];
+   428→          if (last && last.status === 'streaming' || last?.status === 'pending') {
+   429→            next[next.length - 1] = { ...last, content: streamBufRef.current, status: 'streaming' };
+   430→          }
+   431→          return next;
+   432→        });
+   433→      }
+   434→    });
+   435→    return off;
+   436→  }, []);
+   437→
+   438→  // ── Phase 109/110: Agent event listener — updates chat UI with agent progress ──
+   439→  useEffect(() => {
+   440→    const off = window.nexAPI?.onAgentEvent?.((event: any) => {
+   441→      const eventType = event?.type || event?.event;
+   442→      const taskId = event?.taskId;
+   443→
+   444→      setMessages((prev) => {
+   445→        const next = [...prev];
+   446→        const last = next[next.length - 1];
+   447→        if (!last || last.metadata?.agentTaskId !== taskId) return prev;
+   448→
+   449→        switch (eventType) {
+   450→          case 'planning_started':
+   451→            // Phase 116 JARVIS: Orb THINKING while planning (LLM decision-making)
+   452→            voiceController.setCondition('agent', 'thinking');
+   453→            next[next.length - 1] = { ...last, content: '🧠 Agent is thinking...\n\n📋 Planning approach...' };
+   454→            break;
+   455→          case 'planning_completed':
+   456→          case 'plan_created':
+   457→            // Phase 116 JARVIS: Orb WORKING when tools start executing
+   458→            voiceController.setCondition('agent', 'working');
+   459→            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n📋 Plan created. Executing steps...' };
+   460→            break;
+   461→          case 'step_started':
+   462→          case 'tool_call':
+   463→          case 'tool_call_started':
+   464→            // Phase 116 JARVIS: Orb WORKING (actual tool execution — NOT thinking)
+   465→            // THINKING = LLM decision-making / planning
+   466→            // WORKING = tool execution (file ops, commands, etc.)
+   467→            voiceController.setCondition('agent', 'working');
+   468→            next[next.length - 1] = {
+   469→              ...last,
+   470→              content: `🧠 Agent is working...\n\n🔧 Running ${event.toolName || event.step?.toolName || 'tool'}...`,
+   471→            };
+   472→            break;
+   473→          case 'step_completed':
+   474→          case 'tool_result':
+   475→            // Phase 115: Capture snapshotId from tool_call_completed for Undo UI.
+   476→            // The snapshotId is only present for file-modifying tools (write_file,
+   477→            // edit_file). We store it in the message metadata so MessageBubble
+   478→            // can show an Undo button.
+   479→            {
+   480→              const snapId = event?.data?.snapshotId;
+   481→              const fileLabel = event?.data?.fileLabel;
+   482→              if (snapId) {
+   483→                next[next.length - 1] = {
+   484→                  ...last,
+   485→                  content: `🧠 Agent is working...\n\n✅ ${event.toolName || event.data?.toolName || 'Step'} completed.`,
+   486→                  metadata: {
+   487→                    ...last.metadata,
+   488→                    snapshotId: snapId,
+   489→                    fileLabel: fileLabel,
+   490→                  },
+   491→                };
+   492→              } else {
+   493→                next[next.length - 1] = {
+   494→                  ...last,
+   495→                  content: `🧠 Agent is working...\n\n✅ ${event.toolName || 'Step'} completed.`,
+   496→                };
+   497→              }
+   498→            }
+   499→            break;
+   500→          case 'verification':
+   501→            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔍 Verifying results...' };
+   502→            break;
+   503→          // Phase 9: explicit verification pass/fail events
+   504→          case 'verification_passed':
+   505→            next[next.length - 1] = {
+   506→              ...last,
+   507→              content: `🧠 Agent is working...\n\n✅ Verified: ${event.message || ''}`,
+   508→            };
+   509→            break;
+   510→          case 'verification_failed':
+   511→            // Verification failure triggers Phase 7 recovery — show the failure
+   512→            // + the recovery flow picks it up (recovery_started, etc.)
+   513→            next[next.length - 1] = {
+   514→              ...last,
+   515→              content: `🧠 Agent is working...\n\n⚠️ Verification failed: ${event.message || ''}\n\nRecovery in progress...`,
+   516→            };
+   517→            break;
+   518→          case 'replanning':
+   519→            next[next.length - 1] = { ...last, content: '🧠 Agent is working...\n\n🔄 Re-planning based on results...' };
+   520→            break;
+   521→          // ── Phase 7: LLM Error Recovery events ────────────────────────────
+   522→          case 'recovery_started':
+   523→            // THINKING Orb state — engine is analyzing the failure
+   524→            voiceController.setCondition('agent', 'thinking');
+   525→            next[next.length - 1] = {
+   526→              ...last,
+   527→              content: `🧠 Agent is thinking...\n\n⚠️ Analyzing failure: ${event.message || 'recovery in progress'}...`,
+   528→            };
+   529→            break;
+   530→          case 'recovery_decision': {
+   531→            const action = event?.data?.action || 'unknown';
+   532→            const emoji = action === 'RETRY' || action === 'MODIFY_AND_RETRY' ? '🔄'
+   533→              : action === 'REPLAN' ? '📋'
+   534→              : action === 'SKIP' ? '⏭️'
+   535→              : action === 'ABORT' ? '❌' : '🤔';
+   536→            next[next.length - 1] = {
+   537→              ...last,
+   538→              content: `🧠 Agent is working...\n\n${emoji} Recovery: ${event.message || action}`,
+   539→            };
+   540→            break;
+   541→          }
+   542→          case 'modify_retry_started':
+   543→            voiceController.setCondition('agent', 'working');
+   544→            next[next.length - 1] = {
+   545→              ...last,
+   546→              content: `🧠 Agent is working...\n\n🔧 Modifying arguments and retrying: ${event.message || ''}`,
+   547→            };
+   548→            break;
+   549→          case 'skip_executed':
+   550→            next[next.length - 1] = {
+   551→              ...last,
+   552→              content: `🧠 Agent is working...\n\n⏭️ Skipping step: ${event.message || ''}`,
+   553→            };
+   554→            break;
+   555→          case 'recovery_succeeded':
+   556→            // SUCCESS — brief flash then clear (handled by existing task_completed flow)
+   557→            next[next.length - 1] = {
+   558→              ...last,
+   559→              content: `🧠 Agent is working...\n\n✅ Recovery succeeded: ${event.message || ''}`,
+   560→            };
+   561→            break;
+   562→          case 'recovery_failed':
+   563→            // ERROR — task will abort; existing task_failed handler picks up
+   564→            next[next.length - 1] = {
+   565→              ...last,
+   566→              content: `🧠 Agent encountered an error...\n\n❌ Recovery failed: ${event.message || ''}`,
+   567→            };
+   568→            break;
+   569→          case 'agent_token':
+   570→            // Phase 110: Agent final answer — emitted by core.ts when ReAct
+   571→            // decides 'complete' with a finalAnswer. This is the actual
+   572→            // response text that should replace the placeholder.
+   573→            {
+   574→              const tokenText = event?.data?.content || event?.data?.text || '';
+   575→              if (tokenText) {
+   576→                // Accumulate agent tokens (like chat streaming)
+   577→                const currentContent = last.content || '';
+   578→                // If this is the first token, replace the placeholder
+   579→                const isFirstToken = !last.metadata?.agentTokensStarted;
+   580→                next[next.length - 1] = {
+   581→                  ...last,
+   582→                  content: isFirstToken ? tokenText : currentContent + tokenText,
+   583→                  status: 'streaming',
+   584→                  metadata: { ...last.metadata, agentTokensStarted: true },
+   585→                };
+   586→              }
+   587→            }
+   588→            break;
+   589→          case 'task_completed':
+   590→          case 'completed':
+   591→            // Agent finished — use the final answer from agent_token if accumulated,
+   592→            // otherwise use event.result/response/message.
+   593→            {
+   594→              const finalText = last.metadata?.agentTokensStarted
+   595→                ? last.content // Already has the streamed final answer
+   596→                : (event.result || event.response || event.message || event.data?.content || '✅ Task completed.');
+   597→              const spokenText = typeof finalText === 'string' ? finalText : '✅ Task completed.';
+   598→              next[next.length - 1] = {
+   599→                ...last,
+   600→                content: spokenText,
+   601→                status: 'complete',
+   602→                metadata: { ...last.metadata, completed: true },
+   603→              };
+   604→              // Phase 116 JARVIS: Orb → SUCCESS then clear → idle/ready
+   605→              voiceController.setCondition('agent', 'success');
+   606→              // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+   607→              scheduleConditionClear('agent', agentClearTimerRef);
+   608→              // Phase 110: Clear active agent task + reset UI state
+   609→              activeAgentTaskRef.current = null;
+   610→              setIsGenerating(false);
+   611→              setChatStreaming(false);
+   612→              streamBufRef.current = '';
+   613→              setTimeout(() => saveConversation(), 100);
+   614→              // Phase 14: Speak the response via TTS if this was a voice request.
+   615→              // Uses the finalText captured above (agent's actual answer, not
+   616→              // intermediate tool events or reasoning).
+   617→              speakResponseIfVoice(spokenText);
+   618→            }
+   619→            break;
+   620→          case 'task_failed':
+   621→          case 'failed':
+   622→            next[next.length - 1] = {
+   623→              ...last,
+   624→              content: `❌ Agent task failed: ${event.error || event.message || event.data?.error || 'Unknown error'}`,
+   625→              status: 'error',
+   626→              metadata: { ...last.metadata, failed: true, error: event.error || event.message },
+   627→            };
+   628→            // Phase 116 JARVIS: Orb → error state
+   629→            // Phase 17 (ORB-ERROR-NO-CLEAR fix): auto-clear the 'error'
+   630→            // condition after 1.5s — same as 'cancelled' below. Previously
+   631→            // the 'error' condition was set but NEVER cleared, leaving the
+   632→            // Orb stuck on red forever (STATE_PRIORITY['error']=8 is the
+   633→            // highest, so no other condition could override it). The user
+   634→            // had to start a new agent task to clear it. Now it auto-
+   635→            // clears like 'cancelled', letting the Orb return to idle.
+   636→            voiceController.setCondition('agent', 'error');
+   637→            // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+   638→            scheduleConditionClear('agent', agentClearTimerRef);
+   639→            activeAgentTaskRef.current = null;
+   640→            setIsGenerating(false);
+   641→            setChatStreaming(false);
+   642→            streamBufRef.current = '';
+   643→            setTimeout(() => saveConversation(), 100);
+   644→            break;
+   645→          case 'task_cancelled':
+   646→          case 'cancelled':
+   647→            next[next.length - 1] = {
+   648→              ...last,
+   649→              content: last.metadata?.agentTokensStarted
+   650→                ? last.content + '\n\n⚠️ Task was cancelled.'
+   651→                : '⚠️ Task was cancelled by user.',
+   652→              status: 'complete',
+   653→              metadata: { ...last.metadata, cancelled: true },
+   654→            };
+   655→            // Phase 116 JARVIS: Orb → CANCELLED then clear → idle/ready
+   656→            voiceController.setCondition('agent', 'cancelled');
+   657→            // Phase 18 (P2-1): capture timer ID; clears previous 'agent' timer.
+   658→            scheduleConditionClear('agent', agentClearTimerRef);
+   659→            activeAgentTaskRef.current = null;
+   660→            setIsGenerating(false);
+   661→            setChatStreaming(false);
+   662→            streamBufRef.current = '';
+   663→            setTimeout(() => saveConversation(), 100);
+   664→            // Phase 14: Reset voice flag — cancelled tasks should NOT speak
+   665→            wasVoiceInputRef.current = false;
+   666→            ttsCancelledRef.current = true;
+   667→            break;
+   668→          case 'permission_request':
+   669→            next[next.length - 1] = {
+   670→              ...last,
+   671→              content: `🧠 Agent is working...\n\n⚠️ Permission required: ${event.action || event.description || 'Action requires approval'}`,
+   672→            };
+   673→            break;
+   674→          default:
+   675→            break;
+   676→        }
+   677→        return next;
+   678→      });
+   679→    });
+   680→    return () => { if (off) off(); };
+   681→  }, [saveConversation]);
+   682→
+   683→  // Scroll follow
+   684→  useEffect(() => {
+   685→    // Phase 116 PERF: Use 'auto' during streaming to avoid smooth-scroll
+   686→    // animation pile-up. Each token triggers this — 'smooth' causes layout
+   687→    // thrashing with 20-100 calls/sec.
+   688→    messagesEndRef.current?.scrollIntoView({ behavior: isGenerating ? 'auto' : 'smooth' });
+   689→  }, [messages]);
+   690→
+   691→  // ── File attachment ──
+   692→  const handleFileSelect = useCallback(async (files: FileList | null) => {
+   693→    if (!files) return;
+   694→    const newAttachments: FileAttachment[] = [];
+   695→    for (const file of Array.from(files).slice(0, 5)) {
+   696→      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+   697→      const att: FileAttachment = {
+   698→        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+   699→        name: file.name,
+   700→        path: file.name,
+   701→        size: file.size,
+   702→        extension: ext,
+   703→      };
+   704→      if (!SUPPORTED_EXTENSIONS.has(ext)) {
+   705→        att.error = 'Unsupported type';
+   706→      } else if (file.size > MAX_ATTACHMENT_INLINE) {
+   707→        att.error = 'File too large (>100KB)';
+   708→      } else if (file.size > 5 * 1024 * 1024) {
+   709→        att.error = 'File too large';
+   710→      } else {
+   711→        try {
+   712→          att.content = await file.text();
+   713→        } catch {
+   714→          att.error = 'Cannot read file';
+   715→        }
+   716→      }
+   717→      newAttachments.push(att);
+   718→    }
+   719→    setAttachments((prev) => [...prev, ...newAttachments].slice(0, 5));
+   720→  }, []);
+   721→
+   722→  const removeAttachment = useCallback((id: string) => {
+   723→    setAttachments((prev) => prev.filter((a) => a.id !== id));
+   724→  }, []);
+   725→
+   726→  // Drag & drop
+   727→  const handleDrop = useCallback(async (e: React.DragEvent) => {
+   728→    e.preventDefault();
+   729→    e.stopPropagation();
+   730→    await handleFileSelect(e.dataTransfer.files);
+   731→  }, [handleFileSelect]);
+   732→
+   733→  const handleDragOver = useCallback((e: React.DragEvent) => {
+   734→    e.preventDefault();
+   735→    e.stopPropagation();
+   736→  }, []);
+   737→
+   738→  // ── Send message ──
+   739→  const handleSend = useCallback(async () => {
+   740→    if (editingMessageId) return; // Phase 34: block send while editing
+   741→    const trimmed = input.trim();
+   742→    if ((!trimmed && attachments.length === 0) || isGenerating) return;
+   743→
+   744→    // Phase 45: Intercept advisor chat commands
+   745→    const lower = trimmed.toLowerCase();
+   746→    if (lower.includes('مدل بهتر') || lower.includes('پیدا کن مدل') || lower.includes('model recommend') || lower.includes('find better model')) {
+   747→      // Show user message + advisor response
+   748→      const userMsg = createMessage('user', trimmed);
+   749→      const assistantMsg = createMessage('assistant', '', { status: 'pending' });
+   750→      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+   751→      setInput('');
+   752→      setIsGenerating(true);
+   753→      try {
+   754→        const res = await window.nexAPI.modelRecommendations();
+   755→        if (res.success && res.recommendations && res.recommendations.length > 0) {
+   756→          let text = 'یک مدل بهتر برای کار شما پیدا کردم:\n\n';
+   757→          for (const rec of res.recommendations.slice(0, 3)) {
+   758→            const e = rec.catalogEntry;
+   759→            if (!e) continue;
+   760→            text += `**${e.name}**\n`;
+   761→            text += `اندازه: ${e.sizeGB} GB\n`;
+   762→            text += `دسته: ${e.category}\n`;
+   763→            text += `بهبود: +${rec.estimatedImprovement}%\n`;
+   764→            text += `دلیل: ${rec.reason}\n\n`;
+   765→          }
+   766→          text += 'برای نصب، در چت تایید کنید یا روی Advisor در منو کلیک کنید.';
+   767→          setMessages((prev) => {
+   768→            const next = [...prev];
+   769→            next[next.length - 1] = createMessage('assistant', text, { status: 'complete' });
+   770→            return next;
+   771→          });
+   772→        } else {
+   773→          setMessages((prev) => {
+   774→            const next = [...prev];
+   775→            next[next.length - 1] = createMessage('assistant', 'در حال حاضر مدل بهتری برای سخت‌افزار شما پیدا نکردم. مدل‌های فعلی شما مناسب هستند.', { status: 'complete' });
+   776→            return next;
+   777→          });
+   778→        }
+   779→      } catch (err: any) {
+   780→        setMessages((prev) => {
+   781→          const next = [...prev];
+   782→          next[next.length - 1] = createMessage('assistant', `خطا: ${err.message}`, { status: 'complete' });
+   783→          return next;
+   784→        });
+   785→      }
+   786→      setIsGenerating(false);
+   787→      return;
+   788→    }
+   789→    if (lower.includes('این مدل بهتره') || lower.includes('مقایسه مدل') || lower.includes('compare model')) {
+   790→      // Show comparison
+   791→      const userMsg = createMessage('user', trimmed);
+   792→      const assistantMsg = createMessage('assistant', '', { status: 'pending' });
+   793→      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+   794→      setInput('');
+   795→      setIsGenerating(true);
+   796→      try {
+   797→        const advisorRes = await window.nexAPI.modelRecommendations();
+   798→        if (advisorRes.success && advisorRes.recommendations && advisorRes.recommendations.length > 0) {
+   799→          const rec = advisorRes.recommendations[0];
+   800→          const entry = rec.catalogEntry;
+   801→          if (entry) {
+   802→            const compareRes = await window.nexAPI.modelCompare('qwen2.5-7b-q4', entry.id);
+   803→            if (compareRes.success && compareRes.comparison) {
+   804→              const c = compareRes.comparison;
+   805→              let text = `مقایسه مدل‌ها:\n\n`;
+   806→              text += `**${c.modelA.name}** vs **${c.modelB.name}**\n\n`;
+   807→              text += `کیفیت: ${c.differences.quality?.a || 0} vs ${c.differences.quality?.b || 0}\n`;
+   808→              text += `سرعت: ${c.differences.speed?.a || 0} vs ${c.differences.speed?.b || 0}\n`;
+   809→              text += `کدنویسی: ${c.differences.coding?.a || 0} vs ${c.differences.coding?.b || 0}\n`;
+   810→              text += `استدلال: ${c.differences.reasoning?.a || 0} vs ${c.differences.reasoning?.b || 0}\n\n`;
+   811→              text += `نتیجه: ${c.recommendation}`;
+   812→              setMessages((prev) => {
+   813→                const next = [...prev];
+   814→                next[next.length - 1] = createMessage('assistant', text, { status: 'complete' });
+   815→                return next;
+   816→              });
+   817→            } else {
+   818→              setMessages((prev) => {
+   819→                const next = [...prev];
+   820→                next[next.length - 1] = createMessage('assistant', 'مقایسه ممکن نشد. مدل‌ها در کاتالوگ نیستند.', { status: 'complete' });
+   821→                return next;
+   822→              });
+   823→            }
+   824→          }
+   825→        } else {
+   826→          setMessages((prev) => {
+   827→            const next = [...prev];
+   828→            next[next.length - 1] = createMessage('assistant', 'مدلی برای مقایسه پیدا نشد.', { status: 'complete' });
+   829→            return next;
+   830→          });
+   831→        }
+   832→      } catch (err: any) {
+   833→        setMessages((prev) => {
+   834→          const next = [...prev];
+   835→          next[next.length - 1] = createMessage('assistant', `خطا: ${err.message}`, { status: 'complete' });
+   836→          return next;
+   837→        });
+   838→      }
+   839→      setIsGenerating(false);
+   840→      return;
+   841→    }
+   842→
+   843→    setError(null);
+   844→    setInput('');
+   845→
+   846→    // Build context from attachments
+   847→    const attachmentCtx = buildAttachmentContext(attachments);
+   848→    const fullContent = attachmentCtx ? `${trimmed}\n\n${attachmentCtx}` : trimmed;
+   849→
+   850→    // Add user message
+   851→    const userMsg = createMessage('user', trimmed, {
+   852→      attachments: attachments.length > 0 ? attachments : undefined,
+   853→    });
+   854→
+   855→    // Add pending assistant message
+   856→    const assistantMsg = createMessage('assistant', '', { status: 'pending' });
+   857→
+   858→    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+   859→    setAttachments([]);
+   860→    setIsGenerating(true);
+   861→    setChatStreaming(true);
+   862→    streamBufRef.current = '';
+   863→
+   864→    // Phase 116: Intent Resolution — check if this is a follow-up action
+   865→    // (open/reveal/read/edit) that can be handled WITHOUT invoking the LLM.
+   866→    // This makes the Agent feel like a real IDE assistant: "بازش کن" after
+   867→    // creating a file immediately opens it in the editor, without waiting
+   868→    // for the model to respond.
+   869→    try {
+   870→      const { isActionableFollowUp, resolveReference, executeIntent, extractArtifactsFromResponse } =
+   871→        await import('../../lib/intent-resolver');
+   872→
+   873→      if (isActionableFollowUp(trimmed)) {
+   874→        // Extract artifacts from the last assistant message
+   875→        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.status === 'complete');
+   876→        const artifacts = lastAssistantMsg
+   877→          ? extractArtifactsFromResponse(lastAssistantMsg.content)
+   878→          : { files: [], folders: [] };
+   879→
+   880→        const lastArtifactPath = artifacts.files[artifacts.files.length - 1];
+   881→        const lastArtifactFolder = artifacts.folders[artifacts.folders.length - 1];
+   882→
+   883→        const intentResult = resolveReference(trimmed, {
+   884→          lastArtifactPath,
+   885→          lastArtifactFolder,
+   886→          activeFile,
+   887→          projectPath,
+   888→        });
+   889→
+   890→        if (intentResult.resolved) {
+   891→          // Execute the action directly (no LLM needed)
+   892→          const resultMessage = await executeIntent(intentResult);
+   893→
+   894→          // Add the user message + action result to chat
+   895→          setMessages((prev) => {
+   896→            const next = [...prev];
+   897→            next[next.length - 1] = {
+   898→              ...next[next.length - 1],
+   899→              content: resultMessage,
+   900→              status: 'complete',
+   901→              metadata: { ...next[next.length - 1].metadata, completed: true },
+   902→            };
+   903→            return next;
+   904→          });
+   905→
+   906→          setIsGenerating(false);
+   907→          setChatStreaming(false);
+   908→          setTimeout(() => saveConversation(), 100);
+   909→          return; // Don't proceed to brainRoute/LLM
+   910→        }
+   911→      }
+   912→    } catch (intentErr) {
+   913→      console.warn('[INTENT] Resolution failed (non-blocking):', intentErr);
+   914→      // Fall through to normal brainRoute/LLM path
+   915→    }
+   916→
+   917→    // Build API messages
+   918→    const apiMessages = [
+   919→      ...toApiMessages(messages),
+   920→      { role: 'user' as const, content: fullContent },
+   921→    ];
+   922→
+   923→    const providerConfig = getProviderConfig(settings, aiMode, activeLocalModel);
+   924→
+   925→    try {
+   926→      // Phase 109: Route through Brain Router first.
+   927→      // The router decides: chat (streaming) or agent (tools + ReAct).
+   928→      // For chat: fall through to aiChatStream (preserves token streaming).
+   929→      // For agent: agent events come via onAgentEvent/onChatToken.
+   930→      const routeResult = await window.nexAPI.brainRoute({
+   931→        message: fullContent,
+   932→        history: messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-5).map(m => ({
+   933→          role: m.role as 'user' | 'assistant',
+   934→          content: m.content,
+   935→        })),
+   936→        projectPath: projectPath || undefined,
+   937→        modelId: settings.activeLocalModelId || activeLocalModel?.id,  // Phase 116: send active model ID
+   938→        forceRoute: undefined, // let the router decide
+   939→        inAgentTask: !!activeAgentTaskRef.current, // Phase 110: session stickiness
+   940→      });
+   941→
+   942→      if (routeResult.success && routeResult.route === 'agent' && routeResult.taskId) {
+   943→        // Phase 110: Track active agent task for session stickiness
+   944→        activeAgentTaskRef.current = routeResult.taskId;
+   945→
+   946→        // Agent mode — the agent is running asynchronously.
+   947→        // Agent events (planning, tool_call, verification, completion)
+   948→        // arrive via the agent-event IPC listener (added below).
+   949→        setMessages((prev) => {
+   950→          const next = [...prev];
+   951→          const last = next[next.length - 1];
+   952→          if (last) {
+   953→            next[next.length - 1] = {
+   954→              ...last,
+   955→              content: '🧠 Agent is working on this task...\n\n📋 Planning...',
+   956→              status: 'streaming',
+   957→              metadata: { agentTaskId: routeResult.taskId, route: 'agent' },
+   958→            };
+   959→          }
+   960→          return next;
+   961→        });
+   962→        // Phase 110: Don't let the finally block reset isGenerating —
+   963→        // the agent event listener handles that on task_completed/failed/cancelled.
+   964→        // Return early WITHOUT hitting the finally block.
+   965→        // We handle cleanup (saveConversation, setChatStreaming) in the
+   966→        // agent event listener when the task completes.
+   967→        setChatStreaming(false); // agent doesn't use chat-token streaming
+   968→        return;
+   969→      }
+   970→
+   971→      // If brainRoute failed or returned chat, fall through to streaming.
+   972→      // Also handle the case where brainRoute itself errors — fall back to chat.
+   973→      if (!routeResult.success) {
+   974→        console.warn('[BRAIN_ROUTER] Error, falling back to direct chat:', routeResult.error);
+   975→      }
+   976→
+   977→      // Chat mode — proceed with streaming (preserves existing behavior)
+   978→      const stream = await window.nexAPI.aiChatStream(providerConfig, apiMessages);
+   979→      if (stream.success) {
+   980→        const finalContent = stream.content || streamBufRef.current;
+   981→        setMessages((prev) => {
+   982→          const next = [...prev];
+   983→          const last = next[next.length - 1];
+   984→          if (last) {
+   985→            next[next.length - 1] = {
+   986→              ...last,
+   987→              content: finalContent,
+   988→              status: 'complete',
+   989→              metadata: {
+   990→                tokens: stream.tokens,
+   991→                provider: providerConfig.provider,
+   992→                durationMs: stream.durationMs,
+   993→              },
+   994→            };
+   995→          }
+   996→          return next;
+   997→        });
+   998→        // Phase 33: auto-save on completed assistant response
+   999→        setTimeout(() => saveConversation(), 50);
+  1000→        // Phase 14: Speak the chat response via TTS if this was a voice request.
+  1001→        // Only for chat mode (not agent mode — agent has its own TTS call above).
+  1002→        speakResponseIfVoice(finalContent);
+  1003→      } else if (stream.error && /No local model|Model file not found/i.test(stream.error)) {
+  1004→        setMessages((prev) => {
+  1005→          const next = [...prev];
+  1006→          const last = next[next.length - 1];
+  1007→          if (last) next[next.length - 1] = { ...last, status: 'error', metadata: { error: stream.error || "Request failed" } };
+  1008→          return next;
+  1009→        });
+  1010→        setError(stream.error);
+  1011→        // Phase 17 (CHAT-ERROR-NO-ORB fix): flash Orb red on chat error
+  1012→        voiceController.setCondition('chat', 'error');
+  1013→        // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+  1014→        scheduleConditionClear('chat', chatClearTimerRef);
+  1015→      } else if (stream.error && /abort|cancelled|canceled/i.test(stream.error)) {
+  1016→        // ABORT FIX: do NOT fall back to non-streaming aiChat when the stream
+  1017→        // was aborted. Falling back starts a NEW inference (chatComplete)
+  1018→        // while the aborted stream's session/context is still being disposed,
+  1019→        // which can cause resource contention or a second immediate abort.
+  1020→        // Instead, show the abort as the final state and let the user retry.
+  1021→        setMessages((prev) => {
+  1022→          const next = [...prev];
+  1023→          const last = next[next.length - 1];
+  1024→          if (last) next[next.length - 1] = { ...last, status: 'error', metadata: { error: stream.error || "Request aborted" } };
+  1025→          return next;
+  1026→        });
+  1027→        setError(stream.error);
+  1028→      } else {
+  1029→        // Fallback to non-streaming
+  1030→        const result = await window.nexAPI.aiChat(providerConfig, apiMessages);
+  1031→        if (result.success && result.content) {
+  1032→          setMessages((prev) => {
+  1033→            const next = [...prev];
+  1034→            const last = next[next.length - 1];
+  1035→            if (last) {
+  1036→              next[next.length - 1] = {
+  1037→                ...last, content: result.content || '', status: 'complete',
+  1038→                metadata: { tokens: result.tokens, provider: providerConfig.provider },
+  1039→              };
+  1040→            }
+  1041→            return next;
+  1042→          });
+  1043→          // Phase 14: Speak the non-streamed chat response via TTS if voice
+  1044→          speakResponseIfVoice(result.content || '');
+  1045→        } else {
+  1046→          setMessages((prev) => {
+  1047→            const next = [...prev];
+  1048→            const last = next[next.length - 1];
+  1049→            if (last) next[next.length - 1] = { ...last, status: 'error', metadata: { error: result.error || "Request failed" } };
+  1050→            return next;
+  1051→          });
+  1052→          setError(result.error || 'Request failed');
+  1053→          // Phase 17 (CHAT-ERROR-NO-ORB fix): flash Orb red on chat error
+  1054→          const isAbort = /abort|cancelled|canceled/i.test(result.error || '');
+  1055→          if (!isAbort) {
+  1056→            voiceController.setCondition('chat', 'error');
+  1057→            // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+  1058→            scheduleConditionClear('chat', chatClearTimerRef);
+  1059→          }
+  1060→        }
+  1061→      }
+  1062→    } catch (err: any) {
+  1063→      // Preserve user message; mark assistant as error
+  1064→      setMessages((prev) => {
+  1065→        const next = [...prev];
+  1066→        const last = next[next.length - 1];
+  1067→        if (last) next[next.length - 1] = { ...last, status: 'error', metadata: { error: err.message } };
+  1068→        return next;
+  1069→      });
+  1070→      setError(err.message);
+  1071→      // Phase 17 (CHAT-ERROR-NO-ORB fix): set Orb to 'error' on chat
+  1072→      // failure too — previously only agent task failures set the Orb
+  1073→      // to 'error'; chat errors left the Orb at 'thinking' (cleared by
+  1074→      // the finally block below via setThinking(false) → 'idle'). The
+  1075→      // user had no visual indication that the chat failed. Now we
+  1076→      // briefly flash the Orb red (1.5s) to match the agent path's UX.
+  1077→      const isAbort = /abort|cancelled|canceled/i.test(err.message || '');
+  1078→      if (!isAbort) {
+  1079→        voiceController.setCondition('chat', 'error');
+  1080→        // Phase 18 (P2-1): capture timer ID; clears previous 'chat' timer.
+  1081→        scheduleConditionClear('chat', chatClearTimerRef);
+  1082→      }
+  1083→    } finally {
+  1084→      setIsGenerating(false);
+  1085→      setChatStreaming(false);
+  1086→      streamBufRef.current = '';
+  1087→      // Phase 33: final save (captures error/partial states too)
+  1088→      setTimeout(() => saveConversation(), 100);
+  1089→    }
+  1090→  }, [input, messages, attachments, isGenerating, settings, aiMode, activeLocalModel, saveConversation]);
+  1091→
+  1092→  const handleStop = useCallback(() => {
+  1093→    // Phase 14: Cancel TTS — prevents stale requests from speaking after cancel
+  1094→    ttsCancelledRef.current = true;
+  1095→    wasVoiceInputRef.current = false; // no TTS for cancelled request
+  1096→    // Cancel chat streaming
+  1097→    window.nexAPI.aiChatStreamCancel().catch(() => {});
+  1098→    // Phase 110: Also cancel active agent task if any
+  1099→    if (activeAgentTaskRef.current) {
+  1100→      window.nexAPI.agentCancelTask?.(activeAgentTaskRef.current, 'User cancelled').catch(() => {});
+  1101→    }
+  1102→    // Phase 14: Also stop any ongoing TTS playback
+  1103→    window.nexAPI?.voiceConversationStopSpeaking?.()?.catch?.(() => {});
+  1104→  }, []);
+  1105→
+  1106→  // Phase 115: Undo — restore a file from its snapshot.
+  1107→  // Called when the user clicks the Undo button on an agent message that
+  1108→  // contains a snapshotId (from write_file or edit_file).
+  1109→  //
+  1110→  // Security: the renderer only sends the snapshotId — never a filesystem
+  1111→  // path. The main process validates snapshot ownership before restoring.
+  1112→  //
+  1113→  // Double-restore prevention: undoingIdsRef tracks in-flight undo requests.
+  1114→  const undoingIdsRef = useRef<Set<string>>(new Set());
+  1115→  const handleUndo = useCallback(async (messageId: string, snapshotId: string) => {
+  1116→    // Prevent double-click / double-restore
+  1117→    if (undoingIdsRef.current.has(messageId)) return;
+  1118→    undoingIdsRef.current.add(messageId);
+  1119→
+  1120→    try {
+  1121→      const result = await window.nexAPI.snapshotRestore(snapshotId);
+  1122→      if (result.success) {
+  1123→        // Mark the message as undone — disables the Undo button
+  1124→        setMessages((prev) => prev.map((m) =>
+  1125→          m.id === messageId
+  1126→            ? { ...m, metadata: { ...m.metadata, undone: true, undoError: undefined } }
+  1127→            : m
+  1128→        ));
+  1129→      } else {
+  1130→        // On failure: keep the Undo button available (if appropriate)
+  1131→        // and show the error.
+  1132→        setMessages((prev) => prev.map((m) =>
+  1133→          m.id === messageId
+  1134→            ? { ...m, metadata: { ...m.metadata, undoError: result.error || 'Restore failed' } }
+  1135→            : m
+  1136→        ));
+  1137→      }
+  1138→    } catch (err: any) {
+  1139→      setMessages((prev) => prev.map((m) =>
+  1140→        m.id === messageId
+  1141→          ? { ...m, metadata: { ...m.metadata, undoError: err.message || 'Restore failed' } }
+  1142→          : m
+  1143→      ));
+  1144→    } finally {
+  1145→      undoingIdsRef.current.delete(messageId);
+  1146→    }
+  1147→  }, []);
+  1148→
+  1149→  // Phase 88: New Chat — clear messages, reset conversation state
+  1150→  const handleNewChat = useCallback(() => {
+  1151→    setMessages([]);
+  1152→    setConversationId(null);
+  1153→    setConversationTitle('');
+  1154→    conversationIdRef.current = null;
+  1155→    conversationTitleRef.current = '';
+  1156→    conversationCreatedAtRef.current = null;
+  1157→    setLastSavedAt(null);
+  1158→    setError(null);
+  1159→    setInput('');
+  1160→    setAttachments([]);
+  1161→    // Dispatch event for AppShell to update activeConversationId
+  1162→    window.dispatchEvent(new CustomEvent('nex:new-conversation'));
+  1163→  }, []);
+  1164→
+  1165→  // Phase 88: Delete current conversation
+  1166→  const handleDeleteChat = useCallback(async () => {
+  1167→    const id = conversationIdRef.current;
+  1168→    if (!id) return;
+  1169→    try {
+  1170→      await window.nexAPI.conversationDelete(id);
+  1171→      handleNewChat();
+  1172→    } catch (err: any) {
+  1173→      setError('Failed to delete conversation: ' + err.message);
+  1174→    }
+  1175→  }, [handleNewChat]);
+  1176→
+  1177→  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  1178→    if (e.key === 'Enter' && !e.shiftKey) {
+  1179→      e.preventDefault();
+  1180→      handleSend();
+  1181→    }
+  1182→  }, [handleSend]);
+  1183→
+  1184→  const isLocal = aiMode === 'local';
+  1185→
+  1186→  return (
+  1187→    <div
+  1188→      className="flex flex-col h-full overflow-hidden"
+  1189→      onDrop={handleDrop}
+  1190→      onDragOver={handleDragOver}
+  1191→    >
+  1192→      {/* Phase 88: Conversation Header — New Chat + Title + Delete */}
+  1193→      <div
+  1194→        className="flex items-center justify-between px-3 py-2 shrink-0"
+  1195→        style={{ borderBottom: '1px solid var(--nex-glass-border)' }}
+  1196→      >
+  1197→        <div className="flex items-center gap-2 min-w-0 flex-1">
+  1198→          <button
+  1199→            onClick={handleNewChat}
+  1200→            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium nex-click shrink-0"
+  1201→            style={{ background: 'var(--nex-accent-dim)', color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}
+  1202→            title="New conversation (Ctrl+N)"
+  1203→            aria-label="New conversation"
+  1204→          >
+  1205→            <Plus size={11} /> New
+  1206→          </button>
+  1207→          <span className="text-[10px] truncate" style={{ color: 'var(--nex-text-muted)' }} title={conversationTitle || 'New conversation'}>
+  1208→            {conversationTitle || 'New conversation'}
+  1209→          </span>
+  1210→        </div>
+  1211→        <div className="flex items-center gap-1 shrink-0">
+  1212→          {conversationId && messages.length > 0 && (
+  1213→            <button
+  1214→              onClick={handleDeleteChat}
+  1215→              className="p-1 rounded transition-colors hover:bg-red-500/10"
+  1216→              style={{ color: 'var(--nex-text-muted)' }}
+  1217→              title="Delete conversation"
+  1218→              aria-label="Delete conversation"
+  1219→            >
+  1220→              <Trash2 size={11} />
+  1221→            </button>
+  1222→          )}
+  1223→        </div>
+  1224→      </div>
+  1225→
+  1226→      {/* Messages */}
+  1227→      <div className="flex-1 overflow-y-auto nex-scrollbar px-4 py-4" role="list" aria-label="Chat messages">
+  1228→        {messages.length === 0 && (
+  1229→          <div className="flex flex-col items-center justify-center h-full gap-4 py-8">
+  1230→            <div
+  1231→              className="flex items-center justify-center rounded-full"
+  1232→              style={{
+  1233→                width: 48, height: 48,
+  1234→                background: 'radial-gradient(circle at 40% 40%, var(--nex-accent-dim) 0%, transparent 70%)',
+  1235→              }}
+  1236→            >
+  1237→              <span className="text-sm font-bold" style={{ color: 'var(--nex-accent)' }}>NX</span>
+  1238→            </div>
+  1239→            <p className="text-sm" style={{ color: 'var(--nex-text-dim)' }}>
+  1240→              How can I help you today?
+  1241→            </p>
+  1242→          </div>
+  1243→        )}
+  1244→        {messages.map((msg) => (
+  1245→          <MessageRow
+  1246→            key={msg.id}
+  1247→            msg={msg}
+  1248→            isLast={msg === messages[messages.length - 1]}
+  1249→            isGenerating={isGenerating}
+  1250→            editingMessageId={editingMessageId}
+  1251→            editText={editText}
+  1252→            onUndo={handleUndo}
+  1253→            onEditMessage={handleEditMessage}
+  1254→              onStartEdit={startEdit}
+  1255→              onCancelEdit={cancelEdit}
+  1256→              onEditText={setEditText}
+  1257→              onRegenerate={handleRegenerate}
+  1258→          />
+  1259→        ))}
+  1260→        <div ref={messagesEndRef} />
+  1261→      </div>
+  1262→
+  1263→      {/* Attachments preview */}
+  1264→      {attachments.length > 0 && (
+  1265→        <div className="px-3 pb-1 flex flex-wrap gap-1.5">
+  1266→          {attachments.map((att) => (
+  1267→            <div
+  1268→              key={att.id}
+  1269→              className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[9px]"
+  1270→              style={{
+  1271→                background: att.error ? 'rgba(255,59,92,0.1)' : 'var(--nex-glass-bg)',
+  1272→                border: `1px solid ${att.error ? 'rgba(255,59,92,0.3)' : 'var(--nex-glass-border)'}`,
+  1273→              }}
+  1274→            >
+  1275→              <FileIcon size={9} style={{ color: att.error ? 'var(--nex-error)' : 'var(--nex-accent)' }} />
+  1276→              <span className="truncate max-w-[100px]" style={{ color: 'var(--nex-text-dim)' }}>
+  1277→                {att.name}
+  1278→              </span>
+  1279→              <span style={{ color: 'var(--nex-text-muted)' }}>
+  1280→                {att.error ? att.error : `${(att.size / 1024).toFixed(0)}KB`}
+  1281→              </span>
+  1282→              <button
+  1283→                onClick={() => removeAttachment(att.id)}
+  1284→                className="ml-0.5 transition-colors hover:text-red-400"
+  1285→                style={{ color: 'var(--nex-text-muted)' }}
+  1286→                aria-label={`Remove ${att.name}`}
+  1287→              >
+  1288→                <X size={9} />
+  1289→              </button>
+  1290→            </div>
+  1291→          ))}
+  1292→        </div>
+  1293→      )}
+  1294→
+  1295→      {/* Error */}
+  1296→      {error && (
+  1297→        <div className="px-3 pb-1">
+  1298→          <div
+  1299→            className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-[10px]"
+  1300→            style={{ background: 'rgba(255,59,92,0.1)', border: '1px solid rgba(255,59,92,0.2)' }}
+  1301→          >
+  1302→            <span className="flex-1 text-red-400">{error}</span>
+  1303→            <button
+  1304→              onClick={handleSend}
+  1305→              className="px-2 py-0.5 rounded text-[9px] font-medium transition-colors"
+  1306→              style={{ color: 'var(--nex-accent-text)', border: '1px solid var(--nex-accent-glow)' }}
+  1307→            >
+  1308→              Retry
+  1309→            </button>
+  1310→            <button onClick={() => setError(null)} style={{ color: 'var(--nex-text-muted)' }}>
+  1311→              <X size={10} />
+  1312→            </button>
+  1313→          </div>
+  1314→        </div>
+  1315→      )}
+  1316→
+  1317→      {/* Input area */}
+  1318→      <div
+  1319→        className="px-4 py-2.5 shrink-0"
+  1320→        style={{ borderTop: '1px solid var(--nex-glass-border)' }}
+  1321→      >
+  1322→        {/* Toolbar */}
+  1323→        <div className="flex items-center justify-between mb-1.5">
+  1324→          <div className="flex items-center gap-1">
+  1325→            <button
+  1326→              onClick={() => fileInputRef.current?.click()}
+  1327→              className="p-1 rounded transition-colors hover:bg-white/[0.06]"
+  1328→              style={{ color: 'var(--nex-text-muted)' }}
+  1329→              title="Attach files"
+  1330→              aria-label="Attach files"
+  1331→            >
+  1332→              <Paperclip size={12} />
+  1333→            </button>
+  1334→            <input
+  1335→              ref={fileInputRef}
+  1336→              type="file"
+  1337→              multiple
+  1338→              accept=".txt,.md,.json,.csv,.yaml,.yml,.js,.ts,.tsx,.jsx,.css,.html,.py,.sh,.xml,.docx,.log,.sql"
+  1339→              onChange={(e) => { handleFileSelect(e.target.files); e.target.value = ''; }}
+  1340→              className="hidden"
+  1341→              aria-hidden
+  1342→            />
+  1343→          </div>
+  1344→          <div className="flex items-center gap-2">
+  1345→            {/* Mode indicator */}
+  1346→            <span className="flex items-center gap-1 text-[9px] font-medium">
+  1347→              {isLocal ? (
+  1348→                <>
+  1349→                  <WifiOff size={9} style={{ color: 'var(--nex-accent)' }} />
+  1350→                  <span style={{ color: 'var(--nex-accent-text)' }}>LOCAL</span>
+  1351→                </>
+  1352→              ) : (
+  1353→                <>
+  1354→                  <Wifi size={9} style={{ color: 'var(--nex-success)' }} />
+  1355→                  <span style={{ color: 'var(--nex-success)' }}>ONLINE</span>
+  1356→                </>
+  1357→              )}
+  1358→            </span>
+  1359→            {/* Send / Stop */}
+  1360→            {chatStreaming && isGenerating ? (
+  1361→              <button
+  1362→                onClick={handleStop}
+  1363→                className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-colors"
+  1364→                style={{ color: 'var(--nex-error)', border: '1px solid rgba(255,59,92,0.3)' }}
+  1365→                aria-label="Stop generating"
+  1366→              >
+  1367→                <Square size={9} /> Stop
+  1368→              </button>
+  1369→            ) : (
+  1370→              <button
+  1371→                onClick={handleSend}
+  1372→                disabled={(!input.trim() && attachments.length === 0) || isGenerating}
+  1373→                className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all disabled:opacity-30"
+  1374→                style={{
+  1375→                  color: 'var(--nex-bg)',
+  1376→                  background: `linear-gradient(135deg, var(--nex-accent) 0%, var(--nex-accent-secondary) 100%)`,
+  1377→                }}
+  1378→                aria-label="Send message"
+  1379→              >
+  1380→                <Send size={10} /> Send
+  1381→              </button>
+  1382→            )}
+  1383→          </div>
+  1384→        </div>
+  1385→
+  1386→        {/* Text input */}
+  1387→        <textarea
+  1388→          ref={inputRef}
+  1389→          value={input}
+  1390→          onChange={(e) => setInput(e.target.value)}
+  1391→          onKeyDown={handleKeyDown}
+  1392→          placeholder="Type your message…"
+  1393→          data-chat-input
+  1394→          className="w-full bg-white/[0.03] border border-[var(--nex-glass-border)] rounded-lg px-3 py-2.5 text-sm resize-none outline-none transition-colors focus:border-[var(--nex-accent)]/30"
+  1395→          style={{
+  1396→            color: 'var(--nex-text)',
+  1397→            maxHeight: 120,
+  1398→            minHeight: 40,
+  1399→            fontFamily: "system-ui, 'Segoe UI', Tahoma, 'Vazirmatn', sans-serif",
+  1400→            lineHeight: 1.5,
+  1401→          }}
+  1402→          rows={1}
+  1403→          aria-label="Chat input"
+  1404→        />
+  1405→      </div>
+  1406→    </div>
+  1407→  );
+  1408→}
+  1409→
+  1410→// ── Phase 116 PERF: Memoized MessageRow ───────────────────────────────────
+  1411→// Previously, every chat token caused the ENTIRE messages.map() to re-render
+  1412→// because the inline JSX (Edit/Regenerate buttons, conditional rendering)
+  1413→// created new closures on every render. Now, MessageRow is React.memo'd
+  1414→// with stable callback references — only the message that actually changed
+  1415→// (the streaming one) re-renders. All other messages skip re-rendering.
+  1416→
+  1417→interface MessageRowProps {
+  1418→  msg: NexMessage;
+  1419→  isLast: boolean;
+  1420→  isGenerating: boolean;
+  1421→  editingMessageId: string | null;
+  1422→  editText: string;
+  1423→  onUndo: (messageId: string, snapshotId: string) => void;
+  1424→  onEditMessage: (messageId: string, newContent: string) => void;
+  1425→  onStartEdit: (messageId: string) => void;
+  1426→  onCancelEdit: () => void;
+  1427→  onEditText: (text: string) => void;
+  1428→  onRegenerate: () => void;
+  1429→}
+  1430→
+  1431→const MessageRow = React.memo(function MessageRow({
+  1432→  msg, isLast, isGenerating, editingMessageId, editText,
+  1433→  onUndo, onEditMessage, onStartEdit, onCancelEdit, onEditText, onRegenerate,
+  1434→}: MessageRowProps) {
+  1435→  // Edit mode for user messages
+  1436→  if (editingMessageId === msg.id) {
+  1437→    return (
+  1438→      <div className="flex gap-2 mb-3 ml-8">
+  1439→        <textarea
+  1440→          value={editText}
+  1441→          onChange={(e) => onEditText(e.target.value)}
+  1442→          onKeyDown={(e) => {
+  1443→            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onEditMessage(msg.id, editText); }
+  1444→            if (e.key === 'Escape') onCancelEdit();
+  1445→          }}
+  1446→          className="flex-1 bg-white/[0.05] border border-[var(--nex-accent)]/30 rounded-lg px-3 py-2 text-[12px] resize-none outline-none"
+  1447→          style={{ color: 'var(--nex-text)', minHeight: 40 }}
+  1448→          autoFocus
+  1449→          aria-label="Edit message"
+  1450→        />
+  1451→        <div className="flex flex-col gap-1">
+  1452→          <button onClick={() => onEditMessage(msg.id, editText)} className="px-2 py-1 rounded text-[9px] font-medium" style={{ background: 'var(--nex-accent)', color: 'var(--nex-bg)' }}>Save</button>
+  1453→          <button onClick={onCancelEdit} className="px-2 py-1 rounded text-[9px]" style={{ border: '1px solid var(--nex-glass-border)', color: 'var(--nex-text-muted)' }}>Cancel</button>
+  1454→        </div>
+  1455→      </div>
+  1456→    );
+  1457→  }
+  1458→
+  1459→  return (
+  1460→    <>
+  1461→      <MessageBubble message={msg} onUndo={onUndo} />
+  1462→      {!isGenerating && msg.status === 'complete' && (
+  1463→        <div className={`flex gap-2 mt-0.5 mb-2 ${msg.role === 'user' ? 'justify-end pr-10' : 'pl-10'}`}>
+  1464→          {msg.role === 'user' && (
+  1465→            <button
+  1466→              onClick={() => onStartEdit(msg.id)}
+  1467→              className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+  1468→              style={{ color: 'var(--nex-text-muted)' }}
+  1469→              aria-label="Edit message"
+  1470→            >
+  1471→              Edit
+  1472→            </button>
+  1473→          )}
+  1474→          {msg.role === 'assistant' && isLast && (
+  1475→            <button
+  1476→              onClick={onRegenerate}
+  1477→              className="text-[9px] px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06]"
+  1478→              style={{ color: 'var(--nex-text-muted)' }}
+  1479→              aria-label="Regenerate response"
+  1480→            >
+  1481→              Regenerate
+  1482→            </button>
+  1483→          )}
+  1484→        </div>
+  1485→      )}
+  1486→    </>
+  1487→  );
+  1488→}, (prev, next) => {
+  1489→  // Custom comparison: only re-render if this specific message changed
+  1490→  // or if global state that affects this row changed
+  1491→  return (
+  1492→    prev.msg.id === next.msg.id &&
+  1493→    prev.msg.content === next.msg.content &&
+  1494→    prev.msg.status === next.msg.status &&
+  1495→    prev.msg.metadata === next.msg.metadata &&
+  1496→    prev.isLast === next.isLast &&
+  1497→    prev.isGenerating === next.isGenerating &&
+  1498→    prev.editingMessageId === next.editingMessageId &&
+  1499→    prev.editText === next.editText
+  1500→  );
+  1501→});
+  1502→
