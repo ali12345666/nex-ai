@@ -11864,3 +11864,57 @@ Stage Summary:
 - 15 new files + 7 modified files. ~1000 lines new, ~100 lines refactored.
 - Adding a new built-in text provider = 1 new descriptor file + 1 line in providers/index.ts. No Core changes.
 - All 604 tests + 316 phase-116 + 17 security + 13 persistence pass.
+
+---
+Task ID: agent-chat-fix
+Agent: main
+Task: Fix Agent "0 tool calls" + add reveal_in_explorer tool + planner heuristic for "open folder"
+
+Work Log:
+- READ-ONLY audit of the full Agent → Planner → Tool → Chat pipeline.
+- Root cause of "Agent executed 0 tool calls":
+  1. The brain router correctly routes "باز کن" to Agent (keyword match).
+  2. The planner calls the LLM (Qwen3-8B local) to produce JSON plan.
+  3. If the LLM produces empty/invalid JSON → fallbackPlan() is called.
+  4. The fallback heuristic matches "باز کن" → creates read_file + open_file_in_editor steps.
+  5. BUT: the request "پوشه NEX AI را باز کن" means "open the folder in the system file
+     manager" — NOT "read a file". There was NO tool for opening a folder in the OS file
+     manager (Explorer/Finder). The only "open" tool was open_file_in_editor (opens in
+     NEX AI's Monaco editor, not the system file manager).
+  6. Additionally, fallbackPlan didn't have access to request.projectPath (it only
+     received userRequest as a string), so it couldn't resolve "پوشه خودت" (your own
+     folder = the project path).
+
+- Fixes applied:
+  1. NEW src/main/ai/tools/reveal-in-explorer-tool.ts: RevealInExplorerTool
+     - Opens a path in the system file manager (Explorer on Windows, Finder on macOS,
+       xdg-open on Linux) and brings it to the foreground.
+     - Uses safeExecFile (no shell interpolation).
+     - Security: assertPathInside (path must be within workspace).
+     - Also brings the NEX AI window to foreground (if user said "بیار جلوی صفحه").
+  2. MODIFIED src/main/ai/tool-registry.ts: registered RevealInExplorerTool.
+  3. MODIFIED src/main/agent/planner.ts:
+     - Added new heuristic pattern: "پوشه" (folder) + "باز کن"/"بیار"/"جلوی صفحه"/"open"/"reveal"
+       → creates a reveal_in_explorer step with the folder path.
+     - Fixed fallbackPlan signature to accept projectPath parameter.
+     - Updated all 6 call sites to pass request.projectPath.
+     - The fallback can now resolve "پوشه خودت" → projectPath.
+
+- Chat UI improvements:
+  The existing NexChatPanel already subscribes to agent-event IPC and shows real-time
+  progress (planning, tool_call_started, tool_call_completed, etc.). The O5
+  AgentStateDisplay also shows real events. The chat bubble shows "🧠 Agent is working..."
+  with live status updates. No fake animation was added — all progress is driven by real
+  agent events. The fix is in the Agent + Planner layer (producing real tool calls),
+  not in the UI (which was already wired correctly).
+
+Verification:
+- Main typecheck: PASS. Renderer typecheck: PASS.
+- Build main: PASS. Build renderer: PASS.
+- GLM suite: 604/604. Security: 17/17. Persistence: 13/13. Phase-116: 316/316.
+- 0 new test failures.
+
+Files changed:
+- NEW: src/main/ai/tools/reveal-in-explorer-tool.ts
+- MODIFIED: src/main/ai/tool-registry.ts (register RevealInExplorerTool)
+- MODIFIED: src/main/agent/planner.ts (new heuristic + projectPath parameter)

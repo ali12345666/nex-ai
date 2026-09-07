@@ -372,6 +372,10 @@ export async function ensureBuiltinToolsRegistered(): Promise<void> {
   const { OpenFileInEditorTool } = await import('./tools/open-file-in-editor-tool');
   registerTool(new OpenFileInEditorTool());
 
+  // P1+: reveal_in_explorer — open path in system file manager (Explorer/Finder)
+  const { RevealInExplorerTool } = await import('./tools/reveal-in-explorer-tool');
+  registerTool(new RevealInExplorerTool());
+
   // Phase 10: browser automation tools (Playwright)
   // Only registered if browser automation is enabled (opt-in OFF by default).
   // The opt-in flag is checked inside registerBrowserTools() — if OFF, no

@@ -188,7 +188,7 @@ export async function generatePlan(
 
     if (!result.content || result.content.trim().length === 0) {
       console.error('[PLANNER_ERROR] Empty response from model!');
-      return fallbackPlan(request.userRequest, 'Planner produced empty response');
+      return fallbackPlan(request.userRequest, 'Planner produced empty response', request.projectPath);
     }
 
     const plan = parsePlanResponse(result.content, request);
@@ -222,7 +222,7 @@ Output STRICT JSON with steps[]:`;
         return retryPlan;
       }
       console.warn('[PLANNER_DIAG] retry also failed — using heuristic fallback');
-      return fallbackPlan(request.userRequest, 'Planner retry also produced invalid plan');
+      return fallbackPlan(request.userRequest, 'Planner retry also produced invalid plan', request.projectPath);
     }
 
     plan.usage = {
@@ -320,7 +320,7 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
       data: { responsePreview: response.slice(0, 200) },
     });
     console.warn('[PLANNER_DIAG] no JSON found in response — falling back');
-    return fallbackPlan(request.userRequest, 'Planner did not return JSON');
+    return fallbackPlan(request.userRequest, 'Planner did not return JSON', request.projectPath);
   }
 
   let parsed: any;
@@ -333,17 +333,17 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
     });
     console.warn('[PLANNER_DIAG] JSON parse failed:', err.message);
     console.warn('[PLANNER_DIAG] attempted JSON:', jsonMatch[0].slice(0, 300));
-    return fallbackPlan(request.userRequest, `JSON parse error: ${err.message}`);
+    return fallbackPlan(request.userRequest, `JSON parse error: ${err.message}`, request.projectPath);
   }
 
   if (!Array.isArray(parsed.steps)) {
     console.warn('[PLANNER_DIAG] parsed.steps is not an array:', typeof parsed.steps);
-    return fallbackPlan(request.userRequest, 'Plan missing steps[]');
+    return fallbackPlan(request.userRequest, 'Plan missing steps[]', request.projectPath);
   }
 
   if (parsed.steps.length === 0) {
     console.warn('[PLANNER_DIAG] parsed.steps is empty array');
-    return fallbackPlan(request.userRequest, 'Plan has 0 steps');
+    return fallbackPlan(request.userRequest, 'Plan has 0 steps', request.projectPath);
   }
 
   const steps: AgentStep[] = parsed.steps.map((s: any, idx: number) => ({
@@ -386,7 +386,7 @@ function parsePlanResponse(response: string, request: PlanRequest): PlanResult {
  * If a pattern is matched, we create real tool calls. If no pattern
  * matches, we fail the task (rather than falsely succeeding with 0 tools).
  */
-function fallbackPlan(userRequest: string, reason: string): PlanResult {
+function fallbackPlan(userRequest: string, reason: string, projectPath?: string): PlanResult {
   console.warn('[PLANNER_DIAG] FALLBACK triggered — reason:', reason);
   console.warn('[PLANNER_DIAG] user request was:', userRequest.slice(0, 100));
 
@@ -445,6 +445,29 @@ function fallbackPlan(userRequest: string, reason: string): PlanResult {
       description: `Read back file to verify: ${filePath}`,
       toolName: 'read_file',
       toolParams: { path: filePath },
+      requiresPermission: 'read',
+      requiresDiffApproval: false,
+      status: 'pending',
+      retryCount: 0,
+    });
+  }
+
+  // Pattern: open folder / reveal in explorer — user wants the folder opened
+  // in the system file manager (Explorer/Finder), NOT read as a file.
+  // Key: if the request mentions "پوشه" (folder) AND "باز کن" (open) /
+  // "بیار" (bring) / "جلوی صفحه" (foreground), use reveal_in_explorer.
+  else if (/(پوشه|folder|directory|directory)/i.test(lower) &&
+           /(باز\s*کن|بازش|بیار|جلوی\s*صفحه|open|reveal|explorer|foreground)/i.test(lower)) {
+    console.log('[PLANNER_DIAG] heuristic: open folder / reveal_in_explorer pattern detected');
+
+    // Use the projectPath as the default (the user said "پوشه خودت" = your own folder)
+    const folderPath = explicitPath || folderName || projectPath || '.';
+    steps.push({
+      id: `heuristic-1-${Date.now().toString(36)}`,
+      index: 0,
+      description: `Reveal folder in system file manager: ${folderPath}`,
+      toolName: 'reveal_in_explorer',
+      toolParams: { path: folderPath },
       requiresPermission: 'read',
       requiresDiffApproval: false,
       status: 'pending',
