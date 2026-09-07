@@ -632,10 +632,11 @@ async function setupIPC(): Promise<void> {
     // Return API keys separately (loaded from encrypted secrets)
     const apiKey = getSecret('aiApiKey');
     const glmApiKey = getSecret('glmApiKey');
-    return { settings: merged, apiKey, glmApiKey };
+    const geminiApiKey = getSecret('geminiApiKey');
+    return { settings: merged, apiKey, glmApiKey, geminiApiKey };
   });
 
-  ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string, glmApiKey?: string) => {
+  ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string, glmApiKey?: string, geminiApiKey?: string) => {
     try {
       // Save non-sensitive settings to config.json
       persistUpdateSettings(settings);
@@ -646,6 +647,10 @@ async function setupIPC(): Promise<void> {
       // Phase 8 / P8-A: GLM API key — always stored encrypted, never in config.json
       if (glmApiKey !== undefined) {
         setSecret('glmApiKey', glmApiKey);
+      }
+      // Phase O: Gemini API key — same secure storage pattern
+      if (geminiApiKey !== undefined) {
+        setSecret('geminiApiKey', geminiApiKey);
       }
       return { success: true };
     } catch (err: any) {
@@ -5286,8 +5291,8 @@ async function setupIPC(): Promise<void> {
         return;
       }
       const provider = settings.onlineProvider || 'glm';
-      // Check if API key exists (glmApiKey for GLM, aiApiKey for OpenAI/Claude)
-      const apiKey = provider === 'glm' ? getSecret('glmApiKey') : getSecret('aiApiKey');
+      // Check if API key exists (glmApiKey for GLM, geminiApiKey for Gemini, aiApiKey for OpenAI/Claude)
+      const apiKey = provider === 'glm' ? getSecret('glmApiKey') : provider === 'gemini' ? getSecret('geminiApiKey') : getSecret('aiApiKey');
       if (!apiKey) {
         // No API key — online not available, graceful
         request.onlineEnvironment = { available: false };
@@ -5296,14 +5301,18 @@ async function setupIPC(): Promise<void> {
       // Online is available — set the display name + model id
       const modelName = provider === 'glm'
         ? (settings.glmModel || 'GLM 5.3')
-        : provider === 'openai'
-          ? 'OpenAI'
-          : 'Claude';
+        : provider === 'gemini'
+          ? (settings.geminiModel || 'Gemini 2.0 Flash')
+          : provider === 'openai'
+            ? 'OpenAI'
+            : 'Claude';
       const modelId = provider === 'glm'
         ? (settings.glmModel || 'glm-5.3')
-        : provider === 'openai'
-          ? 'gpt-4o'
-          : 'claude-sonnet-4-20250514';
+        : provider === 'gemini'
+          ? (settings.geminiModel || 'gemini-2.0-flash')
+          : provider === 'openai'
+            ? 'gpt-4o'
+            : 'claude-sonnet-4-20250514';
       request.onlineEnvironment = { available: true, modelName, modelId };
     } catch (err: any) {
       console.warn('[NEX AI] Online environment wiring failed:', err.message);

@@ -36,9 +36,12 @@ export interface PersistedSettings {
   // NOTE: aiApiKey is NOT here — it's in secrets.json
   // NOTE: glmApiKey is also NOT here — secrets.json (key: glmApiKey)
   // Phase 8 / P8-A: GLM 5.3 online provider selection
-  onlineProvider?: 'glm' | 'openai' | 'claude';
+  onlineProvider?: 'glm' | 'openai' | 'claude' | 'gemini';
   glmModel?: string;
   glmEndpoint?: string;
+  // Phase O: Gemini online provider (mirrors GLM pattern)
+  geminiModel?: string;
+  geminiEndpoint?: string;
   // Phase 10 / P10-E: LOCAL embedding model selection (Knowledge/RAG).
   // INDEPENDENT from chat model (activeLocalModelId). null = built-in
   // offline HashEmbedder.

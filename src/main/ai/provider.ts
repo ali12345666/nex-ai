@@ -21,7 +21,7 @@
 import type { AIMessage } from '../ai-service';
 import type { LocalChatConfig } from './local-engine';
 
-export type ProviderType = 'local' | 'openai' | 'claude' | 'glm';
+export type ProviderType = 'local' | 'openai' | 'claude' | 'glm' | 'gemini';
 
 export interface ProviderConfig {
   provider: ProviderType;

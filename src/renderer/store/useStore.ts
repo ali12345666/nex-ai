@@ -16,7 +16,7 @@ export type AIMode = 'local' | 'online' | 'auto';
 /**
  * AI Provider Type
  */
-export type AIProviderType = 'local' | 'openai' | 'claude' | 'glm';
+export type AIProviderType = 'local' | 'openai' | 'claude' | 'glm' | 'gemini';
 
 /** Phase 8 / P8-A — GLM 5.3 defaults (kept in sync with main/ai/glm.ts) */
 export const GLM_DEFAULT_MODEL = 'glm-5.3';
@@ -63,10 +63,14 @@ export interface NexSettings {
   // Phase 6: AI mode
   aiMode: AIMode;
   // Phase 8 / P8-A: GLM 5.3 online provider
-  onlineProvider: 'glm' | 'openai' | 'claude';
+  onlineProvider: 'glm' | 'openai' | 'claude' | 'gemini';
   glmApiKey: string;
   glmModel: string;
   glmEndpoint: string;
+  // Phase O: Gemini online provider
+  geminiApiKey: string;
+  geminiModel: string;
+  geminiEndpoint: string;
   // Phase 4: Local model selection
   activeLocalModelId: string | null;
   // Phase 3: Local engine options
@@ -112,13 +116,24 @@ export function getProviderConfig(
     };
   }
   // Online mode (or Auto with no local model) — route by onlineProvider.
-  // Phase 8 / P8-A: GLM 5.3 is the primary online provider; OpenAI/Claude remain selectable.
+  // Phase 8 / P8-A: GLM 5.3 is the primary online provider; OpenAI/Claude/Gemini remain selectable.
   if (settings.onlineProvider === 'glm') {
     return {
       provider: 'glm',
       apiKey: settings.glmApiKey,
       model: settings.glmModel || GLM_DEFAULT_MODEL,
       endpoint: settings.glmEndpoint || GLM_DEFAULT_ENDPOINT,
+      maxTokens: 4096,
+      temperature: 0.7,
+    };
+  }
+  // Phase O: Gemini online provider
+  if (settings.onlineProvider === 'gemini') {
+    return {
+      provider: 'gemini',
+      apiKey: settings.geminiApiKey,
+      model: settings.geminiModel || 'gemini-2.0-flash',
+      endpoint: settings.geminiEndpoint || 'https://generativelanguage.googleapis.com',
       maxTokens: 4096,
       temperature: 0.7,
     };
@@ -227,6 +242,10 @@ const DEFAULT_SETTINGS: NexSettings = {
   glmApiKey: '',
   glmModel: GLM_DEFAULT_MODEL,
   glmEndpoint: GLM_DEFAULT_ENDPOINT,
+  // Phase O: Gemini defaults
+  geminiApiKey: '',
+  geminiModel: 'gemini-2.0-flash',
+  geminiEndpoint: 'https://generativelanguage.googleapis.com',
   activeLocalModelId: null,
   localThreads: 4,
   localContextSize: 2048,

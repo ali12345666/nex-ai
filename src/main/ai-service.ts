@@ -7,7 +7,7 @@ export interface AIMessage {
 }
 
 export interface AIConfig {
-  provider: 'openai' | 'claude' | 'glm' | 'custom';
+  provider: 'openai' | 'claude' | 'glm' | 'gemini' | 'custom';
   apiKey: string;
   model: string;
   endpoint: string;
@@ -47,6 +47,13 @@ const DEFAULT_CONFIGS: Record<string, Partial<AIConfig>> = {
     maxTokens: 4096,
     temperature: 0.7,
   },
+  // Phase O: Google Gemini
+  gemini: {
+    endpoint: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-2.0-flash',
+    maxTokens: 4096,
+    temperature: 0.7,
+  },
 };
 
 export function getDefaultConfig(provider: string): Partial<AIConfig> {
@@ -67,6 +74,8 @@ export function chatCompletion(
       callClaude(config, messages, resolve);
     } else if (config.provider === 'glm') {
       callGLM(config, messages, resolve);
+    } else if (config.provider === 'gemini') {
+      callGemini(config, messages, resolve);
     } else {
       callOpenAI(config, messages, resolve);
     }
@@ -250,4 +259,54 @@ You are a general-purpose assistant who is also good at coding. Be natural and c
 - Do NOT say "I'm doing X" before calling a tool. Just do it, then report the result briefly.
 - For voice conversations, keep responses SHORT and SPOKEN — like talking to a real person.
 - If the user says "NEX" alone, respond with "بله?" (yes?) to acknowledge the wake word.`;
+}
+
+// ─── Gemini (Phase O) ───────────────────────────────────────────────────────
+// Uses the pure wire helpers in ./ai/gemini.ts; this function only supplies the
+// electron `net` transport. Keep ALL shape logic in gemini.ts so it stays testable.
+import { buildGeminiRequestForEndpoint, parseGeminiResponse } from './ai/gemini';
+
+function callGemini(
+  config: AIConfig,
+  messages: AIMessage[],
+  resolve: (result: { success: boolean; content?: string; error?: string; tokens?: number }) => void
+): void {
+  const plan = buildGeminiRequestForEndpoint(config.endpoint, config.apiKey, messages, {
+    model: config.model,
+    maxTokens: config.maxTokens,
+    temperature: config.temperature,
+  });
+
+  const request = net.request({
+    method: 'POST',
+    url: plan.url,
+    headers: plan.headers,
+  });
+
+  let responseData = '';
+
+  request.on('response', (response) => {
+    response.on('data', (chunk) => {
+      responseData += chunk.toString();
+    });
+
+    response.on('end', () => {
+      const parsed = parseGeminiResponse(responseData);
+      if (!parsed.success && response.statusCode >= 400) {
+        resolve({
+          success: false,
+          error: `Gemini HTTP ${response.statusCode}: ${parsed.error || 'request failed'}`,
+        });
+        return;
+      }
+      resolve(parsed);
+    });
+  });
+
+  request.on('error', (err) => {
+    resolve({ success: false, error: `Network error: ${err.message}` });
+  });
+
+  request.write(plan.body);
+  request.end();
 }

@@ -17,8 +17,8 @@ import type { OnlineChatTransport } from './online-runtime';
 import type { OnlineRuntime } from './online-runtime';
 
 export interface OnlineConfigProvider {
-  /** e.g. 'glm' | 'openai' | 'claude' */
-  provider(): 'glm' | 'openai' | 'claude';
+  /** e.g. 'glm' | 'openai' | 'claude' | 'gemini' */
+  provider(): 'glm' | 'openai' | 'claude' | 'gemini';
   /** model id, e.g. 'glm-5.3' */
   model(): string;
   /** base endpoint, validated against ALLOWED_AI_ORIGINS by routeChat */
@@ -77,22 +77,24 @@ export function createLazyOnlineTransport(): OnlineChatTransport {
   return async (messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> => {
     const { loadState, getSecret } = await import('../../persistence');
     const s = ((loadState() as any).settings || {}) as any;
-    const provider = s?.onlineProvider === 'openai' || s?.onlineProvider === 'claude' ? s.onlineProvider : 'glm';
+    const provider = s?.onlineProvider === 'openai' || s?.onlineProvider === 'claude' || s?.onlineProvider === 'gemini' ? s.onlineProvider : 'glm';
 
     const cfg: OnlineConfigProvider = {
       provider: () => provider,
       model: () => {
         if (provider === 'openai') return s?.aiModel || 'gpt-4o';
         if (provider === 'claude') return 'claude-sonnet-4-20250514';
+        if (provider === 'gemini') return s?.geminiModel || 'gemini-2.0-flash';
         return s?.glmModel || 'glm-5.3';
       },
       endpoint: () => {
         if (provider === 'openai') return 'https://api.openai.com/v1';
         if (provider === 'claude') return 'https://api.anthropic.com/v1';
+        if (provider === 'gemini') return s?.geminiEndpoint || 'https://generativelanguage.googleapis.com';
         return s?.glmEndpoint || 'https://api.z.ai';
       },
       apiKey: () =>
-        (provider === 'glm' ? getSecret('glmApiKey') : getSecret('aiApiKey')) || undefined,
+        (provider === 'glm' ? getSecret('glmApiKey') : provider === 'gemini' ? getSecret('geminiApiKey') : getSecret('aiApiKey')) || undefined,
     };
 
     const transport = createRouteChatTransport(cfg);

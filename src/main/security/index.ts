@@ -193,7 +193,7 @@ export const CSP = [
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   // Phase 8/37: connect-src must include all allowed AI origins + Vite dev HMR
-  "connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn",
+  "connect-src 'self' ws://localhost:5173 http://localhost:5173 https://api.openai.com https://api.anthropic.com https://api.z.ai https://open.bigmodel.cn https://generativelanguage.googleapis.com",
   "img-src 'self' data: blob:",
   "font-src 'self' https://fonts.gstatic.com data:",
   "object-src 'none'",
@@ -223,6 +223,8 @@ export const ALLOWED_AI_ORIGINS = new Set([
   // Phase 8 / P8-A: GLM 5.3 (Z.ai international + BigModel CN)
   'https://api.z.ai',
   'https://open.bigmodel.cn',
+  // Phase O: Google Gemini (generativelanguage.googleapis.com)
+  'https://generativelanguage.googleapis.com',
 ]);
 
 export function isAllowedAIOrigin(url: string): boolean {

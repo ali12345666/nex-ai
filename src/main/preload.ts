@@ -46,8 +46,8 @@ contextBridge.exposeInMainWorld('nexAPI', {
 
   // ── Settings (Phase 2 — proper persistence with encrypted API keys) ──
   settingsLoad: () => ipcRenderer.invoke('settings-load'),
-  settingsSave: (settings: any, apiKey?: string, glmApiKey?: string) =>
-    ipcRenderer.invoke('settings-save', settings, apiKey, glmApiKey),
+  settingsSave: (settings: any, apiKey?: string, glmApiKey?: string, geminiApiKey?: string) =>
+    ipcRenderer.invoke('settings-save', settings, apiKey, glmApiKey, geminiApiKey),
   settingsSetApiKey: (apiKey: string) =>
     ipcRenderer.invoke('settings-set-api-key', apiKey),
   settingsGetApiKey: () => ipcRenderer.invoke('settings-get-api-key'),

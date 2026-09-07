@@ -359,13 +359,17 @@ function App() {
           window.nexAPI.configGetAll(),
         ]);
 
-        const { settings: persisted, apiKey, glmApiKey } = settingsResult;
+        const { settings: persisted, apiKey, glmApiKey, geminiApiKey } = settingsResult;
         updateSettings(persisted);
         if (apiKey) {
           updateSettings({ aiApiKey: apiKey });
         }
         if (glmApiKey !== undefined && glmApiKey !== null && glmApiKey !== '') {
           updateSettings({ glmApiKey });
+        }
+        // Phase O: Gemini API key — same secure pattern
+        if (geminiApiKey !== undefined && geminiApiKey !== null && geminiApiKey !== '') {
+          updateSettings({ geminiApiKey });
         }
         if (persisted.aiMode) {
           setAIMode(persisted.aiMode);
