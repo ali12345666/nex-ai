@@ -71,6 +71,12 @@ export interface NexSettings {
   geminiApiKey: string;
   geminiModel: string;
   geminiEndpoint: string;
+  // Phase O6: Voice transport — 'local' (Whisper + Piper) vs 'gemini-live'
+  // (Gemini Live realtime voice over WebSocket). The two NEVER run
+  // concurrently — the VoiceManager activates exactly one at a time.
+  voiceTransport: 'local' | 'gemini-live';
+  // Phase O6: Gemini Live model ID (for voiceTransport === 'gemini-live').
+  geminiLiveModel: string;
   // Phase 4: Local model selection
   activeLocalModelId: string | null;
   // Phase 3: Local engine options
@@ -246,6 +252,11 @@ const DEFAULT_SETTINGS: NexSettings = {
   geminiApiKey: '',
   geminiModel: 'gemini-2.0-flash',
   geminiEndpoint: 'https://generativelanguage.googleapis.com',
+  // Phase O6: Voice transport defaults — 'local' (Whisper + Piper) preserves
+  // the existing behavior. The Gemini Live model is the verified stable
+  // native-audio model from ai.google.dev/gemini-api/docs/models.
+  voiceTransport: 'local',
+  geminiLiveModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
   activeLocalModelId: null,
   localThreads: 4,
   localContextSize: 2048,

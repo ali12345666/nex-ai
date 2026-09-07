@@ -42,6 +42,16 @@ export interface PersistedSettings {
   // Phase O: Gemini online provider (mirrors GLM pattern)
   geminiModel?: string;
   geminiEndpoint?: string;
+  // Phase O6: Voice transport — 'local' (Whisper + Piper) vs 'gemini-live'
+  // (Gemini Live realtime voice over WebSocket). Default 'local' preserves
+  // the existing behavior. The two transports NEVER run concurrently — the
+  // VoiceManager activates exactly one at a time. Non-secret: this is a
+  // user preference, not a credential.
+  voiceTransport?: 'local' | 'gemini-live';
+  // Phase O6: Gemini Live model ID (e.g. "gemini-2.5-flash-native-audio-
+  // preview-12-2025"). Used only when voiceTransport === 'gemini-live'.
+  // Non-secret.
+  geminiLiveModel?: string;
   // Phase 10 / P10-E: LOCAL embedding model selection (Knowledge/RAG).
   // INDEPENDENT from chat model (activeLocalModelId). null = built-in
   // offline HashEmbedder.

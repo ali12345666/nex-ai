@@ -229,6 +229,32 @@ contextBridge.exposeInMainWorld('nexAPI', {
     ipcRenderer.on('voice-tts-stop-playback', listener);
     return () => ipcRenderer.removeListener('voice-tts-stop-playback', listener);
   },
+  // Phase O6: Gemini Live PCM audio chunk broadcast (main → renderer).
+  // Each payload is either {pcm: ArrayBuffer, requestId} (play this chunk)
+  // or {turnComplete: true, requestId} (turn done — drain the queue).
+  // The requestId matches the engine's currentTtsRequestId — the renderer's
+  // stale guard discards chunks from superseded turns.
+  onVoiceTtsPcmChunk: (callback: (ev: { pcm?: ArrayBuffer; turnComplete?: boolean; requestId: number }) => void) => {
+    const listener = (_e: any, ev: any) => callback(ev);
+    ipcRenderer.on('voice-tts-pcm-chunk', listener);
+    return () => ipcRenderer.removeListener('voice-tts-pcm-chunk', listener);
+  },
+  // Phase O6: Gemini Live transport control IPCs (renderer → main).
+  // The API key is read on the main side from getSecret('geminiApiKey') —
+  // these IPCs never carry the key.
+  geminiLiveConnect: (opts?: { systemInstruction?: string; resumptionToken?: string }) =>
+    ipcRenderer.invoke('gemini-live-connect', opts),
+  geminiLiveDisconnect: () => ipcRenderer.invoke('gemini-live-disconnect'),
+  geminiLiveAudioStreamEnd: () => ipcRenderer.invoke('gemini-live-audio-stream-end'),
+  geminiLiveSetRequestId: (requestId: number) => ipcRenderer.invoke('gemini-live-set-request-id', requestId),
+  geminiLiveStatus: () => ipcRenderer.invoke('gemini-live-status'),
+  geminiLiveGetResumptionToken: () => ipcRenderer.invoke('gemini-live-get-resumption-token'),
+  // Phase O6: Voice transport selector (renderer → main read).
+  voiceTransportGet: () => ipcRenderer.invoke('voice-transport-get'),
+  // Phase O6: Voice transport switch — stops the old transport, starts the new
+  // one. Ensures Whisper/Piper and Gemini Live NEVER run concurrently.
+  voiceTransportSwitch: (newTransport: 'local' | 'gemini-live') =>
+    ipcRenderer.invoke('voice-transport-switch', newTransport),
   onVoiceConversationWake: (callback: (ev: any) => void) => {
     const listener = (_e: any, ev: any) => callback(ev);
     ipcRenderer.on('voice-conversation-wake', listener);

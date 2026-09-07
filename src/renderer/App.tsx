@@ -22,6 +22,9 @@ import NexErrorBoundary from './components/layout/NexErrorBoundary';
 
 // Voice Controller — needed at App root level for early IPC listener registration
 import { voiceController } from './services/voice-controller';
+// Phase O6: Gemini Live PCM audio queue (AudioContext playback, parallel to
+// the Piper <audio> path but mutually exclusive via shared requestId guard).
+import { getGeminiAudioQueue } from './lib/gemini-audio-queue';
 
 function App() {
   const {
@@ -195,6 +198,53 @@ function App() {
         } catch { /* */ }
         currentAudioRef.current = null;
         currentAudioRequestIdRef.current = null;
+      }
+      // Phase O6: also flush the Gemini PCM queue (stop the Gemini path).
+      try {
+        const queue = getGeminiAudioQueue();
+        if (currentAudioRequestIdRef.current !== null) {
+          queue.flush(currentAudioRequestIdRef.current);
+        }
+      } catch { /* best-effort */ }
+    });
+    return () => { if (off) off(); };
+  }, []);
+
+  // ── Phase O6: Gemini Live PCM audio playback ─────────────────────────────
+  // The Gemini Live transport (main process) sends raw 16-bit PCM 16kHz mono
+  // chunks via the `voice-tts-pcm-chunk` IPC. This listener enqueues them in
+  // the GeminiAudioQueue (AudioContext + AudioBufferSourceNode playback).
+  //
+  // The GeminiAudioQueue + the Piper `<audio>` path SHARE the same
+  // `currentAudioRequestIdRef` — so a Piper WAV and a Gemini PCM stream never
+  // overlap. If a Gemini chunk arrives while Piper is playing (or vice
+  // versa), the stale guard discards the older one.
+  useEffect(() => {
+    const off = window.nexAPI?.onVoiceTtsPcmChunk?.((ev) => {
+      if (ev.turnComplete) {
+        // Turn done — the queue will drain naturally (the last scheduled
+        // source's onended fires the drain callback). The main side already
+        // called notifyTtsPlaybackEnded; we just log here.
+        console.log('[GEMINI_AUDIO] turn complete (req=%s)', ev.requestId);
+        return;
+      }
+      if (!ev.pcm) return;
+      // Stale guard: if a newer requestId is playing, drop this chunk.
+      if (currentAudioRequestIdRef.current !== null && ev.requestId < currentAudioRequestIdRef.current) {
+        console.log('[GEMINI_AUDIO] dropping stale chunk (req=%s, current=%s)', ev.requestId, currentAudioRequestIdRef.current);
+        return;
+      }
+      // If Piper is playing, pause it first (mutual exclusion — single owner).
+      if (currentAudioRef.current) {
+        try { currentAudioRef.current.pause(); } catch { /* */ }
+        currentAudioRef.current = null;
+      }
+      currentAudioRequestIdRef.current = ev.requestId;
+      // Enqueue the chunk — the queue handles gapless scheduling.
+      try {
+        getGeminiAudioQueue().enqueue(ev.pcm, ev.requestId);
+      } catch (err: any) {
+        console.warn('[GEMINI_AUDIO] enqueue error:', err?.message);
       }
     });
     return () => { if (off) off(); };

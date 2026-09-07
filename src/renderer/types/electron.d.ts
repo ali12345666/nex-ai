@@ -194,6 +194,26 @@ export interface NexAPI {
   // currently-playing <audio> element so audio doesn't continue through
   // the speakers after Stop.
   onVoiceTtsStopPlayback: (callback: () => void) => () => void;
+  // Phase O6: Gemini Live PCM audio chunk broadcast (main → renderer).
+  // Each payload is either {pcm: ArrayBuffer, requestId} (play this chunk)
+  // or {turnComplete: true, requestId} (turn done — drain the queue).
+  // The requestId matches the engine's currentTtsRequestId.
+  onVoiceTtsPcmChunk: (callback: (ev: { pcm?: ArrayBuffer; turnComplete?: boolean; requestId: number }) => void) => () => void;
+  // Phase O6: Gemini Live transport control IPCs (renderer → main).
+  // The API key is read on the main side from getSecret('geminiApiKey') —
+  // these IPCs NEVER carry the key.
+  geminiLiveConnect: (opts?: { systemInstruction?: string; resumptionToken?: string }) =>
+    Promise<{ success: boolean; model?: string; error?: string }>;
+  geminiLiveDisconnect: () => Promise<{ success: boolean; error?: string }>;
+  geminiLiveAudioStreamEnd: () => Promise<{ success: boolean; error?: string }>;
+  geminiLiveSetRequestId: (requestId: number) => Promise<{ success: boolean; error?: string }>;
+  geminiLiveStatus: () => Promise<{ success: boolean; state?: string; hasResumptionToken?: boolean; isActive?: boolean; error?: string }>;
+  geminiLiveGetResumptionToken: () => Promise<{ success: boolean; token?: string | null; error?: string }>;
+  // Phase O6: Voice transport selector read (renderer → main).
+  voiceTransportGet: () => Promise<{ success: boolean; transport?: 'local' | 'gemini-live'; geminiLiveModel?: string; error?: string }>;
+  // Phase O6: Voice transport switch — stops old transport, starts new.
+  voiceTransportSwitch: (newTransport: 'local' | 'gemini-live') =>
+    Promise<{ success: boolean; transport?: 'local' | 'gemini-live'; message?: string; error?: string }>;
   onVoiceConversationWake: (callback: (ev: any) => void) => () => void;
   onVoiceConversationUser: (callback: (ev: any) => void) => () => void;
   onVoiceConversationNex: (callback: (ev: any) => void) => () => void;

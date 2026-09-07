@@ -623,6 +623,9 @@ async function setupIPC(): Promise<void> {
       onlineProvider: 'glm',
       glmModel: 'glm-5.3',
       glmEndpoint: 'https://api.z.ai',
+      // Phase O6: Voice transport defaults — 'local' preserves existing behavior.
+      voiceTransport: 'local',
+      geminiLiveModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
       // Phase 10 / P10-E: null = built-in offline hash embedder
       embeddingModelId: null,
       localThreads: 4,
@@ -1370,6 +1373,139 @@ async function setupIPC(): Promise<void> {
   const { getLocalVoiceEngine } = await import('./voice/local-voice-engine');
   const { LocalWhisperProvider, findWhisperBinary } = await import('./voice/local-whisper-provider');
   const { LocalPiperProvider, findPiperBinary } = await import('./voice/local-piper-provider');
+  // Phase O6: Gemini Live Transport (online realtime voice over WebSocket).
+  // This is a TRANSPORT peer of the LocalVoiceEngine — both feed the same
+  // NexVoiceConversation FSM. The transport is selected by the `voiceTransport`
+  // setting ('local' | 'gemini-live'). The two NEVER run concurrently.
+  const { getGeminiLiveTransport } = await import('./voice/gemini-live-transport');
+  const { GEMINI_LIVE_MODELS } = await import('./voice/gemini-live-types');
+
+  // Helper: read the current voice transport setting from persistence.
+  // Default 'local' preserves the existing behavior.
+  const getVoiceTransport = (): 'local' | 'gemini-live' => {
+    try {
+      const settings = loadState().settings || {};
+      return settings.voiceTransport === 'gemini-live' ? 'gemini-live' : 'local';
+    } catch {
+      return 'local';
+    }
+  };
+
+  // Helper: read the Gemini Live model ID from persistence (with verified default).
+  const getGeminiLiveModel = (): string => {
+    try {
+      const settings = loadState().settings || {};
+      const m = settings.geminiLiveModel;
+      if (m && (GEMINI_LIVE_MODELS as readonly string[]).includes(m as any)) return m;
+    } catch { /* */ }
+    return GEMINI_LIVE_MODELS[1]; // default: gemini-2.5-flash-native-audio-preview-12-2025
+  };
+
+  // ── Phase O6: Wire the Gemini Live transport callbacks ──────────────────
+  // The transport emits the SAME events the engine emits — the conversation
+  // FSM, Orb condition system, and requestId cancellation are all REUSED.
+  // No new FSM, no new counter, no new event bus.
+  try {
+    const transport = getGeminiLiveTransport();
+    transport.setCallbacks({
+      onStateChange: (state) => {
+        console.log('[GEMINI_LIVE] state: %s', state);
+        // Map transport state → voice-conversation-state IPC (source='gemini').
+        // AppShell maps these to Orb conditions (existing flow).
+        const convStateMap: Record<string, string> = {
+          connected: 'idle',
+          listening: 'listening',
+          speaking: 'speaking',
+          interrupted: 'interrupted',
+          reconnecting: 'thinking',
+          error: 'error',
+          disconnected: 'idle',
+        };
+        const convState = convStateMap[state] || 'idle';
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-conversation-state', { state: convState, source: 'gemini' });
+        }
+      },
+      onAudioChunk: (pcmBuffer, requestId) => {
+        // Forward the PCM chunk to the renderer's GeminiAudioQueue.
+        // The renderer plays it via AudioContext (parallel to Piper's <audio>).
+        // The requestId is the SAME engine counter — the renderer's stale
+        // guard discards chunks if a newer requestId arrives.
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-tts-pcm-chunk', {
+            pcm: pcmBuffer.buffer.slice(pcmBuffer.byteOffset, pcmBuffer.byteOffset + pcmBuffer.byteLength),
+            requestId,
+          });
+        }
+      },
+      onTurnComplete: (requestId) => {
+        // The model finished generating audio for this turn. Notify the
+        // renderer that the queue can drain + the conversation that playback
+        // is done (SAME flow as Piper's voice-tts-ended).
+        console.log('[GEMINI_LIVE] turn complete → notify playback ended (req=%s)', requestId);
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-tts-pcm-chunk', { turnComplete: true, requestId });
+        }
+        try {
+          import('./voice/nex-voice-conversation').then(({ getNexVoiceConversation }) => {
+            getNexVoiceConversation().notifyTtsPlaybackEnded(requestId);
+          }).catch(() => { /* */ });
+          getLocalVoiceEngine().onTtsPlaybackEnded();
+        } catch { /* */ }
+      },
+      onInterrupted: (requestId) => {
+        // Server-side barge-in: the user interrupted the model. Route to the
+        // EXISTING conversation.handleBargeIn() flow — no new cancellation.
+        console.log('[GEMINI_LIVE] interrupted → conversation.handleBargeIn() (req=%s)', requestId);
+        try {
+          import('./voice/nex-voice-conversation').then(({ getNexVoiceConversation }) => {
+            getNexVoiceConversation().handleBargeIn();
+          }).catch(() => { /* */ });
+        } catch { /* */ }
+      },
+      onInputTranscription: (text) => {
+        // Live caption of the user's speech — forward to renderer.
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-conversation-partial', { text, source: 'gemini-input' });
+        }
+      },
+      onOutputTranscription: (text) => {
+        // Live caption of the model's response — forward to renderer.
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-conversation-partial', { text, source: 'gemini-output' });
+        }
+      },
+      onResumptionToken: (token) => {
+        // Token saved by the transport itself (for reconnect). The main
+        // process does NOT need to persist it — the transport holds it in
+        // memory for the session lifetime.
+        console.log('[GEMINI_LIVE] resumption token stored (len=%d)', token.length);
+      },
+      onGoAway: (timeLeftMs) => {
+        console.log('[GEMINI_LIVE] GoAway received (timeLeft=%dms) — will reconnect', timeLeftMs);
+        // Schedule a reconnect with the resumption token. The transport
+        // holds the token; we just call connect() again after the current
+        // turn completes (or immediately if idle).
+        // For MVP: log the event; the conversation's next turn will detect
+        // the disconnect and reconnect via the connect() flow.
+      },
+      onToolCall: (toolCall) => {
+        // O6-MVP: NOT executed (per directive — no native function calling).
+        // The existing Agent path (brainRoute → Agent → executeToolWithPermission)
+        // is used for tool-needing turns. The transport just logs this.
+        console.log('[GEMINI_LIVE] toolCall ignored (O6-MVP, not executed): %d calls', toolCall.functionCalls?.length || 0);
+      },
+      onError: (sanitizedMessage) => {
+        console.warn('[GEMINI_LIVE] error: %s', sanitizedMessage);
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('voice-conversation-error', { message: sanitizedMessage, source: 'gemini' });
+        }
+      },
+    });
+    console.log('[GEMINI_LIVE] transport callbacks wired');
+  } catch (err: any) {
+    console.warn('[GEMINI_LIVE] transport init failed (non-blocking):', err?.message);
+  }
 
   // Initialize the voice engine with local providers (if available)
   try {
@@ -1426,25 +1562,39 @@ async function setupIPC(): Promise<void> {
   // Voice: feed audio level from renderer (drives VAD + Orb animation)
   // The renderer captures mic audio via getUserMedia, computes RMS level,
   // and sends it here. This triggers VAD → speech end detection → transcription.
+  // Phase O6: in gemini-live transport mode, the level is forwarded to the
+  // transport (which doesn't use VAD — the server does — but we still drive
+  // the Orb audio-level animation with it).
   ipcMain.on('voice-feed-audio-level', (_event, level: number) => {
     try {
+      // Always forward the level to the local engine (it drives Orb audio +
+      // VAD for local mode; in gemini-live mode the engine's VAD is harmless
+      // because the engine's speak() path is never invoked).
       getLocalVoiceEngine().feedAudioLevel(level);
     } catch { /* best-effort */ }
   });
 
-  // Voice: feed audio chunk (Buffer) from renderer to STT provider
-  // The renderer sends raw PCM audio chunks; the engine forwards them to
-  // the whisper provider's streaming buffer for transcription.
+  // Voice: feed audio chunk (Buffer) from renderer to the active transport.
+  // The renderer sends raw PCM 16kHz Int16 chunks (already in the format
+  // Gemini Live expects: raw 16-bit PCM, 16kHz, mono, little-endian).
+  // Phase O6: route to the Gemini Live transport when voiceTransport ===
+  // 'gemini-live'; otherwise to the local whisper provider. The two
+  // transports NEVER receive chunks concurrently.
   let _mainChunkCount = 0;
   ipcMain.on('voice-feed-audio-chunk', (_event, chunk: Buffer) => {
     try {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       _mainChunkCount++;
-      // [VOICE_AUDIO] diagnostic — log chunk receive (throttled to every 50th)
       if (_mainChunkCount % 50 === 1) {
-        console.log(`[VOICE_AUDIO] received chunk size=${buf.length} (#${_mainChunkCount})`);
+        console.log(`[VOICE_AUDIO] received chunk size=${buf.length} (#${_mainChunkCount}) transport=${getVoiceTransport()}`);
       }
-      getLocalVoiceEngine().feedAudioChunk(buf);
+      if (getVoiceTransport() === 'gemini-live') {
+        // Forward to the Gemini Live transport (base64-encoded over WS).
+        getGeminiLiveTransport().feedInputAudio(buf);
+      } else {
+        // Local mode: forward to the whisper provider's streaming buffer.
+        getLocalVoiceEngine().feedAudioChunk(buf);
+      }
     } catch (err: any) {
       console.warn(`[VOICE_AUDIO] feedAudioChunk error: ${err?.message}`);
     }
@@ -1907,6 +2057,159 @@ async function setupIPC(): Promise<void> {
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase O6: Gemini Live Voice Transport IPC handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+  // These handlers connect the renderer → Gemini Live transport (main process).
+  // The transport reads the API key from `getSecret('geminiApiKey')` at connect
+  // time — the key NEVER crosses the renderer boundary, NEVER appears in an
+  // IPC payload, NEVER in a log.
+  //
+  // The transport reuses the existing conversation FSM + requestId cancellation;
+  // these IPCs do NOT create any parallel state machine.
+
+  // Gemini Live: connect to the WebSocket + send setup message.
+  // Returns {success: true} on setupComplete, {success: false, error} on failure.
+  // The model + systemInstruction come from settings; resumption is automatic
+  // if the transport holds a token from a previous session.
+  ipcMain.handle('gemini-live-connect', async (_event, opts?: { systemInstruction?: string; resumptionToken?: string }) => {
+    try {
+      const transport = getGeminiLiveTransport();
+      const model = getGeminiLiveModel();
+      const sysInstruction = opts?.systemInstruction || 'You are NEX AI, a calm and efficient voice assistant. Respond naturally and concisely. Match the user\'s language (Persian → Persian, English → English).';
+      const ok = await transport.connect(model, sysInstruction, opts?.resumptionToken);
+      return { success: ok, model, error: ok ? undefined : 'Failed to connect to Gemini Live (check API key + network)' };
+    } catch (err: any) {
+      const sanitized = err?.message ? err.message.replace(/\?key=[A-Za-z0-9_-]{10,}/g, '?key=***REDACTED***') : 'Unknown error';
+      return { success: false, error: sanitized };
+    }
+  });
+
+  // Gemini Live: disconnect the WebSocket (user stopped voice mode or switched
+  // to local transport). Does NOT dispose the transport — it can reconnect.
+  ipcMain.handle('gemini-live-disconnect', async () => {
+    try {
+      getGeminiLiveTransport().disconnect();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // Gemini Live: signal audioStreamEnd (mic muted >1s — flush cached audio).
+  ipcMain.handle('gemini-live-audio-stream-end', async () => {
+    try {
+      getGeminiLiveTransport().sendAudioStreamEnd();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // Gemini Live: set the current requestId (matches the engine's counter —
+  // reused, NOT a new counter). The transport tags audio chunks + interruption
+  // events with this ID so the renderer's stale guard works across both paths.
+  ipcMain.handle('gemini-live-set-request-id', async (_event, requestId: number) => {
+    try {
+      getGeminiLiveTransport().setCurrentRequestId(requestId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // Gemini Live: get transport status (for the Settings Test Connection UI).
+  // Returns state + whether a resumption token is available.
+  ipcMain.handle('gemini-live-status', async () => {
+    try {
+      const transport = getGeminiLiveTransport();
+      return {
+        success: true,
+        state: transport.getState(),
+        hasResumptionToken: transport.getResumptionToken() !== null,
+        isActive: transport.isActive(),
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // Gemini Live: get the current resumption token (for the renderer to persist
+  // or display "session can be resumed"). The token itself is NOT secret — it's
+  // a short-lived server-side session identifier (2hr TTL), not an API key.
+  ipcMain.handle('gemini-live-get-resumption-token', async () => {
+    try {
+      return { success: true, token: getGeminiLiveTransport().getResumptionToken() };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  });
+
+  // Voice transport: get the current transport setting (for the Settings UI).
+  ipcMain.handle('voice-transport-get', async () => {
+    return { success: true, transport: getVoiceTransport(), geminiLiveModel: getGeminiLiveModel() };
+  });
+
+  // Phase O6: Voice transport switching — stop the old transport + start the
+  // new one. Called by SettingsPanel when the user changes the transport and
+  // saves. Ensures the two transports NEVER run concurrently.
+  //
+  // Local → Gemini Live: stop conversation (stops whisper listening + piper
+  //   speaking), disconnect Gemini (if connected), then connect Gemini with
+  //   the current model + resume the conversation.
+  // Gemini Live → Local: disconnect the Gemini WebSocket, then restart the
+  //   conversation (which re-activates whisper + piper).
+  // Same transport: no-op.
+  ipcMain.handle('voice-transport-switch', async (_event, newTransport: 'local' | 'gemini-live') => {
+    try {
+      const current = getVoiceTransport();
+      if (current === newTransport) return { success: true, message: 'no change' };
+
+      console.log('[VOICE_TRANSPORT] switching %s → %s', current, newTransport);
+      const conv = getNexVoiceConversation();
+      const engine = getLocalVoiceEngine();
+      const transport = getGeminiLiveTransport();
+      const wasActive = conv.isActive;
+
+      // 1. Stop the current conversation + both transports.
+      if (wasActive) {
+        try { await conv.stop(); } catch { /* */ }
+      }
+      try { engine.stopSpeaking(); } catch { /* */ }
+      try { engine.stopListening(); } catch { /* */ }
+      try { transport.disconnect(); } catch { /* */ }
+
+      // 2. Update the persisted setting so getVoiceTransport() returns the new value.
+      persistUpdateSettings({ voiceTransport: newTransport });
+
+      // 3. If voice was active, restart with the new transport.
+      if (wasActive) {
+        if (newTransport === 'gemini-live') {
+          // Connect the Gemini Live transport.
+          const model = getGeminiLiveModel();
+          const sysInstruction = 'You are NEX AI, a calm and efficient voice assistant. Respond naturally and concisely. Match the user\'s language (Persian → Persian, English → English).';
+          const connected = await transport.connect(model, sysInstruction);
+          if (!connected) {
+            return { success: false, error: 'Failed to connect to Gemini Live. Check API key + network.' };
+          }
+          // Start the conversation FSM (it will use the transport via the
+          // voice-feed-audio-chunk routing).
+          try { await conv.start(); } catch { /* */ }
+        } else {
+          // Local mode: re-activate the local engine + start conversation.
+          try {
+            const { getVoiceManager } = await import('./ai/voice-manager');
+            await getVoiceManager().activate();
+            await conv.start();
+          } catch { /* */ }
+        }
+      }
+      return { success: true, transport: newTransport };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
     }
   });
 
@@ -6718,6 +7021,23 @@ app.on('before-quit', (event) => {
         console.log('[NEX AI] Semantic memory disposed (flushed + timer cleared)');
       }
     } catch { /* best-effort */ }
+
+    // Phase O6: Dispose the voice engine + Gemini Live transport.
+    // P18-AUDIT-ADDITIONAL #2 fix: engine.dispose() was never called from
+    // main.ts, leaving whisper/piper subprocesses orphaned on app exit.
+    // Also dispose the Gemini Live transport so its WebSocket closes cleanly
+    // (no orphaned connections to generativelanguage.googleapis.com).
+    try {
+      const { getLocalVoiceEngine } = require('./voice/local-voice-engine');
+      getLocalVoiceEngine().dispose();
+      console.log('[NEX AI] Local voice engine disposed');
+    } catch { /* best-effort */ }
+    try {
+      const { getGeminiLiveTransport } = require('./voice/gemini-live-transport');
+      getGeminiLiveTransport().dispose();
+      console.log('[NEX AI] Gemini Live transport disposed');
+    } catch { /* best-effort */ }
+
     shutdownLlama()
       .catch((err) => console.warn('[NEX AI] shutdownLlama error:', err))
       .finally(() => {

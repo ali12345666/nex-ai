@@ -11651,3 +11651,90 @@ Stage Summary:
 - Gemini tool execution: native function calling NOT implemented (deferred). Existing architecture preserved: Gemini → planner/agent → existing tool execution → observation → Gemini.
 - O6 (Gemini Live Voice): NOT started — deferred for separate design discussion.
 - Net test suite impact: +105 new passing tests, -3 previously-failing tests fixed, 0 new failures.
+
+---
+Task ID: phase-o6-mvp
+Agent: main
+Task: Phase O / O6 — Gemini Live Voice MVP (realtime voice transport)
+
+Work Log:
+- Read worklog O4/O5 context + verified checkpoint b97518d on main + origin/main.
+- Re-verified all Gemini Live API facts from official Google docs (Sep 2026):
+  * Endpoint: wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent
+  * Auth: ?key=API_KEY in URL query (raw WS only — no header alternative)
+  * Audio: raw 16-bit PCM, 16kHz, mono, little-endian, base64-encoded, mimeType "audio/pcm;rate=16000"
+  * Setup: first message = BidiGenerateContentSetup; server acks with BidiGenerateContentSetupComplete
+  * Session: ~10 min hard limit; GoAway 60s before; session resumption via SessionResumptionConfig.handle (2hr TTL)
+  * Interruption: serverContent.interrupted=true (default START_OF_ACTIVITY_INTERRUPTS)
+  * Verified models: gemini-2.5-flash-native-audio-preview-12-2025 (stable), gemini-3.1-flash-live-preview (latest)
+
+O6.1 — types + transport seam:
+- NEW src/main/voice/gemini-live-types.ts (318 lines): pure types + constants + helpers. No electron, no WebSocket — unit-testable. Exports: GEMINI_LIVE_WS_PATH, GEMINI_LIVE_DEFAULT_HOST, GEMINI_LIVE_AUDIO_MIME_TYPE, GEMINI_LIVE_AUDIO_SAMPLE_RATE (16000), GEMINI_LIVE_AUDIO_BITS_PER_SAMPLE (16), GEMINI_LIVE_AUDIO_CHANNELS (1), GEMINI_LIVE_CONNECTION_LIMIT_MS (10min), GEMINI_LIVE_GOAWAY_NOTICE_MS (60s), GEMINI_LIVE_RESUMPTION_TOKEN_TTL_MS (2hr), GEMINI_LIVE_MODELS (3 verified models). Wire types: BidiGenerateContentSetup/ClientMessage/ServerMessage/RealtimeInput/ServerContent/ToolCall/GoAway/SessionResumptionConfig. Pure helpers: buildGeminiLiveWsUrl (key in ?key= query — verified), buildGeminiLiveSetup (responseModalities AUDIO + transcription + contextWindowCompression), buildRealtimeAudioMessage (base64), buildAudioStreamEndMessage, sanitizeGeminiLiveError (strips ?key=, AIza keys, Bearer tokens). GeminiLiveTransportState (8 states: disconnected/connecting/connected/listening/speaking/interrupted/reconnecting/error — NOT new Orb states, transport-internal only).
+- DECISION: implemented GeminiLiveTransport as a TRANSPORT (not STTProvider/TTSProvider) because the Live API has bidirectional streaming semantics that don't fit the batch "synthesize"/"transcribeFile" provider shape. The transport is a peer of LocalVoiceEngine — both feed the same NexVoiceConversation FSM.
+
+O6.2 — Gemini Live WebSocket/session:
+- NEW src/main/voice/gemini-live-transport.ts (469 lines): GeminiLiveTransport class using the `ws` package (installed). Reads API key from getSecret('geminiApiKey') (defensive try/catch — returns '' if safeStorage unavailable). connect(model, systemInstruction, resumptionToken?) opens WS, sends setup, awaits setupComplete (15s timeout). feedInputAudio(pcm16Buffer) base64-encodes + sends realtimeInput.audio. sendAudioStreamEnd() flushes cached audio. handleServerMessage dispatches: setupComplete, goAway → onGoAway, sessionResumptionUpdate → onResumptionToken, toolCall → onToolCall (LOGGED ONLY, not executed per O6 directive), serverContent → handleServerContent (audio chunks → onAudioChunk, interrupted → onInterrupted, turnComplete → onTurnComplete, transcriptions → onInputTranscription/onOutputTranscription). NO new requestId counter — reuses setCurrentRequestId (caller passes engine's counter). dispose() for clean shutdown. All logs sanitized via sanitizeGeminiLiveError — NEVER log the key, URL, or response body.
+
+O6.3 — input PCM integration:
+- MODIFIED main.ts voice-feed-audio-chunk IPC handler: routes to geminiLiveTransport.feedInputAudio(buf) when voiceTransport==='gemini-live', else to localVoiceEngine.feedAudioChunk(buf). The existing renderer voice-service.ts pipeline already produces 16kHz Int16 PCM chunks — zero conversion needed. The two transports NEVER receive chunks concurrently (if/else mutual exclusion).
+
+O6.4 — output PCM playback:
+- NEW src/renderer/lib/gemini-audio-queue.ts (289 lines): GeminiAudioQueue class. enqueue(pcm16Buffer, requestId) decodes Int16→Float32, resamples 16000→ctx.sampleRate (linear interpolation), wraps in AudioBuffer, schedules via AudioBufferSourceNode.start(nextStartTime) for gapless playback. 5-second buffer cap drops oldest if exceeded. flush(requestId) cancels all scheduled sources for a requestId (barge-in/stop/supersede). onQueueDrained(requestId, callback) fires when queue drains. Stale guard: requestId < current → drop. Mutual exclusion with Piper: App.tsx pauses currentAudioRef before enqueuing Gemini chunk. Both paths share currentAudioRequestIdRef.
+- MODIFIED App.tsx: added onVoiceTtsPcmChunk listener + imported getGeminiAudioQueue. Pauses Piper audio before enqueuing Gemini chunk. Shares currentAudioRequestIdRef across both paths. onVoiceTtsStopPlayback now also flushes the Gemini queue.
+
+O6.5 — interruption/requestId:
+- Transport onInterrupted(requestId) → main.ts → conversation.handleBargeIn() (EXISTING flow — no new cancellation). Transport setCurrentRequestId(requestId) called by main when engine bumps the counter. NO new _abortFlag, NO new counter. The renderer's stale guard (currentAudioRequestIdRef) discards stale Gemini chunks the same way it discards stale Piper audio.
+
+O6.6 — lifecycle + reconnect/resumption:
+- Transport handles GoAway (logs + emits onGoAway callback — MVP: the next voice turn reconnects via connect() flow). SessionResumptionUpdate → transport stores token internally (getResumptionToken/clearResumptionToken). connect() accepts optional resumptionToken param. Graceful failure: WS close code 1008 → 'invalid API key' error, 1011 → server error, others → disconnected. No crash on any path.
+
+O6.7 — Settings/transport switching:
+- NEW IPC: voice-transport-switch (main.ts). Stops old transport (conv.stop + engine.stopSpeaking/Listening + transport.disconnect) BEFORE persisting the new setting BEFORE starting the new transport. Ensures Whisper/Piper and Gemini Live NEVER run concurrently.
+- MODIFIED SettingsPanel.tsx: added Voice Transport card (Local vs Gemini Live selector + Gemini Live Model selector). handleSave calls voiceTransportSwitch when transport changes.
+- MODIFIED persistence/index.ts: added voiceTransport + geminiLiveModel to PersistedSettings (non-secret).
+- MODIFIED useStore.ts: mirrored voiceTransport + geminiLiveModel in NexSettings + DEFAULT_SETTINGS.
+
+O6.8 — security/redaction:
+- API key read from getSecret('geminiApiKey') only (main process). NEVER in renderer, config.json, logs, events, UI. The WS URL ?key= is constructed via buildGeminiLiveWsUrl (pure helper), used to open WS, then discarded — never stored in a field, never logged. All error messages sanitized via sanitizeGeminiLiveError (strips ?key=, AIza keys, Bearer tokens). Transport logs only [GEMINI_LIVE] connecting/connected/interrupted/disconnected/error/GoAway — NEVER the key, URL, or response body. The renderer IPC payload (voice-tts-pcm-chunk) contains only opaque PCM buffers + requestId — no key, no URL, no headers.
+- CSP: UNCHANGED. Verified that the `ws` package in the main process uses Node net/tls directly, NOT Chromium's network stack — so the renderer CSP (connect-src) does NOT apply. No wss:// added to CSP. The existing https://generativelanguage.googleapis.com (from O1-O3 REST API) remains.
+
+O6.9 — unit/integration tests:
+- NEW tests/glm/test-phase-o6-gemini-live.ts (109 assertions): verified constants, buildGeminiLiveWsUrl security, buildGeminiLiveSetup shape, buildRealtimeAudioMessage round-trip, sanitizeGeminiLiveError redaction, GeminiAudioQueue logic, architecture invariants (no new FSM, no new Tool Registry, no new event bus, requestId reused, CSP unchanged, engine.dispose wired, no fake animation). ALL 109 PASS.
+- NEW tests/glm/test-phase-o6-integration.ts (45 assertions): transport instantiation, connect with no API key (returns false + sanitized error), setCurrentRequestId, disconnect/dispose safety, GeminiAudioQueue safety, error sanitization on realistic Gemini errors (8 variants), PCM round-trip, setup model prefix, source-contract routing + switching logic, no fake activity, App.tsx mutual exclusion, before-quit dispose wiring. ALL 45 PASS. Includes a documented MANUAL RUNTIME E2E PROCEDURE for the user to run on Windows with a real Gemini API key.
+
+O6.10 — Windows Runtime E2E:
+- The sandbox environment does NOT have: a real Gemini API key, a real microphone, real audio playback, or guaranteed network access to generativelanguage.googleapis.com. A full Runtime E2E with real hardware + key cannot be automated here. The integration test (test-phase-o6-integration.ts) verifies all wiring + error paths without requiring real hardware. The manual E2E procedure is documented in the test file for the user to run on Windows.
+
+P18 latent fix (engine.dispose):
+- MODIFIED main.ts before-quit handler: added getLocalVoiceEngine().dispose() + getGeminiLiveTransport().dispose() BEFORE shutdownLlama(). Fixes the P18-AUDIT-ADDITIONAL #2 finding (engine.dispose was never called → whisper/piper subprocesses orphaned on exit). Now both local + Gemini transports dispose cleanly — no orphan processes, no orphan WebSocket connections.
+
+Architecture constraints respected (per O6 directive):
+- NO new Voice FSM (NexVoiceConversation reused — handleBargeIn, notifyTtsPlaybackEnded, currentTtsRequestId all reused).
+- NO new Orb FSM (orb-state.ts unchanged — 13 states, safeOrbTransition unchanged).
+- NO new Tool Registry / permission path (transport does NOT import tool-registry or permissions; native Gemini function calling NOT implemented — toolCall logged only).
+- NO new event bus (reuses voice-conversation-state IPC + new voice-tts-pcm-chunk which is a peer of the existing voice-tts-audio, not a parallel bus).
+- NO new requestId counter (transport.setCurrentRequestId reuses engine's counter).
+- NO new _abortFlag (currentTtsRequestId bump IS the cancellation signal — same as Piper).
+- NO duplicate Voice FSM states (transport maps to existing conversation states).
+- NO fake animation (transport emits real events only; GeminiAudioQueue plays real audio; no setTimeout simulating chunks).
+
+Verification:
+- Main typecheck: PASS. Renderer typecheck: PASS.
+- Build main: PASS. Build renderer: PASS.
+- O6 unit tests: 109/109 PASS. O6 integration tests: 45/45 PASS.
+- O4 tests: 58/58 PASS. O5 tests: 47/47 PASS. P8-A through P8-E: 245/245 PASS.
+- Phase-116 tests: 316/316 PASS.
+- Security tests: 41/41 PASS. Persistence tests: 13/13 PASS.
+- Full GLM suite: 504/504 PASS (0 new failures).
+- CSP unchanged (verified by test — no wss:// added).
+- engine.dispose() + geminiLiveTransport.dispose() wired in before-quit.
+- No fake animation (verified by test — no setTimeout simulating audio chunks).
+- API key never in renderer/logs/events/UI/config.json (verified by test).
+
+Stage Summary:
+- O6 MVP complete: Gemini Live Voice is a first-class online voice transport. The user can switch between Local (Whisper + Piper) and Gemini Live (online realtime voice over WebSocket) in Settings → Voice. Both transports feed the SAME NexVoiceConversation FSM, Orb FSM, condition system, and requestId cancellation — no parallel state machine, no duplicate Tool Registry, no new event bus.
+- 4 new files (gemini-live-types, gemini-live-transport, gemini-audio-queue, 2 test files) + 7 modified files (main.ts, preload.ts, electron.d.ts, App.tsx, SettingsPanel.tsx, useStore.ts, persistence/index.ts) + package.json (ws + @types/ws).
+- All Gemini Live API facts verified from official Google docs (Sep 2026) — no implementation from memory.
+- Security: API key in getSecret only, URL never logged, errors sanitized, CSP unchanged (WS in main process).
+- P18 latent fix included: engine.dispose() + geminiLiveTransport.dispose() wired in before-quit.
+- Runtime E2E with real hardware + key: documented as a manual procedure for Windows (the sandbox lacks real mic/audio/key/network-to-Google).

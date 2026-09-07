@@ -413,6 +413,21 @@ export default function SettingsPanel() {
       if (result.success) {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
+        // Phase O6: If the voice transport changed, invoke the switch IPC so
+        // the main process stops the old transport and starts the new one.
+        // This ensures Whisper/Piper and Gemini Live NEVER run concurrently.
+        const oldTransport = settings.voiceTransport || 'local';
+        const newTransport = localSettings.voiceTransport || 'local';
+        if (oldTransport !== newTransport) {
+          try {
+            const switchResult = await window.nexAPI.voiceTransportSwitch(newTransport);
+            if (!switchResult.success) {
+              setSaveError(switchResult.error || 'Transport switch failed');
+            }
+          } catch (err: any) {
+            setSaveError(`Transport switch failed: ${err?.message || err}`);
+          }
+        }
       } else {
         setSaveError(result.error || 'Failed to save');
       }
@@ -682,6 +697,54 @@ export default function SettingsPanel() {
                     { value: 'zh-CN', label: '中文' },
                   ]}
                 />
+              </Card>
+
+              {/* Phase O6: Voice Transport selector.
+                  Local (Whisper + Piper) = offline, batch STT/TTS via subprocesses.
+                  Gemini Live = online realtime voice over WebSocket (native audio).
+                  The two NEVER run concurrently — switching stops one before
+                  starting the other (handled by VoiceManager). */}
+              <Card title="Voice Transport" description="Local (offline) vs Gemini Live (online realtime)">
+                <Select
+                  label="Transport"
+                  value={localSettings.voiceTransport || 'local'}
+                  onChange={(v) => updateLocal('voiceTransport', v)}
+                  options={[
+                    { value: 'local', label: 'Local (Whisper + Piper — offline)' },
+                    { value: 'gemini-live', label: 'Gemini Live (online realtime voice)' },
+                  ]}
+                />
+                {(localSettings.voiceTransport === 'gemini-live') && (
+                  <>
+                    <Select
+                      label="Gemini Live Model"
+                      value={localSettings.geminiLiveModel || 'gemini-2.5-flash-native-audio-preview-12-2025'}
+                      onChange={(v) => updateLocal('geminiLiveModel', v)}
+                      options={[
+                        { value: 'gemini-2.5-flash-native-audio-preview-12-2025', label: 'Gemini 2.5 Flash Native Audio (stable)' },
+                        { value: 'gemini-3.1-flash-live-preview', label: 'Gemini 3.1 Flash Live (latest, thinkingLevel)' },
+                        { value: 'gemini-2.5-flash-native-audio-preview-09-2025', label: 'Gemini 2.5 Flash Native Audio (09-2025, legacy)' },
+                      ]}
+                    />
+                    <p className="text-xs mt-2" style={{ color: 'var(--nex-text-muted)' }}>
+                      Gemini Live uses the API key from Settings → AI & Model → Gemini.
+                      Audio is raw 16-bit PCM 16kHz mono. The existing mic capture pipeline
+                      is reused — no new audio format. Barge-in is handled by the server-side
+                      VAD and routes through the existing conversation FSM.
+                    </p>
+                    {(!localSettings.geminiApiKey || !localSettings.geminiApiKey.trim()) && (
+                      <p className="text-xs mt-1" style={{ color: 'var(--nex-error)' }}>
+                        ⚠ No Gemini API key set. Go to AI & Model → Provider: Google Gemini to set it.
+                      </p>
+                    )}
+                  </>
+                )}
+                {localSettings.voiceTransport === 'local' && (
+                  <p className="text-xs mt-2" style={{ color: 'var(--nex-text-muted)' }}>
+                    Local mode runs Whisper (STT) + Piper (TTS) fully offline via subprocesses.
+                    No API key required. This is the default behavior.
+                  </p>
+                )}
               </Card>
 
               <Card title="Microphone" description="Audio input safety">
