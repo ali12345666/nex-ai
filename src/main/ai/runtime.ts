@@ -32,23 +32,65 @@ import type { LocalModelInfo, ModelCapability } from './model-registry';
 
 export type RuntimeType = 'llamacpp' | 'onnx' | 'mlc' | 'wasm' | 'online' | 'custom';
 
+// ─── P1 Universal Provider Architecture: hybrid content + tool contracts ───
+// These types are widened from the originals (backward-compatible):
+//   - ChatMessage.content: string → string | ContentPart[] (union widening)
+//   - ChatMessage.role: add 'tool' (union widening)
+//   - ChatOptions: add optional tools, requestId, model, endpoint (additive)
+//   - ChatResult: add optional toolCalls (additive)
+//   - StreamChunk.content: string → string | undefined (optional) — 2 call
+//     sites (planner.ts, react-loop.ts) get a 1-line guard `if (chunk.content)`.
+// No existing call site breaks (union widening + optional fields).
+// NO apiKey field in ChatOptions — transports resolve via ResolvedAuth.
+
+/** ContentPart — structured content for multimodal messages. */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url?: string; base64?: string; mimeType: string }
+  | { type: 'file'; path: string; mimeType?: string }
+  | { type: 'audio'; base64?: string; url?: string; mimeType: string; sampleRate?: number }
+  | { type: 'tool_result'; toolCallId: string; content: string | ContentPart[] }
+  | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
+  ;
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  /** Hybrid: string (backward-compat) OR ContentPart[] (structured). */
+  content: string | ContentPart[];
+}
+
+/** A tool declaration passed to the model (for tool-calling capability). */
+export interface ToolDeclaration {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** A tool call REQUEST from the model. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
 }
 
 export interface ChatOptions {
   contextSize?: number;
   threads?: number;
-  gpuLayers?: number;        // -1 = auto, 0 = CPU only
+  gpuLayers?: number;
   temperature?: number;
   maxTokens?: number;
   systemPrompt?: string;
-  // Future: stop sequences, top-p, top-k, repeat penalty, etc.
   stopSequences?: string[];
   topP?: number;
   topK?: number;
   repeatPenalty?: number;
+  // P1 additions (optional — capability-gated):
+  tools?: ToolDeclaration[];
+  requestId?: number;
+  model?: string;
+  endpoint?: string;
+  // NOTE: NO apiKey field — transport resolves via ResolvedAuth in the Main
+  // Security Boundary. The renderer NEVER sends the key.
 }
 
 export interface ChatResult {
@@ -58,17 +100,20 @@ export interface ChatResult {
   modelName: string;
   stopped: boolean;
   durationMs: number;
-  // Future: promptTokens, completionTokens, finishReason, etc.
   promptTokens?: number;
   completionTokens?: number;
-  finishReason?: 'stop' | 'length' | 'tool_call' | 'aborted';
+  finishReason?: 'stop' | 'length' | 'tool_call' | 'aborted' | 'content-filter';
+  // P1 addition (optional — for tool-calling capability):
+  toolCalls?: ToolCall[];
 }
 
 export interface StreamChunk {
-  content: string;
+  /** Optional text content. May be absent for tool-call deltas or keepalives.
+   *  NO caller may assume content is always present (binding v2.1 §3). */
+  content?: string;
+  toolCalls?: ToolCall[];
   done: boolean;
   error?: string;
-  // Future: token-level metadata (logprobs, etc.)
 }
 
 export interface RuntimeStats {

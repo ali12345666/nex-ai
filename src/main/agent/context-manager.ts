@@ -237,7 +237,11 @@ export function buildContext(
   if (opts.recentConversation && opts.recentConversation.length > 0) {
     const recent = opts.recentConversation.slice(-10);
     for (const msg of recent) {
-      const msgTokens = estimateTokens(msg.content);
+      // P1: ChatMessage.content is now string | ContentPart[] (hybrid).
+      // estimateTokens expects string — extract text from ContentPart[] if needed.
+      const msgContent = typeof msg.content === 'string' ? msg.content
+        : msg.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join(' ');
+      const msgTokens = estimateTokens(msgContent);
       if (tokensUsed + msgTokens >= contextBudget) {
         truncated = true;
         truncationReason = 'conversation truncated to fit context';

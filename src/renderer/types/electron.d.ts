@@ -56,7 +56,7 @@ export interface NexAPI {
   configGetAll: () => Promise<Record<string, any>>;
 
   // Settings (Phase 2)
-  settingsLoad: () => Promise<{ settings: any; apiKey: string; glmApiKey?: string; geminiApiKey?: string }>;
+  settingsLoad: () => Promise<{ settings: any; apiKey: string; glmApiKey?: string; geminiApiKey?: string; apiKeySet?: boolean; glmKeySet?: boolean; geminiKeySet?: boolean; openaiKeySet?: boolean; anthropicKeySet?: boolean }>;
   settingsSave: (settings: any, apiKey?: string, glmApiKey?: string, geminiApiKey?: string) => Promise<{ success: boolean; error?: string }>;
   settingsSetApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   settingsGetApiKey: () => Promise<string>;
@@ -71,6 +71,28 @@ export interface NexAPI {
     modelName?: string;
     latencyMs?: number;
     statusCode?: number;
+  }>;
+
+  // P1: Universal Provider Architecture — list providers + test connection by providerId
+  listProviders: () => Promise<{
+    success: boolean;
+    error?: string;
+    providers?: Array<{
+      id: string;
+      displayName: string;
+      trust: string;
+      capabilities: string[];
+      defaultModel: string;
+      defaultEndpoint: string;
+      availableModels: string[];
+      authType: string;  // 'bearer' | 'x-api-key' | 'x-goog-api-key' | 'url-query' | 'none'
+    }>;
+  }>;
+  testProviderConnection: (providerId: string) => Promise<{
+    success: boolean;
+    error?: string;
+    latencyMs?: number;
+    modelName?: string;
   }>;
 
   // AI Chat

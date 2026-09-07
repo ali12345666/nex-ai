@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('nexAPI', {
   // success/fail + latency + sanitized error. NEVER returns the key, headers,
   // or raw response body.
   geminiTestConnection: () => ipcRenderer.invoke('gemini-test-connection'),
+  // P1: Universal Provider Architecture — list providers + test connection by providerId
+  listProviders: () => ipcRenderer.invoke('list-providers'),
+  testProviderConnection: (providerId: string) => ipcRenderer.invoke('test-provider-connection', providerId),
 
   // ── External (validated http/https only) ──
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

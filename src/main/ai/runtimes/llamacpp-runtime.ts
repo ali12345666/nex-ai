@@ -25,6 +25,20 @@ import {
 } from '../inference';
 import { noteInferenceStats } from '../runtime';
 
+// P1: Coerce widened ChatMessage[] (string | ContentPart[], role includes 'tool')
+// to the narrow inference.ts type (role: system|user|assistant, content: string).
+// The local runtime is text-only — it extracts text from ContentPart[] if present.
+type NarrowMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+function toNarrowMessages(messages: ChatMessage[]): NarrowMessage[] {
+  return messages.map((m) => {
+    const role = (m.role === 'tool' ? 'user' : m.role) as NarrowMessage['role'];
+    const content = typeof m.content === 'string'
+      ? m.content
+      : m.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join('\n');
+    return { role, content };
+  });
+}
+
 export class LlamaCppRuntime implements AIRuntime {
   readonly type: RuntimeType = 'llamacpp';
   readonly capabilities: ReadonlySet<ModelCapability> = new Set<ModelCapability>([
@@ -53,7 +67,7 @@ export class LlamaCppRuntime implements AIRuntime {
     if (!loadedModel) {
       throw new Error('No model loaded. Call loadModel() first.');
     }
-    const result = await _chatComplete(loadedModel, messages, opts || {});
+    const result = await _chatComplete(loadedModel, toNarrowMessages(messages), opts || {});
     noteInferenceStats({
       tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
       promptTokens: (result as any).promptTokens,
@@ -75,7 +89,7 @@ export class LlamaCppRuntime implements AIRuntime {
     }
     noteInferenceStats({ active: true });
     try {
-      const result = await _chatStream(loadedModel, messages, onChunk, opts || {});
+      const result = await _chatStream(loadedModel, toNarrowMessages(messages), onChunk, opts || {});
       noteInferenceStats({
         tokensPerSecond: result.durationMs > 0 ? (result.tokensGenerated / (result.durationMs / 1000)) : undefined,
         promptTokens: (result as any).promptTokens,

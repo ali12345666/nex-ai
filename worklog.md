@@ -11785,3 +11785,82 @@ Stage Summary:
 - Fix: explicit `"moduleResolution": "node"` in tsconfig.main.json — proper config, not a workaround.
 - 1 file changed: tsconfig.main.json (+1 line).
 - All 504 tests + 2 builds + 2 typechecks green. Clean install verified. No @ts-ignore, no shim.
+
+---
+Task ID: phase-p1
+Agent: main
+Task: P1 — Universal Provider Architecture (registry + descriptors + transports + security + types)
+
+Work Log:
+- Read worklog context + verified checkpoint 896d911 on main + origin/main.
+- Implemented P1 per Final Contract v2.3 exactly (no scope creep to P2/P3/P4/P5).
+
+P1.1 — capabilities.ts (NEW, ~230 lines): pure type contracts. Capability, ContentPart, ResolvedContentPart, TransportFileContent (NO path), ResolvedFileReference (internal), ChatMessage (hybrid: string | ContentPart[]), ResolvedChatMessage, ToolDeclaration, ToolCall, ToolResult, ChatOptions (NO apiKey), ChatResult (optional toolCalls), StreamChunk (content?, toolCalls?, done required), StreamEvent, RequestPlan, ChatParseResult, AuthMethod (secretId, NOT key; no custom in P1), ResolvedAuth, ProviderDescriptor, ProviderCallContext (ResolvedAuth, NOT apiKey), TestConnectionResult, TextChatTransport, StreamChatTransport (isStreaming: true), ToolCallingTransport, VisionTransport, ModelDescriptor (P3 future).
+
+P1.2 — provider-registry.ts (NEW, ~200 lines): ProviderRegistry singleton. registerProvider enforces invariants: streaming-text ⇔ streamTransport + isStreaming===true; tool-calling ⇔ toolTransport; vision ⇔ visionTransport; trust='plugin' requires approval; origin validation. onProviderRegistered/Unregistered events.
+
+P1.3 — secret-resolver.ts (NEW, ~50 lines): wireSecretResolver + resolveAuth. getSecret runs ONLY here (Main Security Boundary). Transport receives ResolvedAuth, NEVER calls getSecret.
+
+P1.4 — content-resolver.ts (NEW, ~110 lines): ContentResolver (main-process service, NOT an IPC). Uses assertPathInside + fs.promises.readFile. Returns ResolvedChatMessage[] with TransportFileContent (base64, NO path). ResolvedFileReference (with path) is internal — transport never sees it.
+
+P1.5 — security/origin-allowlist.ts (NEW, ~150 lines): OriginAllowlist (dynamic). isPrivateIp blocks 10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x, ::1, 0.0.0.0, broadcast, IPv6 ULA, IPv6 link-local. validateOrigin (HTTPS/WSS only). addBuiltIn/addUserDefined/addPlugin — all same validation pipeline (NO user bypass).
+
+P1.6 — security/endpoint-validator.ts (NEW, ~170 lines): EndpointValidator. validateRequest runs before EVERY net.request (P0-2). DNS-TOCTOU defense: dns.lookup + IP validation + IP pinning (P0-1). validateRedirect independently revalidates redirect targets (P0-2). DNS cache (30s TTL). sanitizeEndpointError strips ?key=, AIza, Bearer.
+
+P1.7 — transports/ (3 NEW files):
+  - openai-compatible.ts (~160 lines): OpenAiCompatibleTransport. Implements TextChatTransport + StreamChatTransport + ToolCallingTransport. buildChatRequest takes ResolvedChatMessage[] + ResolvedAuth. parseStreamChunk for real SSE. sanitizeError strips ?key=, AIza, Bearer, sk-, sk-ant-.
+  - anthropic.ts (~170 lines): AnthropicTransport. Same pattern. x-api-key header + anthropic-version.
+  - gemini-rest.ts (~95 lines): GeminiRestTransport. Wraps existing gemini.ts helpers. x-goog-api-key header.
+  ALL transports: NO fs/path/persistence/getSecret/tool-registry/permissions imports (verified by tests).
+
+P1.8 — providers/ (5 NEW files):
+  - openai.ts, anthropic.ts, gemini.ts, glm.ts — ProviderDescriptor for each. Each references a reusable transport (not inline). capabilities declared.
+  - index.ts — registerBuiltInProviders() registers all 4 at startup.
+
+P1.9 — runtime.ts (MODIFIED): Widened ChatMessage.content to string | ContentPart[] (backward-compat — all callers pass string). Added 'tool' to role union. Added optional ChatOptions.tools/requestId/model/endpoint. NO ChatOptions.apiKey. Added optional ChatResult.toolCalls. Widened StreamChunk.content to string | undefined. Added StreamChunk.toolCalls.
+
+P1.10 — ai/runtimes/online-transport.ts (MODIFIED): createLazyOnlineTransport now looks up descriptor from ProviderRegistry for defaults (model, endpoint, authMethod.secretId). Falls back to legacy if/else if registry not yet wired (backward-compat during P1 rollout). Coerces widened ChatMessage[] → narrow AIMessage[] at the routeChat boundary.
+
+P1.11 — ai/runtimes/llamacpp-runtime.ts (MODIFIED): Added toNarrowMessages helper at the boundary — coerces ChatMessage[] (widened) → inference.ts narrow type. The local runtime is text-only — extracts text from ContentPart[] if present.
+
+P1.12 — agent/context-manager.ts (MODIFIED): 1-line type-safety guard — estimateTokens now handles hybrid content (string | ContentPart[]). Not a provider change — type-safety fix for the union widening.
+
+P1.13 — main.ts (MODIFIED): Wire ProviderRegistry + OriginAllowlist + SecretResolver at startup (after initPersistence). Added list-providers + test-provider-connection IPC handlers. settings-load now returns apiKeySet booleans.
+
+P1.14 — preload.ts + electron.d.ts (MODIFIED): Exposed listProviders + testProviderConnection IPCs. settingsLoad type extended with apiKeySet booleans.
+
+Tests:
+- NEW tests/glm/test-phase-p1-universal-provider.ts (100 assertions): capabilities, ContentPart, ResolvedContentPart, TransportFileContent (NO path), StreamChunk invariants, ToolCall/ToolResult, AuthMethod (secretId), ProviderRegistry invariants (streaming-text ⇔ streamTransport enforcement), isPrivateIp (SSRF), validateOrigin (HTTPS only), secret resolver, transport purity (no fs/path/persistence/getSecret/tool-registry/permissions), transport interfaces, URL-query sanitization, architecture invariants (no Core changes, ChatOptions has NO apiKey, StreamChunk.content optional, ContentResolver is NOT an IPC). ALL 100 PASS.
+
+Verification (all green):
+- Main typecheck: PASS. Renderer typecheck: PASS.
+- Build main: PASS. Build renderer: PASS.
+- P1 tests: 100/100. O4: 58/58. O5: 47/47. O6: 109/109. O6 integration: 45/45.
+- P8-A..E: 245/245. Security: 17/17. Persistence: 13/13. Phase-116: 316/316.
+- Full GLM suite: 604/604 (0 new failures).
+- Clean install: verified (removed ws + @types/ws → npm install restored both).
+
+Architecture constraints respected (per Contract v2.3):
+- NO new Voice FSM, NO new Orb FSM (provider-blind).
+- NO Core/Agent/Tool Registry/Permission changes for new providers.
+- 2 agent file changes: planner.ts + react-loop.ts — both already had `chunk.content || ''` guard (the `|| ''` pattern handles undefined). 0 lines changed (backward-compatible).
+- 1 context-manager.ts change: type-safety guard for hybrid content (not a provider change).
+- 1 llamacpp-runtime.ts change: toNarrowMessages adapter at the boundary (not a provider change).
+- 1 online-transport.ts change: registry lookup + message coercion (P1 scope per contract).
+- Transports: pure (no fs/path/persistence/getSecret/tool-registry/permissions — verified by tests).
+- ContentResolver: main-process service, NOT an IPC (verified by tests).
+- Secret resolver: getSecret runs ONLY in Main Security Boundary (verified by tests).
+- OriginAllowlist: dynamic, SSRF-validated (isPrivateIp blocks all private/loopback/link-local/metadata).
+- EndpointValidator: DNS-TOCTOU defense (dns.lookup + IP validation + IP pinning), per-request validation, redirect revalidation.
+- URL-query secret: sanitizeError strips ?key=, AIza, Bearer (verified by tests).
+- fetchAvailableModels: type/extension point only in P1 (no implementation — verified by tests).
+- ChatOptions.apiKey: REMOVED (verified by tests).
+- AuthMethod: uses secretId, NOT key (verified by tests).
+- AuthMethod.custom: does NOT exist in P1 (verified by tests).
+- TransportFileContent: NO path field (verified by tests).
+
+Stage Summary:
+- P1 complete: Universal Provider Architecture foundation. ProviderRegistry + ProviderDescriptor + reusable transports + ChatMessage hybrid content + ToolCall/ToolResult + StreamChunk invariants + secret isolation + OriginAllowlist + SSRF + DNS-TOCTOU + ContentResolver + redirect protection + settings migration (V1→V2) + built-in provider adapters.
+- 15 new files + 7 modified files. ~1000 lines new, ~100 lines refactored.
+- Adding a new built-in text provider = 1 new descriptor file + 1 line in providers/index.ts. No Core changes.
+- All 604 tests + 316 phase-116 + 17 security + 13 persistence pass.

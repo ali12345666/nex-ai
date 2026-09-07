@@ -639,7 +639,15 @@ async function setupIPC(): Promise<void> {
     const apiKey = getSecret('aiApiKey');
     const glmApiKey = getSecret('glmApiKey');
     const geminiApiKey = getSecret('geminiApiKey');
-    return { settings: merged, apiKey, glmApiKey, geminiApiKey };
+    // P1: also return apiKeySet booleans (for the new apiKeySet UI).
+    // The legacy apiKey/glmApiKey/geminiApiKey fields are kept for backward compat
+    // during the P1→P2 transition. P2 will remove them and use apiKeySet only.
+    const apiKeySet = !!(apiKey && apiKey.trim());
+    const glmKeySet = !!(glmApiKey && glmApiKey.trim());
+    const geminiKeySet = !!(geminiApiKey && geminiApiKey.trim());
+    const openaiKeySet = !!(getSecret('openaiApiKey') || '').trim();
+    const anthropicKeySet = !!(getSecret('anthropicApiKey') || '').trim();
+    return { settings: merged, apiKey, glmApiKey, geminiApiKey, apiKeySet, glmKeySet, geminiKeySet, openaiKeySet, anthropicKeySet };
   });
 
   ipcMain.handle('settings-save', async (_event, settings: PersistedSettings, apiKey?: string, glmApiKey?: string, geminiApiKey?: string) => {
@@ -661,6 +669,53 @@ async function setupIPC(): Promise<void> {
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // P1: Universal Provider Architecture — IPC handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+  // These expose the ProviderRegistry to the renderer. The renderer NEVER sees
+  // authMethod.secretId or the plaintext credential — only public descriptor data.
+
+  // listProviders: returns provider descriptors (public fields only — no secrets)
+  ipcMain.handle('list-providers', async () => {
+    try {
+      const { getProviderRegistry } = await import('./ai/provider-registry');
+      const registry = getProviderRegistry();
+      const providers = registry.listProviders();
+      return {
+        success: true,
+        providers: providers.map((d) => ({
+          id: d.id,
+          displayName: d.displayName,
+          trust: d.trust,
+          capabilities: Array.from(d.capabilities),
+          defaultModel: d.defaultModel,
+          defaultEndpoint: d.defaultEndpoint,
+          availableModels: d.availableModels || [],
+          authType: d.authMethod.type,
+        })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message, providers: [] };
+    }
+  });
+
+  // testProviderConnection: resolves the secret in main + calls the descriptor's testConnection.
+  ipcMain.handle('test-provider-connection', async (_event, providerId: string) => {
+    try {
+      const { getProviderRegistry } = await import('./ai/provider-registry');
+      const { resolveAuth } = await import('./ai/secret-resolver');
+      const registry = getProviderRegistry();
+      const desc = registry.getProvider(providerId);
+      if (!desc) return { success: false, error: `Provider '${providerId}' not found` };
+      if (!desc.testConnection) return { success: false, error: `Provider '${providerId}' has no testConnection` };
+      const auth = resolveAuth(desc.authMethod);
+      const result = await desc.testConnection({ auth, endpoint: desc.defaultEndpoint, model: desc.defaultModel });
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Test connection failed' };
     }
   });
 
@@ -6748,6 +6803,34 @@ app.whenReady().then(async () => {
   // Initialize persistence before anything else
   initPersistence(userDataPath);
   console.log(`[STARTUP_TIMING] persistence-init: +${Date.now() - t0}ms`);
+
+  // ── P1: Universal Provider Architecture — wire registry + allowlist + secret resolver ──
+  // This runs after persistence is initialized (so getSecret works) and before
+  // any AI/chat/voice paths. The OriginAllowlist is wired first (so providers can
+  // register their origins), then the secret resolver (so transports can resolve
+  // credentials), then the built-in providers are registered.
+  try {
+    const { getOriginAllowlist } = await import('./security/origin-allowlist');
+    const { wireSecretResolver } = await import('./ai/secret-resolver');
+    const { wireOriginAllowlist: wireRegistryAllowlist } = await import('./ai/provider-registry');
+    const { registerBuiltInProviders } = await import('./ai/providers');
+
+    // Wire the origin allowlist (for provider-registry → origin-allowlist bridge)
+    const allowlist = getOriginAllowlist();
+    wireRegistryAllowlist(
+      (origin: string) => allowlist.addBuiltIn(origin),
+      (origin: string) => allowlist.addBuiltIn(origin),
+    );
+
+    // Wire the secret resolver (so resolveAuth can call getSecret)
+    wireSecretResolver((key: string) => getSecret(key));
+
+    // Register all built-in providers (openai, anthropic, gemini, glm)
+    registerBuiltInProviders();
+    console.log(`[STARTUP_TIMING] provider-registry-wired: +${Date.now() - t0}ms`);
+  } catch (err: any) {
+    console.warn('[NEX AI] P1 provider registry wiring failed (non-blocking):', err?.message);
+  }
 
   // ── Phase 10: Configure Browser Automation (Playwright) — opt-in OFF by default ──
   // Browser tools are ONLY registered when this flag is true. Reads from
