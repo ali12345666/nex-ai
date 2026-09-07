@@ -96,7 +96,7 @@ assert('anthropic still allowed (no regression)', isAllowedAIOrigin('https://api
 assert('evil lookalike blocked', !isAllowedAIOrigin('https://api.z.ai.evil.com/api/paas/v4/chat/completions'));
 assert('http (non-tls) blocked', !isAllowedAIOrigin('http://api.z.ai/api/paas/v4/chat/completions'));
 assert('localhost blocked', !isAllowedAIOrigin('http://localhost:9999/x'));
-assert('allowlist size is exactly 4', ALLOWED_AI_ORIGINS.size === 4);
+assert('allowlist size is exactly 5 (openai+anthropic+z.ai+bigmodel+gemini)', ALLOWED_AI_ORIGINS.size === 5);
 
 // ─── 5. Routing layer contract ──────────────────────────────────────────────
 console.log('\n5. Provider abstraction contract:');

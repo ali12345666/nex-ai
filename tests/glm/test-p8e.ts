@@ -235,11 +235,18 @@ for (const f of agentFiles) {
 }
 assert('ARCHITECTURE: agent/ (incl. new files) has ZERO direct glm/ai-service imports', violation === '', violation);
 
-// Renderer: ChatPanel routes agent_token to stream buffer
-const chatSrc = read('../../src/renderer/components/ChatPanel.tsx');
-assert('ChatPanel: agent_token handled separately', /'agent_token'/.test(chatSrc));
-assert('ChatPanel: stream buffer accumulates', /streamBufRef\.current \+= d\.text/.test(chatSrc));
-assert('ChatPanel: token events NOT in event list', /return;/.test(chatSrc.split("'agent_token'")[1] || ''));
+// Renderer: NexChatPanel routes agent_token to stream buffer
+// (ChatPanel.tsx was renamed to chat/NexChatPanel.tsx in a prior phase; the
+//  streaming behavior was preserved. The agent_token handler uses `ev.text`
+//  in NexChatPanel, not `d.text` as in the old ChatPanel.)
+const chatSrc = read('../../src/renderer/components/chat/NexChatPanel.tsx');
+assert('NexChatPanel: agent_token handled separately', /'agent_token'/.test(chatSrc));
+assert('NexChatPanel: stream buffer accumulates', /streamBufRef\.current \+= ev\.text/.test(chatSrc));
+// The agent_token case exits the switch (break; in NexChatPanel, return; in
+// the old ChatPanel) so it does NOT fall through to other cases. Either
+// control-flow statement satisfies "token events NOT in event list".
+assert('NexChatPanel: token events do not fall through (break or return)',
+  /(?:break;|return;)/.test(chatSrc.split("'agent_token'").pop() || ''));
 
 const dispSrc = read('../../src/renderer/components/agent/AgentStateDisplay.tsx');
 assert('AgentStateDisplay: streaming preview', /streamText/.test(dispSrc));

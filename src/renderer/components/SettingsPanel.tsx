@@ -330,10 +330,24 @@ export default function SettingsPanel() {
   const [localSettings, setLocalSettings] = useState({ ...settings });
   const [localApiKey, setLocalApiKey] = useState(settings.aiApiKey);
   const [localGlmApiKey, setLocalGlmApiKey] = useState(settings.glmApiKey);
+  // Phase O / O4: Gemini API key — kept in renderer state ONLY as a transient
+  // input value. The canonical copy lives in Electron safeStorage (DPAPI /
+  // Keychain / libsecret) on the main side. We never persist this to disk
+  // from the renderer, never log it, and the input is masked by default.
+  const [localGeminiApiKey, setLocalGeminiApiKey] = useState(settings.geminiApiKey);
+  // Phase O / O4: Test Connection status — only success/fail + latency +
+  // sanitized error. No key, no headers, no raw response body.
+  const [geminiTesting, setGeminiTesting] = useState(false);
+  const [geminiTestResult, setGeminiTestResult] = useState<
+    | { success: boolean; latencyMs?: number; modelName?: string; error?: string }
+    | null
+  >(null);
   const [persistenceInfo, setPersistenceInfo] = useState<{ userDataPath: string; portable: boolean; secretsAvailable: boolean } | null>(null);
   const [localModelCount, setLocalModelCount] = useState<number>(0);
   const [showApiKey, setShowApiKey] = useState(false);
   const [showGlmKey, setShowGlmKey] = useState(false);
+  // Phase O / O4: show/hide toggle for the masked Gemini API key input
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [snap, setSnap] = useState<any>(null);
   const [plugins, setPlugins] = useState<any[]>([]);
   const [knowledgeStats, setKnowledgeStats] = useState<any>(null);
@@ -342,6 +356,7 @@ export default function SettingsPanel() {
     setLocalSettings({ ...settings });
     setLocalApiKey(settings.aiApiKey);
     setLocalGlmApiKey(settings.glmApiKey);
+    setLocalGeminiApiKey(settings.geminiApiKey);
   }, [settings]);
 
   useEffect(() => {
@@ -392,8 +407,9 @@ export default function SettingsPanel() {
     updateSettings(localSettings);
     if (localApiKey !== settings.aiApiKey) updateSettings({ aiApiKey: localApiKey });
     if (localGlmApiKey !== settings.glmApiKey) updateSettings({ glmApiKey: localGlmApiKey });
+    if (localGeminiApiKey !== settings.geminiApiKey) updateSettings({ geminiApiKey: localGeminiApiKey });
     try {
-      const result = await window.nexAPI.settingsSave(localSettings, localApiKey, localGlmApiKey);
+      const result = await window.nexAPI.settingsSave(localSettings, localApiKey, localGlmApiKey, localGeminiApiKey);
       if (result.success) {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
@@ -403,7 +419,42 @@ export default function SettingsPanel() {
     } catch (err: any) {
       setSaveError(err.message);
     }
-  }, [localSettings, localApiKey, localGlmApiKey, settings, updateSettings]);
+  }, [localSettings, localApiKey, localGlmApiKey, localGeminiApiKey, settings, updateSettings]);
+
+  // Phase O / O4: Test Gemini Connection — sends a real minimal ping to the
+  // Gemini generateContent endpoint from the MAIN process (not the renderer).
+  // The main process reads the API key from secure storage, so we MUST save
+  // first. We never send the key from renderer state — if the user just typed
+  // a new key and didn't save, we prompt them to save first.
+  const handleTestGemini = useCallback(async () => {
+    // If the user has typed a new key that isn't saved yet, the main process
+    // won't have it in secure storage. Prompt them to save first.
+    if (localGeminiApiKey !== settings.geminiApiKey) {
+      setGeminiTestResult({
+        success: false,
+        error: 'Save your new API key first, then test the connection.',
+      });
+      return;
+    }
+    setGeminiTesting(true);
+    setGeminiTestResult(null);
+    try {
+      const result = await window.nexAPI.geminiTestConnection();
+      setGeminiTestResult({
+        success: result.success,
+        latencyMs: result.latencyMs,
+        modelName: result.modelName,
+        error: result.error,
+      });
+    } catch (err: any) {
+      setGeminiTestResult({
+        success: false,
+        error: err?.message || 'Test connection failed',
+      });
+    } finally {
+      setGeminiTesting(false);
+    }
+  }, [localGeminiApiKey, settings.geminiApiKey]);
 
   const updateLocal = (key: string, value: any) => {
     setLocalSettings((prev) => ({ ...prev, [key]: value }));
@@ -679,6 +730,7 @@ export default function SettingsPanel() {
                     onChange={(v) => updateLocal('onlineProvider', v)}
                     options={[
                       { value: 'glm', label: 'GLM 5.3 (Z.ai)' },
+                      { value: 'gemini', label: 'Google Gemini' },
                       { value: 'openai', label: 'OpenAI' },
                       { value: 'claude', label: 'Anthropic Claude' },
                     ]}
@@ -708,7 +760,97 @@ export default function SettingsPanel() {
                       />
                     </>
                   )}
-                  {localSettings.onlineProvider !== 'glm' && (
+                  {localSettings.onlineProvider === 'gemini' && (
+                    <>
+                      <Input
+                        label="Gemini API Key"
+                        type={showGeminiKey ? 'text' : 'password'}
+                        value={localGeminiApiKey}
+                        onChange={setLocalGeminiApiKey}
+                        placeholder="AIza..."
+                      />
+                      <button
+                        onClick={() => setShowGeminiKey(!showGeminiKey)}
+                        className="text-xs flex items-center gap-1 mt-1 nex-click"
+                        style={{ color: 'var(--nex-text-muted)' }}
+                        aria-label={showGeminiKey ? 'Hide API key' : 'Show API key'}
+                      >
+                        {showGeminiKey ? <EyeOff size={10} /> : <Eye size={10} />}
+                        {showGeminiKey ? 'Hide' : 'Show'} key
+                      </button>
+                      <Select
+                        label="Model"
+                        value={(localSettings.geminiModel || 'gemini-2.0-flash')}
+                        onChange={(v) => updateLocal('geminiModel', v)}
+                        options={[
+                          { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (fast, default)' },
+                          { value: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite (cheapest)' },
+                          { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (quality)' },
+                          { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (legacy fast)' },
+                        ]}
+                      />
+                      <Input
+                        label="Endpoint"
+                        value={localSettings.geminiEndpoint}
+                        onChange={(v) => updateLocal('geminiEndpoint', v)}
+                        placeholder="https://generativelanguage.googleapis.com"
+                      />
+                      {/* Test Connection — REAL ping to the Gemini API. */}
+                      <div className="flex items-center gap-2 mt-2">
+                        <ActionButton onClick={handleTestGemini}>
+                          {geminiTesting ? (
+                            <>
+                              <RefreshCw size={10} className="inline mr-1 animate-spin" />
+                              Testing…
+                            </>
+                          ) : (
+                            <>
+                              <Zap size={10} className="inline mr-1" />
+                              Test Connection
+                            </>
+                          )}
+                        </ActionButton>
+                        {geminiTestResult && !geminiTesting && (
+                          <span
+                            className="inline-flex items-center gap-1 text-xs font-medium"
+                            style={{
+                              color: geminiTestResult.success
+                                ? 'var(--nex-success)'
+                                : 'var(--nex-error)',
+                            }}
+                            role="status"
+                            aria-live="polite"
+                          >
+                            {geminiTestResult.success ? (
+                              <>
+                                <Check size={11} />
+                                Connected
+                                {typeof geminiTestResult.latencyMs === 'number' && (
+                                  <span style={{ color: 'var(--nex-text-muted)' }}>
+                                    ({geminiTestResult.latencyMs} ms
+                                    {geminiTestResult.modelName ? `, ${geminiTestResult.modelName}` : ''})
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <AlertCircle size={11} />
+                                <span className="truncate max-w-[280px]" title={geminiTestResult.error || 'Failed'}>
+                                  {geminiTestResult.error || 'Failed'}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs mt-2" style={{ color: 'var(--nex-text-muted)' }}>
+                        API key is stored encrypted (Electron safeStorage) and never written to
+                        config.json or logs. Test Connection sends a 1-token ping to verify the
+                        key + endpoint + model.
+                      </p>
+                    </>
+                  )}
+                  {localSettings.onlineProvider !== 'glm' && localSettings.onlineProvider !== 'gemini' && (
                     <Input
                       label="API Key"
                       type={showApiKey ? 'text' : 'password'}

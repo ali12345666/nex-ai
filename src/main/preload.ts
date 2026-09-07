@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld('nexAPI', {
   settingsGetApiKey: () => ipcRenderer.invoke('settings-get-api-key'),
   settingsDeleteApiKey: () => ipcRenderer.invoke('settings-delete-api-key'),
   persistenceInfo: () => ipcRenderer.invoke('persistence-info'),
+  // Phase O / O4: Gemini Test Connection — runs in main process, reads API key
+  // from secure storage, sends a real minimal ping to Gemini, returns only
+  // success/fail + latency + sanitized error. NEVER returns the key, headers,
+  // or raw response body.
+  geminiTestConnection: () => ipcRenderer.invoke('gemini-test-connection'),
 
   // ── External (validated http/https only) ──
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

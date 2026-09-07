@@ -7,6 +7,7 @@ import {
   Menu,
   nativeTheme,
   session,
+  net,
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -14,6 +15,8 @@ import * as os from 'os';
 import { glob } from 'glob';
 import type { AIMessage, AIConfig } from './ai-service';
 import { chatCompletion, getSystemPrompt, getDefaultConfig } from './ai-service';
+// Phase O / O4: pure Gemini wire helpers (test-connection + parsing)
+import { buildGeminiPingRequest, parseGeminiResponse, GEMINI_DEFAULT_ENDPOINT, GEMINI_DEFAULT_MODEL } from './ai/gemini';
 
 import { CSP, ALLOWED_AI_ORIGINS, isAllowedAIOrigin, assertPathInside } from './security';
 import { safeExecFile, searchFileContents } from './security/shell';
@@ -670,6 +673,153 @@ async function setupIPC(): Promise<void> {
   ipcMain.handle('settings-delete-api-key', async () => {
     deleteSecret('aiApiKey');
     return { success: true };
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase O / O4: Gemini Test Connection
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Sends a minimal REAL request to the Gemini generateContent endpoint to
+  // verify the user's API key + endpoint + model actually work.
+  //
+  // Security (non-negotiable):
+  //   * API key is read from secure storage (Electron safeStorage / DPAPI /
+  //     Keychain / libsecret) — NEVER from renderer, NEVER from config.json.
+  //   * API key is placed ONLY in the `x-goog-api-key` header of the outbound
+  //     request. It is NEVER placed in the request body, NEVER in a query
+  //     string, NEVER logged, NEVER returned to the renderer.
+  //   * The endpoint must be in ALLOWED_AI_ORIGINS (defense-in-depth — even if
+  //     the user pastes a custom endpoint, we refuse to send the key to an
+  //     unknown host).
+  //   * Response body is parsed by parseGeminiResponse (pure) and ONLY the
+  //     success/fail boolean + a sanitized error string (no raw body, no key,
+  //     no headers) are returned to the renderer.
+  //   * Logs contain ONLY: success/fail, latencyMs, sanitized error category,
+  //     statusCode. NEVER the key, NEVER the response body, NEVER the headers.
+  //
+  // The renderer's only job is to display success/fail + latency to the user.
+  ipcMain.handle('gemini-test-connection', async () => {
+    // 1. Read API key from secure storage
+    const apiKey = getSecret('geminiApiKey');
+    if (!apiKey || !apiKey.trim()) {
+      return {
+        success: false,
+        error: 'No Gemini API key saved. Enter your API key and click Save first.',
+      };
+    }
+
+    // 2. Read endpoint + model from settings (with defaults)
+    const state = loadState();
+    const settings = state.settings || {};
+    const endpoint = (settings.geminiEndpoint as string | undefined) || GEMINI_DEFAULT_ENDPOINT;
+    const model = (settings.geminiModel as string | undefined) || GEMINI_DEFAULT_MODEL;
+
+    // 3. Validate endpoint against the allowlist (defense-in-depth)
+    const fullUrl = (endpoint || GEMINI_DEFAULT_ENDPOINT).replace(/\/+$/, '') +
+      `/v1beta/models/${model}:generateContent`;
+    if (!isAllowedAIOrigin(fullUrl)) {
+      // Do NOT log the endpoint here — it might be a user-pasted custom URL.
+      return {
+        success: false,
+        error: 'Endpoint is not in the allowed AI origins list. Use the official Gemini endpoint.',
+      };
+    }
+
+    // 4. Build the minimal ping request (pure helper)
+    const plan = buildGeminiPingRequest(endpoint, apiKey, model);
+
+    // 5. Send via Electron net (respects CSP + session, no renderer fetch)
+    const start = Date.now();
+    return new Promise((resolve) => {
+      let responseData = '';
+      let settled = false;
+      const finish = (result: any) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      try {
+        const request = net.request({
+          method: 'POST',
+          url: plan.url,
+          headers: plan.headers,
+        });
+
+        // Timeout guard — 12s is generous for a 1-token ping.
+        const timeoutMs = 12000;
+        const timer = setTimeout(() => {
+          try { request.abort(); } catch {}
+          finish({
+            success: false,
+            error: `Request timed out after ${timeoutMs / 1000}s`,
+            latencyMs: Date.now() - start,
+          });
+        }, timeoutMs);
+
+        request.on('response', (response) => {
+          response.on('data', (chunk) => {
+            responseData += chunk.toString();
+          });
+          response.on('end', () => {
+            clearTimeout(timer);
+            const latencyMs = Date.now() - start;
+            const statusCode = response.statusCode;
+            const parsed = parseGeminiResponse(responseData);
+
+            if (parsed.success) {
+              // Do NOT log the response body or parsed content — only the
+              // success boolean + latency + model + endpoint host.
+              console.log(`[GEMINI_TEST] success latencyMs=${latencyMs} statusCode=${statusCode}`);
+              finish({
+                success: true,
+                modelName: model,
+                latencyMs,
+                statusCode,
+              });
+            } else {
+              // parsed.error is already a sanitized string (e.g.
+              // "Gemini: no candidates in response" or the API's own
+              // error.message field). It does NOT contain the API key.
+              const err = `HTTP ${statusCode}: ${parsed.error || 'request failed'}`;
+              console.log(`[GEMINI_TEST] fail latencyMs=${latencyMs} statusCode=${statusCode} error="${parsed.error || 'request failed'}"`);
+              finish({
+                success: false,
+                error: err,
+                latencyMs,
+                statusCode,
+              });
+            }
+          });
+        });
+
+        request.on('error', (err) => {
+          clearTimeout(timer);
+          const latencyMs = Date.now() - start;
+          // err.message is a generic network error like "getaddrinfo ENOTFOUND"
+          // — it does NOT contain the API key (the key is in the headers, which
+          // are not part of the error). Safe to surface.
+          console.log(`[GEMINI_TEST] network-error latencyMs=${latencyMs} error="${err.message}"`);
+          finish({
+            success: false,
+            error: `Network error: ${err.message}`,
+            latencyMs,
+          });
+        });
+
+        request.write(plan.body);
+        request.end();
+      } catch (err: any) {
+        const latencyMs = Date.now() - start;
+        // Synchronous throw (e.g. malformed URL) — surface the message but
+        // never the key.
+        console.log(`[GEMINI_TEST] sync-throw latencyMs=${latencyMs} error="${err?.message || 'unknown'}"`);
+        finish({
+          success: false,
+          error: `Failed to send request: ${err?.message || 'unknown error'}`,
+          latencyMs,
+        });
+      }
+    });
   });
 
   // ── Phase 10: Browser Automation opt-in toggle ──

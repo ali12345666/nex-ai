@@ -11572,3 +11572,82 @@ MUST NOT DUPLICATE:
 - DO NOT add a parallel `geminiToken` streaming event — `agent_token` (core.ts:400, 579, 652) is already the streaming channel for all phases.
 
 Audit complete. No files modified. No commits made. All findings are READ-ONLY observations from source inspection. The architecture is well-structured for adding Gemini as a 3rd online chat provider: the provider abstraction (routeChat + OnlineRuntime + OnlineChatTransport) cleanly accommodates a new branch, and the agent core is provider-ignorant by design (only knows `backend: 'local'|'online'` + display name). The main gaps are (a) 4 closed type unions to widen (additive), (b) creating gemini.ts + callGemini (mirrors the proven glm.ts pattern), (c) security allowlist + CSP additions for generativelanguage.googleapis.com, (d) UI option + settings field. NO agent-side changes needed for chat. Native function-calling (Gemini's functionDeclarations/functionCall) is OUT OF SCOPE for Phase O — would require extending ChatMessage/ChatResult + rewriting planner/react-loop/recovery-engine to consume tool_calls instead of JSON-in-text.
+
+---
+Task ID: phase-o4-o5
+Agent: main
+Task: Phase O — O4 (Gemini Settings + Test Connection) + O5 (Live Activity UI)
+
+Work Log:
+- Read checkpoint b35f946 (Phase O O1-O3 — Gemini provider + secure key + type unions) and confirmed it as the starting point.
+- Read existing gemini.ts (243 lines), SettingsPanel.tsx (965 lines), AgentStateDisplay.tsx (285 lines — dead code), NexChatPanel.tsx (1501 lines), main.ts (6599 lines), preload.ts (823 lines), useStore.ts (388 lines).
+- Verified the existing Gemini API constants (GEMINI_DEFAULT_ENDPOINT, GEMINI_DEFAULT_MODEL, geminiEndpointUrl, x-goog-api-key header, v1beta path) match the official Google Gemini REST API documentation (https://ai.google.dev/api/generate-content). No guessing required — constants already established in O1-O3.
+
+O4 — Gemini Settings + Test Connection:
+- gemini.ts: Added `buildGeminiPingRequest(endpoint, apiKey, model)` pure helper (no electron, unit-testable). Builds a minimal real Gemini generateContent request: single user turn ("ping"), maxOutputTokens=1, temperature=0. API key ONLY in x-goog-api-key header — never in body, never in URL query.
+- main.ts: Added `net` to electron imports + `buildGeminiPingRequest, parseGeminiResponse, GEMINI_DEFAULT_ENDPOINT, GEMINI_DEFAULT_MODEL` from ./ai/gemini. Added `gemini-test-connection` IPC handler (~120 lines):
+  * Reads apiKey from `getSecret('geminiApiKey')` (secure storage — DPAPI/Keychain/libsecret). Returns error if no key.
+  * Reads geminiEndpoint + geminiModel from settings (with official defaults).
+  * Validates endpoint against ALLOWED_AI_ORIGINS (defense-in-depth — refuses to send key to unknown host).
+  * Sends a REAL minimal ping via Electron `net.request` (NOT renderer fetch). 12s timeout.
+  * On success: returns `{success: true, modelName, latencyMs, statusCode}`. On failure: returns `{success: false, error, latencyMs?, statusCode?}`.
+  * SECURITY: NEVER logs the API key, headers, response body, or full URL with key. Only logs `[GEMINI_TEST] success/fail latencyMs=X statusCode=Y error="sanitized"`. The error string comes from parseGeminiResponse (sanitized) or err.message (generic network error, no key).
+- preload.ts: Added `geminiTestConnection: () => ipcRenderer.invoke('gemini-test-connection')`.
+- electron.d.ts: Added `geminiTestConnection: () => Promise<{success; error?; modelName?; latencyMs?; statusCode?}>` (no apiKey field in the return type — key NEVER returned to renderer).
+- SettingsPanel.tsx:
+  * Added 'gemini' (Google Gemini) to the provider dropdown options.
+  * Added Gemini conditional block: API Key (password input, masked, with show/hide toggle), Model selector (4 official Gemini models), Endpoint field (default https://generativelanguage.googleapis.com), Test Connection button + status display (success: green "Connected (Xms, model)" / fail: red sanitized error).
+  * Added localGeminiApiKey, showGeminiKey, geminiTesting, geminiTestResult state.
+  * Updated handleSave to pass localGeminiApiKey to settingsSave (4th arg → setSecret on main side).
+  * Added handleTestGemini: prompts "Save your new API key first" if the key changed but isn't saved, then calls geminiTestConnection() IPC.
+  * Updated the non-GLM fallback condition to exclude 'gemini' too.
+  * Added a security note in the UI: "API key is stored encrypted (Electron safeStorage) and never written to config.json or logs."
+
+O5 — Live Activity UI (revive AgentStateDisplay):
+- AgentStateDisplay.tsx (revived, not rebuilt):
+  * Added `redactAgentText(input)` pure exported helper (defense-in-depth). Mirrors the main-side logger.ts SECRET_PATTERNS: OpenAI/Anthropic/Google/GitHub keys, Bearer tokens, JWTs, generic key=value assignments, x-goog-api-key/x-api-key/authorization header lines, ?key=/?api_key= URL query params. Never throws — on error returns input unchanged.
+  * Applied redactAgentText to event.message in getEventState() (the main-side emitEvent redacts event.data but NOT event.message — this closes the gap).
+  * Applied redactAgentText to streamText in the streaming preview + activeTool.message in the active-tool row.
+  * Added cases for react_decision, replan_started, replan_completed, log event types (were missing in the default fallback).
+  * Verified NO fake animation/progress/search/thinking — the component returns null when `events.length === 0 && !streamText` (line 220). The only "animation" is real spinners on active event states (planning_started, step_started, tool_call_started, retry, recovery_started, modify_retry_started, verification_started) — all reflect REAL agent activity.
+  * Updated the streamText prop doc to clarify: FINAL phase only (planner JSON is NOT passed — avoids showing the model's private planning reasoning).
+- NexChatPanel.tsx (wired, not rewritten):
+  * Imported AgentStateDisplay + AgentEvent type.
+  * Added agentEvents, agentStreamText, agentStreamPhase state + AGENT_EVENTS_CAP=200 (bounds memory on long tasks).
+  * In the EXISTING onAgentEvent listener (single subscription — no new event bus), added event collection BEFORE the chat-bubble mutation:
+    - On 'task_created': reset agentEvents to [task_created], clear streamText/phase.
+    - On other events: append to agentEvents (capped at 200). On 'agent_token': ONLY accumulate streamText when phase === 'final' (planner/step/verification tokens are recorded as discrete events but NOT surfaced in the streaming preview — no model reasoning leak).
+    - Filter: only collect events for the active agent task (taskId === activeAgentTaskRef.current).
+  * Added resets: handleNewChat clears agentEvents/streamText/phase + activeAgentTaskRef. Non-agent chat path (when activeAgentTaskRef.current === null) clears the panel so stale events don't linger.
+  * Rendered <AgentStateDisplay> between the messages list and the input area. Props: events={agentEvents}, isRunning={isGenerating && activeAgentTaskRef.current !== null}, streamText={agentStreamText}, streamPhase={agentStreamPhase}, onStop={handleStop}.
+  * Did NOT touch: Agent core, AIRuntime, OnlineRuntime, Tool Registry, Orb FSM, Voice FSM, RAG/Memory, ModelRouter, event bus, Auto mode. All architecture constraints respected.
+
+Tests:
+- NEW: tests/glm/test-phase-o4-gemini.ts — 58 assertions. Covers buildGeminiPingRequest shape, API key placement security (header only, never body/URL), minimal ping body, parseGeminiResponse success/error, origin allowlist, source-contract wiring (IPC + preload + types + SettingsPanel), no API key in config.json.
+- NEW: tests/glm/test-phase-o5-activity.ts — 47 assertions. Covers redactAgentText (all secret patterns + non-secret preservation + edge cases), AgentStateDisplay revived + wired, existing agent-event IPC (no new bus), streamText FINAL-phase filter, no fake animation, architecture (agent core has zero UI imports, AgentStateDisplay is passive), redaction applied to event.message/streamText/activeTool.message.
+- FIXED 3 stale test assertions (pre-existing at b35f946, test-only maintenance):
+  * tests/glm/test-p8a.ts: allowlist size 4 → 5 (Gemini added in O1-O3).
+  * tests/glm/test-p8d.ts: removed stale `powershell.exe` assertion (feature removed in node-pty migration commit 3ec5f08) → replaced with `WINDOWS_CMD_SHIMS` assertion matching current shell.ts.
+  * tests/glm/test-p8e.ts: ChatPanel.tsx → chat/NexChatPanel.tsx (file renamed in a prior phase), d.text → ev.text (variable renamed), return; → (break;|return;) (control-flow exit either way).
+
+Verification:
+- Main typecheck (tsc -p tsconfig.main.json): PASS
+- Renderer typecheck (tsc -p tsconfig.json): PASS
+- Build main: PASS
+- Build renderer: PASS (SettingsPanel 33.49 kB, NexChatPanel 49.28 kB — both grew slightly with new wiring)
+- Security tests: 41/41 pass
+- Persistence tests: 13/13 pass
+- GLM tests (P8-A through P8-E + O4 + O5): 350/350 pass (was 347 pass + 3 fail at b35f946; now 350 pass + 0 fail)
+- Phase-116 tools tests: 316/316 pass
+- Full regression: 105 new tests pass (58 O4 + 47 O5), 3 stale GLM tests fixed, 0 new failures introduced. 322 pre-existing failures across system/knowledge/local-ai/plugins test files are documented test debt from previous phases (verified identical at pristine b35f946 via stash comparison) — out of scope for O4/O5.
+- No fake activity: grep for fake/simulate/dummy/placeholder/progress-forcing in AgentStateDisplay → 0 matches. Component returns null when idle (line 220).
+- Redaction: redactAgentText applied to event.message (line 92), streamText (line 304), activeTool.message (line 340). Exported for unit testing.
+- API key security: key in x-goog-api-key header ONLY (never body, never URL). Key read from getSecret (secure storage) on main side. Key NEVER returned to renderer (geminiTestConnection return type has no apiKey field). Key NEVER in config.json (not in PersistedSettings). Logs contain only latencyMs/statusCode/sanitized error — never key/headers/response body.
+
+Stage Summary:
+- O4 complete: Gemini is a first-class option in Settings with masked API key, model selector, endpoint field, and a REAL Test Connection (main-process ping to Gemini, no secrets leaked). 58 unit tests verify the wire format, security invariants, and UI wiring.
+- O5 complete: AgentStateDisplay revived (not rebuilt) with defense-in-depth redaction and wired into NexChatPanel via the existing agent-event IPC. Shows only REAL agent events (24 event types), only FINAL-phase streaming (no planner JSON / model reasoning leak), no fake animation. 47 unit tests verify redaction, wiring, architecture, and no-fake-activity invariants.
+- Architecture constraints respected: zero changes to Agent/AIRuntime/OnlineRuntime/Tool Registry/Orb FSM/Voice FSM/RAG/Memory/ModelRouter/event bus/Auto mode.
+- Gemini tool execution: native function calling NOT implemented (deferred). Existing architecture preserved: Gemini → planner/agent → existing tool execution → observation → Gemini.
+- O6 (Gemini Live Voice): NOT started — deferred for separate design discussion.
+- Net test suite impact: +105 new passing tests, -3 previously-failing tests fixed, 0 new failures.

@@ -165,6 +165,50 @@ export function buildGeminiRequestForEndpoint(
   return { ...plan, url: geminiEndpointUrl(endpoint, opts.model) };
 }
 
+// ─── Test Connection (pure) ─────────────────────────────────────────────────
+//
+// Phase O / O4: A minimal, real Gemini request used by the
+// `gemini-test-connection` IPC to verify that the user's API key + endpoint +
+// model actually work. This is a PURE helper (no electron, no network) so it
+// is unit-testable in plain Node with zero mocks.
+//
+// Design rules (security):
+//   * The API key is placed ONLY in the x-goog-api-key header — never in the
+//     body, never in a query string.
+//   * The request body is intentionally tiny: a single "ping" user turn with
+//     maxOutputTokens=1 and temperature=0. This minimizes token usage while
+//     still forcing Gemini to validate the key + model + endpoint.
+//   * The returned plan is consumed by the main process, which uses Electron's
+//     `net` module (NOT renderer fetch) so the key never crosses the context
+//     isolation boundary.
+export interface GeminiPingPlan {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+export function buildGeminiPingRequest(
+  endpoint: string | undefined,
+  apiKey: string,
+  model?: string,
+): GeminiPingPlan {
+  const bodyObj = {
+    contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+    generationConfig: {
+      maxOutputTokens: 1,
+      temperature: 0,
+    },
+  };
+  return {
+    url: geminiEndpointUrl(endpoint, model || GEMINI_DEFAULT_MODEL),
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify(bodyObj),
+  };
+}
+
 // ─── Response parsing (pure) ────────────────────────────────────────────────
 
 export interface GeminiParseResult {

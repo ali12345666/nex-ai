@@ -15,10 +15,64 @@ export interface AgentEvent {
   data?: any;
 }
 
+// ─── Defense-in-depth redaction (Phase O / O5) ──────────────────────────────
+//
+// The main-side `emitEvent` (src/main/agent/logger.ts) already redacts
+// `event.data` via `redactObjectDeep`. However, `event.message` is forwarded
+// to the renderer UNREDACTED. A tool error message could echo back a request
+// URL with `?key=...` or a header line like `x-goog-api-key: AIza…`, which
+// would then be displayed in this panel.
+//
+// This helper applies the same secret patterns as the main-side redactor to
+// `event.message` (and to `streamText`) BEFORE rendering. It is a pure
+// function with zero dependencies so it is unit-testable in isolation.
+//
+// Patterns covered (mirror src/main/agent/logger.ts SECRET_PATTERNS):
+//   * OpenAI keys: sk-…
+//   * Anthropic keys: sk-ant-…
+//   * Google API keys: AIza… (39-40 chars)
+//   * GitHub PATs: ghp_…, github_pat_…
+//   * Generic key=…, api_key=…, token=…, password=…, secret=… assignments
+//   * Bearer tokens
+//   * JWTs
+//   * x-goog-api-key / x-api-key / authorization header lines
+//   * ?key=… / ?api_key=… query params in URLs
+//
+// Returns the redacted string. NEVER throws — on any error returns the
+// original input unchanged (defense-in-depth must not break the UI).
+export function redactAgentText(input: string): string {
+  if (!input || typeof input !== 'string') return input;
+  try {
+    let out = input;
+    // OpenAI / Anthropic / Google keys
+    out = out.replace(/\bsk-[A-Za-z0-9]{20,}\b/g, '***REDACTED_OPENAI_KEY***');
+    out = out.replace(/\bsk-ant-[A-Za-z0-9-_]{20,}\b/g, '***REDACTED_ANTHROPIC_KEY***');
+    out = out.replace(/\bAIza[A-Za-z0-9_-]{30,}\b/g, '***REDACTED_GOOGLE_KEY***');
+    // GitHub PATs
+    out = out.replace(/\bghp_[A-Za-z0-9]{36,}\b/g, '***REDACTED_GITHUB_PAT***');
+    out = out.replace(/\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, '***REDACTED_GITHUB_PAT***');
+    // Bearer tokens
+    out = out.replace(/\bBearer\s+[A-Za-z0-9_\-\.]{20,}/g, 'Bearer ***REDACTED***');
+    // JWTs
+    out = out.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '***REDACTED_JWT***');
+    // Generic key=value / api_key=value / token=value / password=value / secret=value
+    out = out.replace(/\b(api[_-]?key|apikey|api[_-]?token|secret|password|token)\s*[=:]\s*["']?([A-Za-z0-9_\-\.]{20,})["']?/gi, '$1=***REDACTED***');
+    // Header lines (case-insensitive): x-goog-api-key: …, x-api-key: …, authorization: …
+    out = out.replace(/\b(x-goog-api-key|x-api-key|authorization)\s*:\s*[A-Za-z0-9_\-\.]{20,}/gi, '$1: ***REDACTED***');
+    // URL query params: ?key=…, ?api_key=…
+    out = out.replace(/([?&](?:api[_-]?key|key|token|access[_-]?token)=)[A-Za-z0-9_\-\.]{20,}/gi, '$1***REDACTED***');
+    return out;
+  } catch {
+    return input;
+  }
+}
+
 interface AgentStateDisplayProps {
   events: AgentEvent[];
   isRunning: boolean;
-  /** Phase 8 / P8-E-1: live streamed model output */
+  /** Phase 8 / P8-E-1: live streamed model output (FINAL phase only — the
+   *  planner's raw JSON output is NOT passed here, to avoid showing the
+   *  model's private planning reasoning. See NexChatPanel wiring.) */
   streamText?: string;
   streamPhase?: string | null;
   /** Phase 8 / P8-E-3: stop agent button */
@@ -32,19 +86,23 @@ interface StateInfo {
 }
 
 function getEventState(event: AgentEvent): StateInfo {
+  // Phase O / O5: defense-in-depth — redact any secrets that may have
+  // slipped into event.message (the main side redacts event.data but NOT
+  // event.message).
+  const safeMessage = redactAgentText(event.message || '');
   switch (event.type) {
     case 'task_created':
-      return { icon: <Brain size={12} />, label: event.message, color: 'text-[var(--nex-text-dim)]' };
+      return { icon: <Brain size={12} />, label: safeMessage, color: 'text-[var(--nex-text-dim)]' };
     case 'planning_started':
-      return { icon: <Brain size={12} className="animate-pulse" />, label: event.message, color: 'text-[var(--nex-accent)]' };
+      return { icon: <Brain size={12} className="animate-pulse" />, label: safeMessage, color: 'text-[var(--nex-accent)]' };
     case 'planning_completed':
-      return { icon: <Brain size={12} />, label: event.message, color: 'text-[var(--nex-accent-text)]' };
+      return { icon: <Brain size={12} />, label: safeMessage, color: 'text-[var(--nex-accent-text)]' };
     case 'step_started':
-      return { icon: <Loader2 size={12} className="animate-spin" />, label: event.message.slice(0, 50), color: 'text-[var(--nex-accent)]' };
+      return { icon: <Loader2 size={12} className="animate-spin" />, label: safeMessage.slice(0, 50), color: 'text-[var(--nex-accent)]' };
     case 'tool_call_started':
-      return { icon: <Wrench size={12} className="animate-pulse" />, label: event.message, color: 'text-orange-400' };
+      return { icon: <Wrench size={12} className="animate-pulse" />, label: safeMessage, color: 'text-orange-400' };
     case 'tool_call_completed':
-      return { icon: <Wrench size={12} />, label: event.message, color: 'text-[var(--nex-text-dim)]' };
+      return { icon: <Wrench size={12} />, label: safeMessage, color: 'text-[var(--nex-text-dim)]' };
     case 'permission_requested':
       return { icon: <ShieldAlert size={12} className="animate-pulse" />, label: 'Permission Required', color: 'text-yellow-400' };
     case 'permission_granted':
@@ -52,50 +110,58 @@ function getEventState(event: AgentEvent): StateInfo {
     case 'permission_denied':
       return { icon: <ShieldAlert size={12} />, label: 'Permission Denied', color: 'text-red-400' };
     case 'diff_proposed':
-      return { icon: <FileEdit size={12} />, label: event.message, color: 'text-blue-400' };
+      return { icon: <FileEdit size={12} />, label: safeMessage, color: 'text-blue-400' };
     case 'diff_accepted':
       return { icon: <FileEdit size={12} />, label: 'Changes Applied', color: 'text-green-400' };
     case 'diff_rejected':
       return { icon: <FileEdit size={12} />, label: 'Changes Rejected', color: 'text-red-400' };
     case 'observation':
-      return { icon: <Search size={12} />, label: event.message.slice(0, 80), color: 'text-[var(--nex-text-dim)]' };
+      return { icon: <Search size={12} />, label: safeMessage.slice(0, 80), color: 'text-[var(--nex-text-dim)]' };
     case 'verification_started':
       return { icon: <FlaskConical size={12} className="animate-pulse" />, label: 'Verifying', color: 'text-purple-400' };
     case 'verification_completed':
       return { icon: <FlaskConical size={12} />, label: 'Verified', color: 'text-green-400' };
     // Phase 9: explicit pass/fail events (more specific than verification_completed)
     case 'verification_passed':
-      return { icon: <CheckCircle2 size={12} />, label: event.message, color: 'text-green-400' };
+      return { icon: <CheckCircle2 size={12} />, label: safeMessage, color: 'text-green-400' };
     case 'verification_failed':
-      return { icon: <XCircle size={12} />, label: event.message, color: 'text-red-400' };
+      return { icon: <XCircle size={12} />, label: safeMessage, color: 'text-red-400' };
     case 'retry':
-      return { icon: <RefreshCw size={12} className="animate-spin" />, label: event.message, color: 'text-yellow-400' };
+      return { icon: <RefreshCw size={12} className="animate-spin" />, label: safeMessage, color: 'text-yellow-400' };
     case 'step_completed':
-      return { icon: <CheckCircle2 size={12} />, label: event.message, color: 'text-green-400' };
+      return { icon: <CheckCircle2 size={12} />, label: safeMessage, color: 'text-green-400' };
     case 'step_failed':
-      return { icon: <XCircle size={12} />, label: event.message, color: 'text-red-400' };
+      return { icon: <XCircle size={12} />, label: safeMessage, color: 'text-red-400' };
     case 'task_completed':
-      return { icon: <CheckCircle2 size={14} />, label: event.message, color: 'text-green-400' };
+      return { icon: <CheckCircle2 size={14} />, label: safeMessage, color: 'text-green-400' };
     case 'task_failed':
-      return { icon: <XCircle size={14} />, label: event.message, color: 'text-red-400' };
+      return { icon: <XCircle size={14} />, label: safeMessage, color: 'text-red-400' };
     case 'task_cancelled':
-      return { icon: <Ban size={14} />, label: event.message, color: 'text-red-400' };
+      return { icon: <Ban size={14} />, label: safeMessage, color: 'text-red-400' };
     // Phase 7: LLM Error Recovery events
     case 'recovery_started':
       // THINKING Orb state — engine is analyzing the failure
-      return { icon: <Brain size={12} className="animate-pulse" />, label: event.message, color: 'text-purple-400' };
+      return { icon: <Brain size={12} className="animate-pulse" />, label: safeMessage, color: 'text-purple-400' };
     case 'recovery_decision':
-      return { icon: <Brain size={12} />, label: event.message, color: 'text-purple-400' };
+      return { icon: <Brain size={12} />, label: safeMessage, color: 'text-purple-400' };
     case 'modify_retry_started':
-      return { icon: <Wrench size={12} className="animate-pulse" />, label: event.message, color: 'text-yellow-400' };
+      return { icon: <Wrench size={12} className="animate-pulse" />, label: safeMessage, color: 'text-yellow-400' };
     case 'skip_executed':
-      return { icon: <Square size={12} />, label: event.message, color: 'text-yellow-400' };
+      return { icon: <Square size={12} />, label: safeMessage, color: 'text-yellow-400' };
     case 'recovery_succeeded':
-      return { icon: <CheckCircle2 size={12} />, label: event.message, color: 'text-green-400' };
+      return { icon: <CheckCircle2 size={12} />, label: safeMessage, color: 'text-green-400' };
     case 'recovery_failed':
-      return { icon: <XCircle size={12} />, label: event.message, color: 'text-red-400' };
+      return { icon: <XCircle size={12} />, label: safeMessage, color: 'text-red-400' };
+    case 'react_decision':
+      return { icon: <Brain size={12} />, label: safeMessage, color: 'text-[var(--nex-accent-text)]' };
+    case 'replan_started':
+      return { icon: <RefreshCw size={12} className="animate-pulse" />, label: safeMessage, color: 'text-[var(--nex-accent)]' };
+    case 'replan_completed':
+      return { icon: <Brain size={12} />, label: safeMessage, color: 'text-[var(--nex-accent-text)]' };
+    case 'log':
+      return { icon: <Cpu size={12} />, label: safeMessage.slice(0, 80), color: 'text-[var(--nex-text-muted)]' };
     default:
-      return { icon: <Loader2 size={12} />, label: event.message.slice(0, 60), color: 'text-[var(--nex-text-dim)]' };
+      return { icon: <Loader2 size={12} />, label: safeMessage.slice(0, 60), color: 'text-[var(--nex-text-dim)]' };
   }
 }
 
@@ -222,6 +288,11 @@ export default function AgentStateDisplay({
       )}
 
       {/* ── P8-E-1: live streaming preview ── */}
+      {/* Phase O / O5: streamText is only passed for the FINAL answer phase
+          (see NexChatPanel wiring — we filter agent_token events by phase).
+          The planner's raw JSON output is intentionally NOT shown here, to
+          avoid surfacing the model's private planning reasoning. The text
+          is redacted defense-in-depth in case the model echoes a secret. */}
       {streamText && (
         <div className="px-4 py-2">
           <div className="flex items-center gap-2 text-[11px] text-[var(--nex-accent)] mb-1">
@@ -230,7 +301,7 @@ export default function AgentStateDisplay({
             <span className="text-[var(--nex-text-muted)] ml-auto">{streamText.length} chars</span>
           </div>
           <pre className="text-[11px] text-[var(--nex-text-dim)] font-mono whitespace-pre-wrap break-words max-h-24 overflow-y-auto bg-[var(--nex-bg)]/50 rounded border border-[var(--nex-glass-border)]/50 p-2">
-            {streamText.slice(-800)}
+            {redactAgentText(streamText.slice(-800))}
           </pre>
         </div>
       )}
@@ -266,7 +337,7 @@ export default function AgentStateDisplay({
         {toolActive && activeTool && (
           <div className="flex items-center gap-2 py-1 text-[11px] text-orange-400">
             <Wrench size={11} className="animate-pulse" />
-            <span className="truncate">{activeTool.message}</span>
+            <span className="truncate">{redactAgentText(activeTool.message || '')}</span>
             <span className="text-[9px] text-[var(--nex-text-muted)] ml-auto shrink-0 inline-flex items-center gap-0.5">
               <Timer size={8} />
               {(elapsed / 1000).toFixed(1)}s

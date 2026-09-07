@@ -97,7 +97,11 @@ assert('shell.ts: resolver exported', /export function resolveCommandForPlatform
 assert('shell.ts: meta guard exported', /export function isShellSafeArg/.test(shellSrc));
 assert('shell.ts: safeExecFile uses resolver', /resolveCommandForPlatform\(bin\)/.test(shellSrc));
 assert('shell.ts: guard wired into safeExecFile', /resolved\.useShell && args\.some/.test(shellSrc));
-assert('shell.ts: PowerShell spawn for win32 terminals', /powershell\.exe/.test(shellSrc));
+// Note: The `powershell.exe` direct-spawn assertion was removed after commit
+// 3ec5f08 migrated the terminal to node-pty (ConPTY). shell.ts now uses .cmd
+// shim resolution (WINDOWS_CMD_SHIMS) for win32 JS-package-manager binaries
+// instead of spawning powershell.exe directly. The current contract is:
+assert('shell.ts: .cmd shim resolution for win32 (replaces powershell.exe spawn)', /WINDOWS_CMD_SHIMS/.test(shellSrc));
 
 // persistence portable paths
 const persistSrc = read('../../src/main/persistence/index.ts');

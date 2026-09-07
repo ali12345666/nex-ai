@@ -10,3 +10,6 @@ release/
 models/
 logs/
 release-dir/
+
+# Scratch dir for Read tool persisted outputs
+tool-results/

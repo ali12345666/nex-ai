@@ -62,6 +62,16 @@ export interface NexAPI {
   settingsGetApiKey: () => Promise<string>;
   settingsDeleteApiKey: () => Promise<{ success: boolean }>;
   persistenceInfo: () => Promise<{ userDataPath: string; portable: boolean; secretsAvailable: boolean }>;
+  // Phase O / O4: Gemini Test Connection — main-process-only real ping.
+  // Returns success/fail + latency + sanitized error. The API key, headers,
+  // and raw response body are NEVER returned to the renderer.
+  geminiTestConnection: () => Promise<{
+    success: boolean;
+    error?: string;
+    modelName?: string;
+    latencyMs?: number;
+    statusCode?: number;
+  }>;
 
   // AI Chat
   aiChat: (config: any, messages: any[]) => Promise<{ success: boolean; content?: string; error?: string; tokens?: number; durationMs?: number; modelId?: string; modelName?: string }>;

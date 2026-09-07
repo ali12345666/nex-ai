@@ -30,6 +30,16 @@ import MessageBubble from './MessageBubble';
 import { validateConversationData } from '../../lib/conversation-validator';
 // Phase 30: Voice → Chat integration (transcripts + thinking state)
 import { voiceController } from '../../services/voice-controller';
+// Phase O / O5: Live Activity panel — revived AgentStateDisplay.
+//   * Reuses the existing component (zero rebuild).
+//   * Subscribes to the EXISTING `agent-event` IPC via window.nexAPI.onAgentEvent
+//     (same listener the chat bubble already uses — no new event bus).
+//   * Only shows REAL agent events (24 distinct event types from agent/core).
+//   * Filters streamText to FINAL phase only — never shows the planner's
+//     private JSON output (the model's internal decision reasoning).
+//   * Defense-in-depth redaction in the component itself.
+//   * No fake animation, no fake progress, no fake search.
+import AgentStateDisplay, { type AgentEvent } from '../agent/AgentStateDisplay';
 
 const SUPPORTED_EXTENSIONS = new Set([
   'txt', 'md', 'json', 'csv', 'yaml', 'yml', 'js', 'ts', 'tsx', 'jsx',
@@ -349,6 +359,26 @@ export default function NexChatPanel() {
   // Phase 110: Track active agent task for session stickiness
   const activeAgentTaskRef = useRef<string | null>(null);
 
+  // ── Phase O / O5: Live Activity panel state ──────────────────────────────
+  // Collects REAL agent events for the AgentStateDisplay panel. These are
+  // the SAME events the chat bubble handler already consumes (single
+  // `onAgentEvent` subscription — no new IPC, no new event bus).
+  //
+  // `agentStreamText` is ONLY accumulated for the FINAL answer phase — we
+  // intentionally do NOT show the planner's raw JSON output, because that is
+  // the model's private planning reasoning, not user-facing action/status.
+  //
+  // `agentStreamPhase` tracks which phase the live preview is showing
+  // (only 'final' is ever set here; planning/step/verification phases are
+  // represented by their discrete events in `agentEvents` instead).
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [agentStreamText, setAgentStreamText] = useState('');
+  const [agentStreamPhase, setAgentStreamPhase] = useState<string | null>(null);
+  // Cap the event log to prevent unbounded growth on very long tasks.
+  // 200 entries is plenty for the "recent activity" view (the component
+  // itself only renders the last 12).
+  const AGENT_EVENTS_CAP = 200;
+
   // Phase 18 (P2-1): Stale-timer protection for 'agent' + 'chat' condition
   // auto-clears. Previously the 1500ms setTimeout timers were anonymous —
   // their IDs were not captured. A stale timer from an OLD task could fire
@@ -440,6 +470,55 @@ export default function NexChatPanel() {
     const off = window.nexAPI?.onAgentEvent?.((event: any) => {
       const eventType = event?.type || event?.event;
       const taskId = event?.taskId;
+
+      // ── Phase O / O5: Live Activity panel — collect REAL events ──
+      // This runs BEFORE the chat-bubble mutation below so the panel
+      // updates in the same tick. We collect every event the agent emits
+      // (24 distinct types from agent/core.ts). NO fake events are
+      // synthesized here — if the agent is idle, the panel is empty.
+      //
+      // Filter: only collect events for the ACTIVE agent task. This
+      // prevents stray events from a previous task (or a task that was
+      // cancelled but emitted a trailing event) from polluting the panel.
+      // The active task is set in handleSend when brainRoute returns
+      // route='agent'. The very first event we see for a new task is
+      // 'task_created', which we use as a reset point.
+      if (eventType === 'task_created') {
+        // New task — reset the panel for a clean slate.
+        activeAgentTaskRef.current = taskId;
+        setAgentEvents([{ ...event, timestamp: event.timestamp || Date.now() }]);
+        setAgentStreamText('');
+        setAgentStreamPhase(null);
+      } else if (taskId && taskId === activeAgentTaskRef.current) {
+        // Event for the active task — append (with cap to bound memory).
+        if (eventType === 'agent_token') {
+          // Phase O / O5: only accumulate FINAL-phase tokens into the live
+          // preview. Planning/step/verification phase tokens are the
+          // model's private reasoning or intermediate tool I/O — we do
+          // NOT show them. They are still recorded as discrete events in
+          // the event log (the agent_token event itself is appended below),
+          // but their TEXT is not surfaced in the streaming preview.
+          const phase = event?.data?.phase || event?.phase;
+          if (phase === 'final') {
+            const tokenText = event?.data?.content || event?.data?.text || '';
+            if (tokenText) {
+              setAgentStreamText((prev) => prev + tokenText);
+              setAgentStreamPhase('final');
+            }
+          }
+          // For non-final phases, we still append the event (so the user
+          // sees "streaming… planning" activity) but we do NOT accumulate
+          // the text. The event log will show the discrete token events.
+        }
+        setAgentEvents((prev) => {
+          const next = [...prev, { ...event, timestamp: event.timestamp || Date.now() }];
+          // Bound the log — keep the most recent AGENT_EVENTS_CAP entries.
+          if (next.length > AGENT_EVENTS_CAP) {
+            return next.slice(next.length - AGENT_EVENTS_CAP);
+          }
+          return next;
+        });
+      }
 
       setMessages((prev) => {
         const next = [...prev];
@@ -974,6 +1053,16 @@ export default function NexChatPanel() {
         console.warn('[BRAIN_ROUTER] Error, falling back to direct chat:', routeResult.error);
       }
 
+      // Phase O / O5: This is a plain chat (non-agent) request. Clear the
+      // Live Activity panel — it's only for agent tasks. Without this, stale
+      // events from a previous completed agent task would linger in the
+      // panel while the user is now just chatting.
+      if (activeAgentTaskRef.current === null) {
+        setAgentEvents([]);
+        setAgentStreamText('');
+        setAgentStreamPhase(null);
+      }
+
       // Chat mode — proceed with streaming (preserves existing behavior)
       const stream = await window.nexAPI.aiChatStream(providerConfig, apiMessages);
       if (stream.success) {
@@ -1158,6 +1247,12 @@ export default function NexChatPanel() {
     setError(null);
     setInput('');
     setAttachments([]);
+    // Phase O / O5: clear the Live Activity panel on new chat — no stale
+    // events from the previous task should linger when the user starts fresh.
+    activeAgentTaskRef.current = null;
+    setAgentEvents([]);
+    setAgentStreamText('');
+    setAgentStreamPhase(null);
     // Dispatch event for AppShell to update activeConversationId
     window.dispatchEvent(new CustomEvent('nex:new-conversation'));
   }, []);
@@ -1259,6 +1354,24 @@ export default function NexChatPanel() {
         ))}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* ── Phase O / O5: Live Activity panel ──
+          Revived AgentStateDisplay. Renders ONLY when there is real agent
+          activity (active task or collected events). The component itself
+          returns null when `events.length === 0 && !streamText`, so this
+          wrapper is a no-op when the agent is idle.
+
+          No fake animation, no fake progress — every line in the panel
+          corresponds to a REAL agent event received via the existing
+          `agent-event` IPC. If NEX is not actually searching, the panel
+          shows nothing. */}
+      <AgentStateDisplay
+        events={agentEvents}
+        isRunning={isGenerating && activeAgentTaskRef.current !== null}
+        streamText={agentStreamText}
+        streamPhase={agentStreamPhase}
+        onStop={handleStop}
+      />
 
       {/* Attachments preview */}
       {attachments.length > 0 && (
